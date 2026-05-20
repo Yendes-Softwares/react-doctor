@@ -19,8 +19,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 
-import { runOxlint } from "../../src/utils/run-oxlint.js";
-import { setupReactProject } from "./_helpers.js";
+import { runOxlint } from "@react-doctor/core";
+import { buildTestProject, setupReactProject } from "./_helpers.js";
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rd-rule-messages-"));
 
@@ -57,10 +57,7 @@ export const FullName = ({ firstName, lastName }: { firstName: string; lastName:
 
     const diagnostics = await runOxlint({
       rootDirectory: projectDir,
-      hasTypeScript: true,
-      framework: "unknown",
-      hasReactCompiler: false,
-      hasTanStackQuery: false,
+      project: buildTestProject({ rootDirectory: projectDir }),
     });
 
     const messages = diagnostics
@@ -109,10 +106,10 @@ export const AppGuard = () => {
     const projectDir = setupNextProject();
     const diagnostics = await runOxlint({
       rootDirectory: projectDir,
-      hasTypeScript: true,
-      framework: "nextjs",
-      hasReactCompiler: false,
-      hasTanStackQuery: false,
+      project: buildTestProject({
+        rootDirectory: projectDir,
+        framework: "nextjs",
+      }),
     });
 
     const pagesIssue = diagnostics.find(
@@ -129,10 +126,10 @@ export const AppGuard = () => {
     const projectDir = setupNextProject();
     const diagnostics = await runOxlint({
       rootDirectory: projectDir,
-      hasTypeScript: true,
-      framework: "nextjs",
-      hasReactCompiler: false,
-      hasTanStackQuery: false,
+      project: buildTestProject({
+        rootDirectory: projectDir,
+        framework: "nextjs",
+      }),
     });
 
     const appIssue = diagnostics.find(
@@ -143,5 +140,43 @@ export const AppGuard = () => {
     expect(appIssue, "expected a diagnostic on app/guard.tsx").toBeDefined();
     expect(appIssue?.message).toContain("next/navigation");
     expect(appIssue?.message).not.toContain("getServerSideProps");
+  });
+});
+
+describe("issue #55: nextjs-no-native-script ignores JSON-LD data scripts", () => {
+  it("does not flag application/ld+json scripts but still flags executable native scripts", async () => {
+    const projectDir = setupReactProject(tempRoot, "issue-55-json-ld", {
+      packageJsonExtras: {
+        dependencies: { next: "^15.0.0", react: "^19.0.0", "react-dom": "^19.0.0" },
+      },
+      files: {
+        "src/app/jsonld/page.tsx": `export default function JsonLdPage() {
+  return <script type="application/ld+json">{JSON.stringify({ "@context": "https://schema.org" })}</script>;
+}
+`,
+        "src/app/analytics/page.tsx": `export default function AnalyticsPage() {
+  return <script src="https://cdn.example.com/analytics.js" />;
+}
+`,
+      },
+    });
+
+    const diagnostics = await runOxlint({
+      rootDirectory: projectDir,
+      project: buildTestProject({
+        rootDirectory: projectDir,
+        framework: "nextjs",
+      }),
+    });
+
+    const nativeScriptIssues = diagnostics.filter(
+      (diagnostic) => diagnostic.rule === "nextjs-no-native-script",
+    );
+    expect(nativeScriptIssues.some((diagnostic) => diagnostic.filePath.includes("jsonld"))).toBe(
+      false,
+    );
+    expect(nativeScriptIssues.some((diagnostic) => diagnostic.filePath.includes("analytics"))).toBe(
+      true,
+    );
   });
 });

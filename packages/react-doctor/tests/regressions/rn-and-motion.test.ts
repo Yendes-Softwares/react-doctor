@@ -16,14 +16,17 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 
-import type { ReactDoctorConfig } from "../../src/types.js";
-import { checkReducedMotion } from "../../src/utils/check-reduced-motion.js";
-import { filterIgnoredDiagnostics } from "../../src/utils/filter-diagnostics.js";
-import { mergeAndFilterDiagnostics } from "../../src/utils/merge-and-filter-diagnostics.js";
-import { runOxlint } from "../../src/utils/run-oxlint.js";
-import { createNodeReadFileLinesSync } from "../../src/utils/read-file-lines-node.js";
+import type { ReactDoctorConfig } from "@react-doctor/types";
+import {
+  checkReducedMotion,
+  createNodeReadFileLinesSync,
+  filterIgnoredDiagnostics,
+  mergeAndFilterDiagnostics,
+  runOxlint,
+} from "@react-doctor/core";
 import {
   buildDiagnostic,
+  buildTestProject,
   initGitRepo,
   setupReactProject,
   writeFile,
@@ -181,11 +184,10 @@ describe("issue #183: rawTextWrapperComponents suppresses string-only wrapper ch
 
     const rawDiagnostics = await runOxlint({
       rootDirectory: projectDir,
-      hasTypeScript: true,
-      framework: "react-native",
-      hasReactCompiler: false,
-      hasTanStackQuery: false,
-      reactMajorVersion: 19,
+      project: buildTestProject({
+        rootDirectory: projectDir,
+        framework: "react-native",
+      }),
     });
     const rnRawTextDiagnostics = rawDiagnostics.filter(
       (diagnostic) => diagnostic.rule === "rn-no-raw-text",
@@ -225,6 +227,51 @@ describe("issue #183: rawTextWrapperComponents suppresses string-only wrapper ch
   });
 });
 
+describe("issue #76: @expo/vector-icons is not treated as a legacy Expo package", () => {
+  it("does not flag @expo/vector-icons while still flagging deprecated Expo packages", async () => {
+    const projectDir = setupReactProject(tempRoot, "issue-76-vector-icons", {
+      files: {
+        "src/App.tsx": `import { Ionicons } from "@expo/vector-icons";
+import { Audio } from "expo-av";
+
+export const App = () => (
+  <>
+    <Ionicons name="home" size={24} />
+    <Audio.Sound />
+  </>
+);
+`,
+      },
+      packageJsonExtras: {
+        dependencies: {
+          react: "^19.0.0",
+          "react-native": "^0.79.0",
+          "@expo/vector-icons": "^14.0.0",
+          "expo-av": "^15.0.0",
+        },
+      },
+    });
+
+    const diagnostics = await runOxlint({
+      rootDirectory: projectDir,
+      project: buildTestProject({
+        rootDirectory: projectDir,
+        framework: "react-native",
+      }),
+    });
+
+    const legacyExpoIssues = diagnostics.filter(
+      (diagnostic) => diagnostic.rule === "rn-no-legacy-expo-packages",
+    );
+    expect(
+      legacyExpoIssues.some((diagnostic) => diagnostic.message.includes("@expo/vector-icons")),
+    ).toBe(false);
+    expect(legacyExpoIssues.some((diagnostic) => diagnostic.message.includes("expo-av"))).toBe(
+      true,
+    );
+  });
+});
+
 describe("issue #94: MotionConfig satisfies the reduced-motion accessibility check", () => {
   it("does not emit require-reduced-motion when MotionConfig is present in source", () => {
     const projectDir = path.join(tempRoot, "issue-94-positive");
@@ -241,6 +288,50 @@ export const App = () => (
     <div />
   </MotionConfig>
 );
+`,
+    );
+    initGitRepo(projectDir, { commit: true });
+
+    const diagnostics = checkReducedMotion(projectDir);
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  it("does not emit require-reduced-motion when useReducedMotion is present in source", () => {
+    const projectDir = path.join(tempRoot, "issue-94-use-reduced-motion");
+    fs.mkdirSync(path.join(projectDir, "src"), { recursive: true });
+    writeJson(path.join(projectDir, "package.json"), {
+      name: "issue-94-use-reduced-motion",
+      dependencies: { react: "^19.0.0", "framer-motion": "^11.0.0" },
+    });
+    writeFile(
+      path.join(projectDir, "src", "App.tsx"),
+      `import { useReducedMotion } from "framer-motion";
+export const App = () => {
+  const shouldReduceMotion = useReducedMotion();
+  return <div data-reduce-motion={String(shouldReduceMotion)} />;
+};
+`,
+    );
+    initGitRepo(projectDir, { commit: true });
+
+    const diagnostics = checkReducedMotion(projectDir);
+    expect(diagnostics).toHaveLength(0);
+  });
+
+  it("does not emit require-reduced-motion when prefers-reduced-motion appears in CSS", () => {
+    const projectDir = path.join(tempRoot, "issue-94-css-media-query");
+    fs.mkdirSync(path.join(projectDir, "src"), { recursive: true });
+    writeJson(path.join(projectDir, "package.json"), {
+      name: "issue-94-css-media-query",
+      dependencies: { react: "^19.0.0", motion: "^12.0.0" },
+    });
+    writeFile(
+      path.join(projectDir, "src", "styles.css"),
+      `@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.01ms;
+  }
+}
 `,
     );
     initGitRepo(projectDir, { commit: true });

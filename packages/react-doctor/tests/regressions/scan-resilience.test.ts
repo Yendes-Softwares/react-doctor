@@ -4,20 +4,13 @@
  * one bad input" failure mode.
  *
  * Covered closed issues:
- *   #29  — `extractFailedPluginName` must never throw on undefined / null
- *          / non-Error inputs (the "cannot read 'match' of undefined" crash)
  *   #46 + #84 — oxlint must batch include-paths so a 1k+-file diff
  *               (Windows ENAMETOOLONG) or 70+ test file batch (oxlint
  *               SIGABRT @ 2.8GB RAM) doesn't blow up
  *   #53  — source file count must fall back to filesystem walk when not
  *          inside a git repo
- *   #89  — `--offline` calculates the score locally (no network round trip)
  *   #115 — `--staged` snapshots git INDEX content (not working tree) so
  *          partially-staged hunks behave correctly
- *   #149 — empty / whitespace-only pattern strings reaching knip cause
- *          `picomatch` to throw `Expected pattern to be a non-empty
- *          string`, killing the whole dead-code step. The sanitizer
- *          strips them before `main()` runs.
  *   #141 — REACT_COMPILER_RULES must not be enabled in the oxlint config
  *          unless the `react-hooks-js` plugin actually resolved —
  *          otherwise oxlint errors with "Plugin 'react-hooks-js' not found".
@@ -34,30 +27,30 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 
-import { OXLINT_MAX_FILES_PER_BATCH, SPAWN_ARGS_MAX_LENGTH_CHARS } from "../../src/constants.js";
-import { calculateScoreLocally } from "../../src/utils/calculate-score-locally.js";
-import { createOxlintConfig } from "../../src/oxlint-config.js";
-import { batchIncludePaths } from "../../src/utils/batch-include-paths.js";
-import { discoverProject } from "../../src/utils/discover-project.js";
-import { extractFailedPluginName } from "../../src/utils/extract-failed-plugin-name.js";
-import { getStagedSourceFiles, materializeStagedFiles } from "../../src/utils/get-staged-files.js";
-import { sanitizeKnipConfigPatterns } from "../../src/utils/sanitize-knip-config-patterns.js";
-import { buildDiagnostic, initGitRepo, writeFile, writeJson } from "./_helpers.js";
+import {
+  batchIncludePaths,
+  createOxlintConfig,
+  OXLINT_MAX_FILES_PER_BATCH,
+  SPAWN_ARGS_MAX_LENGTH_CHARS,
+} from "@react-doctor/core";
+import {
+  clearPackageJsonCache,
+  discoverProject,
+  discoverReactSubprojects,
+  isDirectory,
+  readDirectoryEntries,
+  readPackageJson,
+} from "@react-doctor/project-info";
+import {
+  getStagedSourceFiles,
+  materializeStagedFiles,
+} from "../../src/cli/utils/get-staged-files.js";
+import { buildTestProject, initGitRepo, writeFile, writeJson } from "./_helpers.js";
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rd-scan-resilience-"));
 
 afterAll(() => {
   fs.rmSync(tempRoot, { recursive: true, force: true });
-});
-
-describe("issue #29: extract-failed-plugin-name handles bad inputs safely", () => {
-  it("never throws on undefined / null / non-Error inputs", () => {
-    expect(extractFailedPluginName(undefined)).toBeNull();
-    expect(extractFailedPluginName(null)).toBeNull();
-    expect(extractFailedPluginName({})).toBeNull();
-    expect(extractFailedPluginName({ message: undefined })).toBeNull();
-    expect(extractFailedPluginName(42)).toBeNull();
-  });
 });
 
 describe("issue #46 + #84: oxlint include-path batching", () => {
@@ -84,6 +77,33 @@ describe("issue #46 + #84: oxlint include-path batching", () => {
     expect(batches[0]).toHaveLength(OXLINT_MAX_FILES_PER_BATCH);
     expect(batches[1]).toHaveLength(OXLINT_MAX_FILES_PER_BATCH);
     expect(batches[2]).toHaveLength(5);
+    expect(batches.flat()).toEqual(includePaths);
+  });
+
+  it("batchIncludePaths keeps an exact OXLINT_MAX_FILES_PER_BATCH boundary in one batch", () => {
+    const baseArgs = ["oxlint", "-c", "/tmp/oxlintrc.json", "--format", "json"];
+    const includePaths = Array.from(
+      { length: OXLINT_MAX_FILES_PER_BATCH },
+      (_, index) => `src/exact-${index}.tsx`,
+    );
+
+    const batches = batchIncludePaths(baseArgs, includePaths);
+
+    expect(batches).toHaveLength(1);
+    expect(batches[0]).toEqual(includePaths);
+  });
+
+  it("batchIncludePaths never drops paths when splitting long mixed path sets", () => {
+    const baseArgs = ["oxlint", "-c", "/tmp/oxlintrc.json", "--format", "json"];
+    const longSegment = "nested-directory".repeat(12);
+    const includePaths = Array.from({ length: 350 }, (_, index) =>
+      index % 2 === 0 ? `src/${longSegment}/file-${index}.tsx` : `src/file-${index}.tsx`,
+    );
+
+    const batches = batchIncludePaths(baseArgs, includePaths);
+
+    expect(batches.length).toBeGreaterThan(1);
+    expect(new Set(batches.flat()).size).toBe(includePaths.length);
     expect(batches.flat()).toEqual(includePaths);
   });
 
@@ -139,31 +159,114 @@ describe("issue #53: source file count fallback for non-git directories", () => 
   });
 });
 
-describe("issue #89: --offline produces a score calculated locally", () => {
-  it("calculateScoreLocally returns a non-null score with a valid label", () => {
-    const score = calculateScoreLocally([
-      buildDiagnostic({ severity: "error", rule: "rule-a" }),
-      buildDiagnostic({ severity: "warning", rule: "rule-b" }),
-      buildDiagnostic({ severity: "warning", rule: "rule-b" }), // duplicate rule, dedup'd
-    ]);
-    expect(score).not.toBeNull();
-    expect(score.score).toBeGreaterThan(0);
-    expect(score.score).toBeLessThanOrEqual(100);
-    expect(["Great", "Needs work", "Critical"]).toContain(score.label);
+describe("issue #275 + #290: filesystem walks tolerate EPERM/EACCES (macOS Library/Accounts)", () => {
+  // On macOS, certain directories like ~/Library/Accounts are protected
+  // by TCC and throw EPERM on readdir even for the owning user. If the
+  // CLI is run from a parent directory (e.g. $HOME), the recursive
+  // discovery walk would crash the entire scan with:
+  //   EPERM: operation not permitted, scandir '/Users/<user>/Library/Accounts'
+  // The fix swallows ignorable readdir errors (EPERM, EACCES, ENOENT,
+  // ENOTDIR) and continues the walk so a single unreadable directory
+  // can't take down the whole run.
+  it("readDirectoryEntries returns [] for a non-existent path", () => {
+    const missingDirectory = path.join(tempRoot, "issue-275-missing-directory");
+    expect(readDirectoryEntries(missingDirectory)).toEqual([]);
   });
 
-  it("returns 100/Great when there are no diagnostics", () => {
-    expect(calculateScoreLocally([])).toEqual({ score: 100, label: "Great" });
+  it("readDirectoryEntries returns [] for a path that points at a file (ENOTDIR)", () => {
+    const filePath = path.join(tempRoot, "issue-275-not-a-directory.txt");
+    writeFile(filePath, "not a directory\n");
+    expect(readDirectoryEntries(filePath)).toEqual([]);
   });
 
-  it("does not require any network access", async () => {
-    // Sanity: no `fetch` involvement in the local scoring path.
-    const calculateSource = fs.readFileSync(
-      path.resolve(import.meta.dirname, "../../src/utils/calculate-score-locally.ts"),
-      "utf8",
-    );
-    expect(calculateSource).not.toContain("fetch(");
-    expect(calculateSource).not.toContain("api/score");
+  // Posix permission bits behave the way we expect on linux + macOS in CI.
+  // Skipped on Windows where chmod 0 doesn't deny readdir to the owner.
+  it("readDirectoryEntries returns [] for an unreadable directory (EACCES) on posix", () => {
+    if (process.platform === "win32") return;
+    if (process.getuid?.() === 0) return;
+
+    const unreadableDirectory = path.join(tempRoot, "issue-275-unreadable");
+    fs.mkdirSync(unreadableDirectory, { recursive: true });
+    fs.writeFileSync(path.join(unreadableDirectory, "child.txt"), "hidden\n");
+    fs.chmodSync(unreadableDirectory, 0o000);
+    try {
+      expect(readDirectoryEntries(unreadableDirectory)).toEqual([]);
+    } finally {
+      fs.chmodSync(unreadableDirectory, 0o755);
+    }
+  });
+
+  it("discoverReactSubprojects skips unreadable nested directories and keeps walking", () => {
+    if (process.platform === "win32") return;
+    if (process.getuid?.() === 0) return;
+
+    const walkRoot = path.join(tempRoot, "issue-275-walk-root");
+    fs.mkdirSync(walkRoot, { recursive: true });
+
+    writeJson(path.join(walkRoot, "accessible-app", "package.json"), {
+      name: "accessible-app",
+      dependencies: { react: "^19.0.0" },
+    });
+
+    const unreadableSibling = path.join(walkRoot, "Library", "Accounts");
+    fs.mkdirSync(unreadableSibling, { recursive: true });
+    fs.chmodSync(unreadableSibling, 0o000);
+
+    try {
+      const subprojects = discoverReactSubprojects(walkRoot);
+      const subprojectNames = subprojects.map((subproject) => subproject.name);
+      expect(subprojectNames).toContain("accessible-app");
+    } finally {
+      fs.chmodSync(unreadableSibling, 0o755);
+    }
+  });
+
+  // Same root cause as the readdir crash, one level deeper: when the
+  // walk reaches a package.json under a TCC-protected directory, the
+  // subsequent fs.readFileSync would throw EPERM and bring down the
+  // whole scan. Mirror EISDIR/EACCES handling for EPERM (macOS TCC)
+  // and ENOENT (race during long walks) so the unreadable manifest
+  // gets treated as an empty package.json instead of a fatal error.
+  it("readPackageJson returns {} for an unreadable manifest (EPERM/EACCES) on posix", () => {
+    if (process.platform === "win32") return;
+    if (process.getuid?.() === 0) return;
+
+    const projectDir = path.join(tempRoot, "issue-275-unreadable-manifest");
+    fs.mkdirSync(projectDir, { recursive: true });
+    const manifestPath = path.join(projectDir, "package.json");
+    writeJson(manifestPath, { name: "hidden", dependencies: { react: "^19.0.0" } });
+    clearPackageJsonCache();
+    fs.chmodSync(manifestPath, 0o000);
+    try {
+      expect(readPackageJson(manifestPath)).toEqual({});
+    } finally {
+      fs.chmodSync(manifestPath, 0o644);
+      clearPackageJsonCache();
+    }
+  });
+
+  it("readPackageJson returns {} when the manifest no longer exists (ENOENT)", () => {
+    const missingPath = path.join(tempRoot, "issue-275-missing-manifest", "package.json");
+    clearPackageJsonCache();
+    expect(readPackageJson(missingPath)).toEqual({});
+  });
+
+  // Resolves the unsafe `fs.existsSync && fs.statSync().isDirectory()`
+  // pattern that throws on EPERM if existsSync somehow returned true
+  // but statSync was denied (narrow race / TCC interaction).
+  it("isDirectory returns false rather than throwing for an inaccessible path", () => {
+    if (process.platform === "win32") return;
+    if (process.getuid?.() === 0) return;
+
+    const outerDirectory = path.join(tempRoot, "issue-275-isdir-outer");
+    const childDirectory = path.join(outerDirectory, "child");
+    fs.mkdirSync(childDirectory, { recursive: true });
+    fs.chmodSync(outerDirectory, 0o000);
+    try {
+      expect(isDirectory(childDirectory)).toBe(false);
+    } finally {
+      fs.chmodSync(outerDirectory, 0o755);
+    }
   });
 });
 
@@ -224,31 +327,6 @@ describe("issue #115: --staged uses git INDEX content, not working tree", () => 
   });
 });
 
-describe("issue #149: empty pattern strings cannot reach knip's picomatch matchers", () => {
-  it("strips empty/whitespace-only patterns from arrays, scalars, and nested plugin configs", () => {
-    const parsedConfig: Record<string, unknown> = {
-      entry: ["src/index.ts", "", "  "],
-      project: "",
-      ignore: ["", "node_modules/**"],
-      vite: { config: ["", "vite.config.ts"], entry: "  " },
-      workspaces: {
-        "packages/foo": { entry: ["", "src/index.ts"], ignore: "" },
-      },
-    };
-
-    sanitizeKnipConfigPatterns(parsedConfig);
-
-    expect(parsedConfig).toEqual({
-      entry: ["src/index.ts"],
-      ignore: ["node_modules/**"],
-      vite: { config: ["vite.config.ts"] },
-      workspaces: {
-        "packages/foo": { entry: ["src/index.ts"] },
-      },
-    });
-  });
-});
-
 describe("issue #141: oxlint config must not reference unloaded plugins", () => {
   // HACK: the bug only fires when eslint-plugin-react-hooks is missing
   // AND React Compiler is detected — so REACT_COMPILER_RULES (under the
@@ -292,7 +370,7 @@ describe("issue #141: oxlint config must not reference unloaded plugins", () => 
     for (const combination of allCombinations) {
       const config = createOxlintConfig({
         pluginPath: "/tmp/react-doctor-plugin.js",
-        ...combination,
+        project: buildTestProject({ rootDirectory: "/tmp/test", ...combination }),
       });
       const referencedPluginNames = collectReferencedPluginNames(config.rules);
       const loadedPluginNames = collectLoadedPluginNames(config);
@@ -309,9 +387,7 @@ describe("issue #141: oxlint config must not reference unloaded plugins", () => 
     // appear AND `react-hooks-js` must be in jsPlugins by name.
     const config = createOxlintConfig({
       pluginPath: "/tmp/react-doctor-plugin.js",
-      framework: "unknown",
-      hasReactCompiler: true,
-      hasTanStackQuery: false,
+      project: buildTestProject({ rootDirectory: "/tmp/test", hasReactCompiler: true }),
     });
 
     const reactHooksJsRuleKeys = Object.keys(config.rules).filter((ruleKey) =>
@@ -332,9 +408,7 @@ describe("issue #141: oxlint config must not reference unloaded plugins", () => 
     // works without uninstalling a workspace dependency.
     const config = createOxlintConfig({
       pluginPath: "/tmp/react-doctor-plugin.js",
-      framework: "unknown",
-      hasReactCompiler: true,
-      hasTanStackQuery: false,
+      project: buildTestProject({ rootDirectory: "/tmp/test", hasReactCompiler: true }),
       customRulesOnly: true,
     });
 
@@ -359,9 +433,7 @@ describe("issue #141: oxlint config must not reference unloaded plugins", () => 
     // shape — surfacing as warnings hid real perf regressions.
     const config = createOxlintConfig({
       pluginPath: "/tmp/react-doctor-plugin.js",
-      framework: "unknown",
-      hasReactCompiler: true,
-      hasTanStackQuery: false,
+      project: buildTestProject({ rootDirectory: "/tmp/test", hasReactCompiler: true }),
     });
 
     const compilerSeverities = Object.entries(config.rules)
@@ -382,9 +454,7 @@ describe("issue #141: oxlint config must not reference unloaded plugins", () => 
     // 'react-hooks-js'".
     const config = createOxlintConfig({
       pluginPath: "/tmp/react-doctor-plugin.js",
-      framework: "unknown",
-      hasReactCompiler: true,
-      hasTanStackQuery: false,
+      project: buildTestProject({ rootDirectory: "/tmp/test", hasReactCompiler: true }),
     });
     const pluginModule = await import("eslint-plugin-react-hooks");
     const availableRuleNames = new Set(
@@ -402,9 +472,7 @@ describe("issue #141: oxlint config must not reference unloaded plugins", () => 
   it("loads eslint-plugin-react-you-might-not-need-an-effect when installed (#187)", () => {
     const config = createOxlintConfig({
       pluginPath: "/tmp/react-doctor-plugin.js",
-      framework: "unknown",
-      hasReactCompiler: false,
-      hasTanStackQuery: false,
+      project: buildTestProject({ rootDirectory: "/tmp/test" }),
     });
 
     const effectRuleKeys = Object.keys(config.rules).filter((ruleKey) =>
@@ -422,9 +490,7 @@ describe("issue #141: oxlint config must not reference unloaded plugins", () => 
   it("emits no effect/* rules when customRulesOnly skips third-party plugins (#187)", () => {
     const config = createOxlintConfig({
       pluginPath: "/tmp/react-doctor-plugin.js",
-      framework: "unknown",
-      hasReactCompiler: false,
-      hasTanStackQuery: false,
+      project: buildTestProject({ rootDirectory: "/tmp/test" }),
       customRulesOnly: true,
     });
 
@@ -442,9 +508,7 @@ describe("issue #141: oxlint config must not reference unloaded plugins", () => 
   it("only enables effect/* rules that the resolved plugin actually exports (#187)", async () => {
     const config = createOxlintConfig({
       pluginPath: "/tmp/react-doctor-plugin.js",
-      framework: "unknown",
-      hasReactCompiler: false,
-      hasTanStackQuery: false,
+      project: buildTestProject({ rootDirectory: "/tmp/test" }),
     });
     const pluginModule = await import("eslint-plugin-react-you-might-not-need-an-effect");
     const availableRuleNames = new Set(

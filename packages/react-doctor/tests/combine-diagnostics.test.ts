@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
-import type { Diagnostic, ReactDoctorConfig } from "../src/types.js";
-import { combineDiagnostics } from "../src/utils/combine-diagnostics.js";
-import { computeJsxIncludePaths } from "../src/utils/jsx-include-paths.js";
+import type { Diagnostic, ReactDoctorConfig } from "@react-doctor/types";
+import { combineDiagnostics, computeJsxIncludePaths } from "@react-doctor/core";
 
 const createDiagnostic = (overrides: Partial<Diagnostic> = {}): Diagnostic => ({
   filePath: "src/app.tsx",
@@ -35,26 +34,22 @@ describe("computeJsxIncludePaths", () => {
 });
 
 describe("combineDiagnostics", () => {
-  it("merges lint and dead code diagnostics", () => {
+  it("returns lint diagnostics unchanged in diff mode", () => {
     const lintDiagnostics = [createDiagnostic({ rule: "lint-rule" })];
-    const deadCodeDiagnostics = [createDiagnostic({ rule: "dead-code-rule" })];
 
     const result = combineDiagnostics({
       lintDiagnostics,
-      deadCodeDiagnostics,
       directory: "/tmp",
       isDiffMode: true,
       userConfig: null,
     });
-    expect(result).toHaveLength(2);
+    expect(result).toHaveLength(1);
     expect(result[0].rule).toBe("lint-rule");
-    expect(result[1].rule).toBe("dead-code-rule");
   });
 
-  it("returns empty array when both inputs are empty in diff mode", () => {
+  it("returns empty array when input is empty in diff mode", () => {
     const result = combineDiagnostics({
       lintDiagnostics: [],
-      deadCodeDiagnostics: [],
       directory: "/tmp",
       isDiffMode: true,
       userConfig: null,
@@ -73,7 +68,6 @@ describe("combineDiagnostics", () => {
 
     const result = combineDiagnostics({
       lintDiagnostics: diagnostics,
-      deadCodeDiagnostics: [],
       directory: "/tmp",
       isDiffMode: true,
       userConfig: config,
@@ -86,7 +80,6 @@ describe("combineDiagnostics", () => {
     const diagnostics = [createDiagnostic(), createDiagnostic()];
     const result = combineDiagnostics({
       lintDiagnostics: diagnostics,
-      deadCodeDiagnostics: [],
       directory: "/tmp",
       isDiffMode: true,
       userConfig: null,

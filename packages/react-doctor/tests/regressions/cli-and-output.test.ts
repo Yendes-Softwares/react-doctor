@@ -5,12 +5,12 @@
  *
  * Covered closed issues:
  *   #43 — silent global `npm install -g` removed and must not return
- *   #50 — `--lint` and `--dead-code` exist as positive flags so they can
- *         override a config that disables them
+ *   #50 — `--lint` exists as a positive flag so it can override a config
+ *         that disables it
  *   #66 + #81 — GitHub Actions annotation-property encoding
  *   #92 — `share: false` config option exists in the schema and is read
  *         by the scan banner
- *   #135 — dead-code failures surface in `skippedChecks`, never silently
+ *   #135 — lint failures surface in `skippedChecks`, never silently
  */
 
 import fs from "node:fs";
@@ -18,12 +18,12 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 
-import { scan } from "../../src/scan.js";
-import type { ReactDoctorConfig, ScanResult } from "../../src/types.js";
+import { inspect } from "../../src/inspect.js";
+import type { InspectResult, ReactDoctorConfig } from "@react-doctor/types";
 import {
   encodeAnnotationProperty,
   encodeAnnotationMessage,
-} from "../../src/utils/annotation-encoding.js";
+} from "../../src/cli/utils/annotation-encoding.js";
 import { setupReactProject, writeFile, writeJson } from "./_helpers.js";
 
 const PACKAGE_ROOT = path.resolve(import.meta.dirname, "..", "..");
@@ -41,14 +41,14 @@ const setupMinimalReactProject = (caseId: string): string =>
 
 const stripAnsi = (text: string): string => text.replace(ANSI_ESCAPE_PATTERN, "");
 
-// Capture every line `scan()` writes to console while it runs. We use
+// Capture every line `inspect()` writes to console while it runs. We use
 // real I/O (logger / spinner / console.log) rather than scrub source
 // text — testing observable behavior survives refactors that move
 // strings around.
 const captureScanOutput = async (
   projectDir: string,
-  options: Parameters<typeof scan>[1],
-): Promise<{ result: ScanResult; stdout: string; stderr: string }> => {
+  options: Parameters<typeof inspect>[1],
+): Promise<{ result: InspectResult; stdout: string; stderr: string }> => {
   const stdout: string[] = [];
   const stderr: string[] = [];
   const originalLog = console.log;
@@ -60,7 +60,7 @@ const captureScanOutput = async (
   console.error = (...args: unknown[]) => stderr.push(args.join(" "));
   console.warn = (...args: unknown[]) => stderr.push(args.join(" "));
   try {
-    const result = await scan(projectDir, options);
+    const result = await inspect(projectDir, options);
     return { result, stdout: stdout.join("\n"), stderr: stderr.join("\n") };
   } finally {
     console.log = originalLog;
@@ -70,18 +70,16 @@ const captureScanOutput = async (
   }
 };
 
-describe("issue #50: CLI flags can re-enable lint/dead-code that config disabled", () => {
-  it("scan(directory, { lint: true }) overrides a `lint: false` config", async () => {
+describe("issue #50: CLI flags can re-enable lint that config disabled", () => {
+  it("inspect(directory, { lint: true }) overrides a `lint: false` config", async () => {
     const projectDir = setupMinimalReactProject("issue-50-lint");
     writeJson(path.join(projectDir, "react-doctor.config.json"), {
       lint: false,
-      deadCode: false,
     });
     // Pass lint:true explicitly — the resolved options must include lint=true
     // even though the config said false.
     const { result } = await captureScanOutput(projectDir, {
       lint: true,
-      deadCode: true,
       offline: true,
       silent: true,
     });
@@ -91,16 +89,14 @@ describe("issue #50: CLI flags can re-enable lint/dead-code that config disabled
     expect(result.skippedChecks).not.toContain("lint");
   });
 
-  it("scan(directory, { lint: false }) overrides a `lint: true` config", async () => {
+  it("inspect(directory, { lint: false }) overrides a `lint: true` config", async () => {
     const projectDir = setupMinimalReactProject("issue-50-no-lint");
     writeJson(path.join(projectDir, "react-doctor.config.json"), { lint: true });
     const { result } = await captureScanOutput(projectDir, {
       lint: false,
-      deadCode: false,
       offline: true,
       silent: true,
     });
-    // With lint disabled, no lint diagnostics can appear. Knip is also off.
     expect(result.diagnostics.filter((d) => d.plugin === "react-doctor")).toHaveLength(0);
   });
 });
@@ -193,7 +189,6 @@ export const Cart = () => {
 
     const { stdout } = await captureScanOutput(projectDir, {
       lint: true,
-      deadCode: false,
       offline: true,
     });
     const normalizedStdout = stripAnsi(stdout);
@@ -208,12 +203,11 @@ export const Cart = () => {
   });
 });
 
-describe("issue #135: dead-code failures surface in skippedChecks", () => {
-  it("scan() returns a `skippedChecks` array on the result", async () => {
+describe("issue #135: lint failures surface in skippedChecks", () => {
+  it("inspect() returns a `skippedChecks` array on the result", async () => {
     const projectDir = setupMinimalReactProject("issue-135");
     const { result } = await captureScanOutput(projectDir, {
       lint: false,
-      deadCode: false,
       offline: true,
       silent: true,
     });

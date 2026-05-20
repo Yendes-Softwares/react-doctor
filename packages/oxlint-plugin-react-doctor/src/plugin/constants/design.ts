@@ -1,0 +1,74 @@
+export const Z_INDEX_ABSURD_THRESHOLD = 100;
+
+export const INLINE_STYLE_PROPERTY_THRESHOLD = 8;
+
+export const SIDE_TAB_BORDER_WIDTH_WITHOUT_RADIUS_PX = 3;
+
+export const SIDE_TAB_BORDER_WIDTH_WITH_RADIUS_PX = 1;
+
+export const SIDE_TAB_TAILWIND_WIDTH_WITHOUT_RADIUS = 4;
+
+export const DARK_GLOW_BLUR_THRESHOLD_PX = 4;
+
+export const DARK_BACKGROUND_CHANNEL_MAX = 35;
+
+export const COLOR_CHROMA_THRESHOLD = 30;
+
+export const TINY_TEXT_THRESHOLD_PX = 12;
+
+export const WIDE_TRACKING_THRESHOLD_EM = 0.05;
+
+export const LONG_TRANSITION_DURATION_THRESHOLD_MS = 1000;
+
+export const HEAVY_HEADING_FONT_WEIGHT_MIN = 700;
+
+export const HEADING_TAG_NAMES = new Set(["h1", "h2", "h3", "h4", "h5", "h6"]);
+
+export const HEAVY_HEADING_TAILWIND_WEIGHTS = new Set([
+  "font-bold",
+  "font-extrabold",
+  "font-black",
+]);
+
+export const VAGUE_BUTTON_LABELS = new Set([
+  "continue",
+  "submit",
+  "ok",
+  "okay",
+  "click here",
+  "here",
+  "yes",
+  "no",
+  "go",
+  "done",
+]);
+
+export const TYPOGRAPHY_PUNCTUATION_EXCLUDED_TAG_NAMES = new Set([
+  "code",
+  "pre",
+  "kbd",
+  "samp",
+  "var",
+  "tt",
+]);
+
+// HACK: trailing boundary uses a LOOKAHEAD `(?=...)` so the whitespace
+// between Tailwind tokens isn't consumed. With a consuming `(?:$|\s|:)`
+// trailing group, `matchAll` over `"px-4 px-6"` would catch `px-4` plus
+// the trailing space, then fail to find a leading `\s` boundary for
+// `px-6` because we just ate it — silently skipping the second token.
+export const PADDING_HORIZONTAL_AXIS_PATTERN =
+  /(?:^|\s)(-?)px-(\d+(?:\.\d+)?|\[[^\]]+\])(?=$|[\s:])/g;
+
+export const PADDING_VERTICAL_AXIS_PATTERN =
+  /(?:^|\s)(-?)py-(\d+(?:\.\d+)?|\[[^\]]+\])(?=$|[\s:])/g;
+
+export const SIZE_WIDTH_AXIS_PATTERN = /(?:^|\s)(-?)w-(\d+(?:\.\d+)?|\[[^\]]+\])(?=$|[\s:])/g;
+
+export const SIZE_HEIGHT_AXIS_PATTERN = /(?:^|\s)(-?)h-(\d+(?:\.\d+)?|\[[^\]]+\])(?=$|[\s:])/g;
+
+export const FLEX_OR_GRID_DISPLAY_TOKENS = new Set(["flex", "inline-flex", "grid", "inline-grid"]);
+
+export const SPACE_AXIS_PATTERN = /(?:^|\s)(?:-)?space-(x|y)-(\d+(?:\.\d+)?|\[[^\]]+\])(?=$|[\s:])/;
+
+export const TRAILING_THREE_PERIOD_ELLIPSIS_PATTERN = /[A-Za-z]\.\.\./;

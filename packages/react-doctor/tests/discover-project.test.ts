@@ -7,7 +7,7 @@ import {
   discoverReactSubprojects,
   formatFrameworkName,
   listWorkspacePackages,
-} from "../src/utils/discover-project.js";
+} from "@react-doctor/project-info";
 
 const FIXTURES_DIRECTORY = path.resolve(import.meta.dirname, "fixtures");
 const VALID_FRAMEWORKS = ["nextjs", "vite", "cra", "remix", "gatsby", "unknown"];
@@ -33,6 +33,22 @@ describe("discoverProject", () => {
     expect(projectInfo.reactVersion).toBe("^18.0.0 || ^19.0.0");
   });
 
+  it("detects React version from devDependencies only", () => {
+    const projectDirectory = path.join(tempDirectory, "react-in-dev-deps-only");
+    fs.mkdirSync(projectDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDirectory, "package.json"),
+      JSON.stringify({
+        name: "react-in-dev-deps-only",
+        devDependencies: { react: "^18.3.1", "react-dom": "^18.3.1" },
+      }),
+    );
+
+    const projectInfo = discoverProject(projectDirectory);
+    expect(projectInfo.reactVersion).toBe("^18.3.1");
+    expect(projectInfo.reactMajorVersion).toBe(18);
+  });
+
   it("detects Tailwind version from devDependencies when present", () => {
     const projectDirectory = path.join(tempDirectory, "tw-from-dev-deps");
     fs.mkdirSync(projectDirectory, { recursive: true });
@@ -47,6 +63,82 @@ describe("discoverProject", () => {
 
     const projectInfo = discoverProject(projectDirectory);
     expect(projectInfo.tailwindVersion).toBe("^3.4.1");
+  });
+
+  it("prefers runtime React dependencies over conflicting devDependencies", () => {
+    const projectDirectory = path.join(tempDirectory, "react-runtime-over-dev-deps");
+    fs.mkdirSync(projectDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDirectory, "package.json"),
+      JSON.stringify({
+        name: "react-runtime-over-dev-deps",
+        dependencies: { react: "^18.3.1" },
+        devDependencies: { react: "^19.0.0" },
+      }),
+    );
+
+    const projectInfo = discoverProject(projectDirectory);
+    expect(projectInfo.reactVersion).toBe("^18.3.1");
+    expect(projectInfo.reactMajorVersion).toBe(18);
+  });
+
+  it("uses concrete React devDependencies when runtime React uses an unresolvable workspace protocol", () => {
+    const projectDirectory = path.join(tempDirectory, "react-workspace-protocol-over-dev-deps");
+    fs.mkdirSync(projectDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDirectory, "package.json"),
+      JSON.stringify({
+        name: "react-workspace-protocol-over-dev-deps",
+        dependencies: { react: "workspace:*" },
+        devDependencies: { react: "^18.3.1" },
+      }),
+    );
+
+    const projectInfo = discoverProject(projectDirectory);
+    expect(projectInfo.reactVersion).toBe("^18.3.1");
+    expect(projectInfo.reactMajorVersion).toBe(18);
+  });
+
+  it("uses concrete React devDependencies when peer React uses an unresolvable workspace protocol", () => {
+    const projectDirectory = path.join(
+      tempDirectory,
+      "react-peer-workspace-protocol-over-dev-deps",
+    );
+    fs.mkdirSync(projectDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDirectory, "package.json"),
+      JSON.stringify({
+        name: "react-peer-workspace-protocol-over-dev-deps",
+        peerDependencies: { react: "workspace:*" },
+        devDependencies: { react: "^18.3.1" },
+      }),
+    );
+
+    const projectInfo = discoverProject(projectDirectory);
+    expect(projectInfo.reactVersion).toBe("^18.3.1");
+    expect(projectInfo.reactMajorVersion).toBe(18);
+  });
+
+  it("prefers runtime React catalog declarations over concrete devDependencies", () => {
+    const monorepoRoot = path.join(tempDirectory, "react-runtime-catalog-over-dev-deps");
+    fs.mkdirSync(path.join(monorepoRoot, "apps", "web"), { recursive: true });
+    fs.writeFileSync(
+      path.join(monorepoRoot, "pnpm-workspace.yaml"),
+      "packages:\n  - apps/*\n\ncatalog:\n  react: ^18.3.1\n",
+    );
+    fs.writeFileSync(path.join(monorepoRoot, "package.json"), JSON.stringify({ name: "root" }));
+    fs.writeFileSync(
+      path.join(monorepoRoot, "apps", "web", "package.json"),
+      JSON.stringify({
+        name: "web",
+        dependencies: { react: "catalog:" },
+        devDependencies: { react: "^19.0.0" },
+      }),
+    );
+
+    const projectInfo = discoverProject(path.join(monorepoRoot, "apps", "web"));
+    expect(projectInfo.reactVersion).toBe("^18.3.1");
+    expect(projectInfo.reactMajorVersion).toBe(18);
   });
 
   it("returns null tailwindVersion when neither the project nor its monorepo root depend on Tailwind", () => {
@@ -87,6 +179,43 @@ describe("discoverProject", () => {
     expect(projectInfo.tailwindVersion).toBe("^4.0.0");
   });
 
+  it("uses concrete Tailwind devDependencies when runtime Tailwind uses an unresolvable workspace protocol", () => {
+    const projectDirectory = path.join(tempDirectory, "tw-workspace-protocol-over-dev-deps");
+    fs.mkdirSync(projectDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDirectory, "package.json"),
+      JSON.stringify({
+        name: "tw-workspace-protocol-over-dev-deps",
+        dependencies: { react: "^19.0.0", tailwindcss: "workspace:*" },
+        devDependencies: { tailwindcss: "^3.4.1" },
+      }),
+    );
+
+    const projectInfo = discoverProject(projectDirectory);
+    expect(projectInfo.tailwindVersion).toBe("^3.4.1");
+  });
+
+  it("prefers Tailwind dependency catalog declarations over concrete devDependencies", () => {
+    const monorepoRoot = path.join(tempDirectory, "tw-runtime-catalog-over-dev-deps");
+    fs.mkdirSync(path.join(monorepoRoot, "packages", "ui"), { recursive: true });
+    fs.writeFileSync(
+      path.join(monorepoRoot, "pnpm-workspace.yaml"),
+      "packages:\n  - packages/*\n\ncatalog:\n  tailwindcss: ^4.0.0\n",
+    );
+    fs.writeFileSync(path.join(monorepoRoot, "package.json"), JSON.stringify({ name: "root" }));
+    fs.writeFileSync(
+      path.join(monorepoRoot, "packages", "ui", "package.json"),
+      JSON.stringify({
+        name: "ui",
+        dependencies: { tailwindcss: "catalog:" },
+        devDependencies: { tailwindcss: "^3.4.1" },
+      }),
+    );
+
+    const projectInfo = discoverProject(path.join(monorepoRoot, "packages", "ui"));
+    expect(projectInfo.tailwindVersion).toBe("^4.0.0");
+  });
+
   it("throws when package.json is missing", () => {
     expect(() => discoverProject("/nonexistent/path")).toThrow("No package.json found");
   });
@@ -104,6 +233,236 @@ describe("discoverProject", () => {
       path.join(FIXTURES_DIRECTORY, "pnpm-catalog-workspace", "packages", "ui"),
     );
     expect(projectInfo.reactVersion).toBe("^19.0.0");
+  });
+
+  it("prefers concrete workspace React versions over root catalog fallback", () => {
+    const monorepoRoot = path.join(tempDirectory, "workspace-react-over-root-catalog");
+    fs.mkdirSync(path.join(monorepoRoot, "apps", "web"), { recursive: true });
+    fs.writeFileSync(
+      path.join(monorepoRoot, "pnpm-workspace.yaml"),
+      "packages:\n  - apps/*\n\ncatalog:\n  react: ^19.0.0\n",
+    );
+    fs.writeFileSync(path.join(monorepoRoot, "package.json"), JSON.stringify({ name: "root" }));
+    fs.writeFileSync(
+      path.join(monorepoRoot, "apps", "web", "package.json"),
+      JSON.stringify({
+        name: "web",
+        dependencies: { react: "^18.3.1" },
+      }),
+    );
+
+    const projectInfo = discoverProject(monorepoRoot);
+    expect(projectInfo.reactVersion).toBe("^18.3.1");
+    expect(projectInfo.reactMajorVersion).toBe(18);
+  });
+
+  it("resolves workspace catalog React versions from the monorepo root", () => {
+    const monorepoRoot = path.join(tempDirectory, "root-scan-workspace-catalog");
+    fs.mkdirSync(path.join(monorepoRoot, "apps", "web"), { recursive: true });
+    fs.writeFileSync(
+      path.join(monorepoRoot, "pnpm-workspace.yaml"),
+      "packages:\n  - apps/*\n\ncatalog:\n  react: ^19.0.0\n  tailwindcss: ^4.0.0\n",
+    );
+    fs.writeFileSync(path.join(monorepoRoot, "package.json"), JSON.stringify({ name: "root" }));
+    fs.writeFileSync(
+      path.join(monorepoRoot, "apps", "web", "package.json"),
+      JSON.stringify({
+        name: "web",
+        dependencies: { react: "catalog:", tailwindcss: "catalog:" },
+      }),
+    );
+
+    const projectInfo = discoverProject(monorepoRoot);
+    expect(projectInfo.reactVersion).toBe("^19.0.0");
+    expect(projectInfo.reactMajorVersion).toBe(19);
+    expect(projectInfo.tailwindVersion).toBe("^4.0.0");
+  });
+
+  it("prefers dependency catalog references over devDependency catalog references", () => {
+    const monorepoRoot = path.join(tempDirectory, "dependency-catalog-over-dev-catalog");
+    fs.mkdirSync(path.join(monorepoRoot, "apps", "web"), { recursive: true });
+    fs.writeFileSync(
+      path.join(monorepoRoot, "pnpm-workspace.yaml"),
+      "packages:\n  - apps/*\n\ncatalogs:\n  react18:\n    react: ^18.3.1\n  react19:\n    react: ^19.0.0\n",
+    );
+    fs.writeFileSync(path.join(monorepoRoot, "package.json"), JSON.stringify({ name: "root" }));
+    fs.writeFileSync(
+      path.join(monorepoRoot, "apps", "web", "package.json"),
+      JSON.stringify({
+        name: "web",
+        dependencies: { react: "catalog:react18" },
+        devDependencies: { react: "catalog:react19" },
+      }),
+    );
+
+    const projectInfo = discoverProject(monorepoRoot);
+    expect(projectInfo.reactVersion).toBe("^18.3.1");
+    expect(projectInfo.reactMajorVersion).toBe(18);
+  });
+
+  it("preserves default catalog references when devDependencies use named catalogs", () => {
+    const monorepoRoot = path.join(tempDirectory, "default-catalog-over-dev-named-catalog");
+    fs.mkdirSync(path.join(monorepoRoot, "apps", "web"), { recursive: true });
+    fs.writeFileSync(
+      path.join(monorepoRoot, "pnpm-workspace.yaml"),
+      "packages:\n  - apps/*\n\ncatalog:\n  react: ^18.3.1\ncatalogs:\n  react19:\n    react: ^19.0.0\n",
+    );
+    fs.writeFileSync(path.join(monorepoRoot, "package.json"), JSON.stringify({ name: "root" }));
+    fs.writeFileSync(
+      path.join(monorepoRoot, "apps", "web", "package.json"),
+      JSON.stringify({
+        name: "web",
+        dependencies: { react: "catalog:" },
+        devDependencies: { react: "catalog:react19" },
+      }),
+    );
+
+    const projectInfo = discoverProject(monorepoRoot);
+    expect(projectInfo.reactVersion).toBe("^18.3.1");
+    expect(projectInfo.reactMajorVersion).toBe(18);
+  });
+
+  it("does not resolve default catalog references from unrelated named catalogs", () => {
+    const monorepoRoot = path.join(tempDirectory, "default-catalog-skips-unrelated-named-catalog");
+    fs.mkdirSync(path.join(monorepoRoot, "apps", "web"), { recursive: true });
+    fs.writeFileSync(
+      path.join(monorepoRoot, "pnpm-workspace.yaml"),
+      "packages:\n  - apps/*\n\ncatalogs:\n  react19:\n    react: ^19.0.0\n",
+    );
+    fs.writeFileSync(path.join(monorepoRoot, "package.json"), JSON.stringify({ name: "root" }));
+    fs.writeFileSync(
+      path.join(monorepoRoot, "apps", "web", "package.json"),
+      JSON.stringify({
+        name: "web",
+        dependencies: { react: "catalog:" },
+      }),
+    );
+
+    const projectInfo = discoverProject(path.join(monorepoRoot, "apps", "web"));
+    expect(projectInfo.reactVersion).toBeNull();
+    expect(projectInfo.reactMajorVersion).toBeNull();
+  });
+
+  it("does not apply root React catalogs to workspaces without React declarations", () => {
+    const monorepoRoot = path.join(tempDirectory, "root-catalog-skips-non-react-workspaces");
+    fs.mkdirSync(path.join(monorepoRoot, "apps", "web"), { recursive: true });
+    fs.mkdirSync(path.join(monorepoRoot, "packages", "eslint-config"), { recursive: true });
+    fs.writeFileSync(
+      path.join(monorepoRoot, "pnpm-workspace.yaml"),
+      "packages:\n  - apps/*\n  - packages/*\n\ncatalog:\n  react: ^17.0.0\n",
+    );
+    fs.writeFileSync(path.join(monorepoRoot, "package.json"), JSON.stringify({ name: "root" }));
+    fs.writeFileSync(
+      path.join(monorepoRoot, "apps", "web", "package.json"),
+      JSON.stringify({
+        name: "web",
+        dependencies: { react: "^18.3.1" },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(monorepoRoot, "packages", "eslint-config", "package.json"),
+      JSON.stringify({
+        name: "eslint-config",
+        devDependencies: { eslint: "^9.0.0" },
+      }),
+    );
+
+    const projectInfo = discoverProject(monorepoRoot);
+    expect(projectInfo.reactVersion).toBe("^18.3.1");
+    expect(projectInfo.reactMajorVersion).toBe(18);
+  });
+
+  it("continues workspace scanning for Tailwind after finding React and a framework", () => {
+    const monorepoRoot = path.join(tempDirectory, "workspace-tailwind-after-react-framework");
+    fs.mkdirSync(path.join(monorepoRoot, "apps", "web"), { recursive: true });
+    fs.mkdirSync(path.join(monorepoRoot, "packages", "ui"), { recursive: true });
+    fs.writeFileSync(
+      path.join(monorepoRoot, "pnpm-workspace.yaml"),
+      "packages:\n  - apps/*\n  - packages/*\n",
+    );
+    fs.writeFileSync(path.join(monorepoRoot, "package.json"), JSON.stringify({ name: "root" }));
+    fs.writeFileSync(
+      path.join(monorepoRoot, "apps", "web", "package.json"),
+      JSON.stringify({
+        name: "web",
+        dependencies: { react: "^17.0.2", vite: "^5.0.0" },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(monorepoRoot, "packages", "ui", "package.json"),
+      JSON.stringify({
+        name: "ui",
+        devDependencies: { tailwindcss: "^4.0.0" },
+      }),
+    );
+
+    const projectInfo = discoverProject(monorepoRoot);
+    expect(projectInfo.reactVersion).toBe("^17.0.2");
+    expect(projectInfo.framework).toBe("vite");
+    expect(projectInfo.tailwindVersion).toBe("^4.0.0");
+  });
+
+  it("does not apply monorepo dependency versions to a leaf without declarations", () => {
+    const monorepoRoot = path.join(tempDirectory, "leaf-skips-root-dependency-fallbacks");
+    fs.mkdirSync(path.join(monorepoRoot, "apps", "web"), { recursive: true });
+    fs.mkdirSync(path.join(monorepoRoot, "packages", "eslint-config"), { recursive: true });
+    fs.writeFileSync(
+      path.join(monorepoRoot, "pnpm-workspace.yaml"),
+      "packages:\n  - apps/*\n  - packages/*\n\ncatalog:\n  react: ^19.0.0\n  tailwindcss: ^4.0.0\n",
+    );
+    fs.writeFileSync(
+      path.join(monorepoRoot, "package.json"),
+      JSON.stringify({
+        name: "root",
+        devDependencies: { react: "^19.0.0", tailwindcss: "^4.0.0" },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(monorepoRoot, "apps", "web", "package.json"),
+      JSON.stringify({
+        name: "web",
+        dependencies: { react: "catalog:", tailwindcss: "catalog:" },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(monorepoRoot, "packages", "eslint-config", "package.json"),
+      JSON.stringify({
+        name: "eslint-config",
+        devDependencies: { eslint: "^9.0.0" },
+      }),
+    );
+
+    const projectInfo = discoverProject(path.join(monorepoRoot, "packages", "eslint-config"));
+    expect(projectInfo.reactVersion).toBeNull();
+    expect(projectInfo.reactMajorVersion).toBeNull();
+    expect(projectInfo.tailwindVersion).toBeNull();
+  });
+
+  it("uses monorepo React fallback for Next leaf packages without direct React declarations", () => {
+    const monorepoRoot = path.join(tempDirectory, "next-leaf-uses-root-react-fallback");
+    fs.mkdirSync(path.join(monorepoRoot, "packages", "next-adapter"), { recursive: true });
+    fs.writeFileSync(
+      path.join(monorepoRoot, "pnpm-workspace.yaml"),
+      "packages:\n  - packages/*\n\ncatalog:\n  react: ^19.0.0\n  next: ^16.0.0\n",
+    );
+    fs.writeFileSync(
+      path.join(monorepoRoot, "package.json"),
+      JSON.stringify({
+        name: "root",
+        devDependencies: { react: "catalog:", next: "catalog:" },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(monorepoRoot, "packages", "next-adapter", "package.json"),
+      JSON.stringify({
+        name: "next-adapter",
+        peerDependencies: { next: ">=15" },
+      }),
+    );
+
+    const projectInfo = discoverProject(path.join(monorepoRoot, "packages", "next-adapter"));
+    expect(projectInfo.reactVersion).toBe("^19.0.0");
+    expect(projectInfo.reactMajorVersion).toBe(19);
   });
 
   it("resolves React version from pnpm workspace named catalog", () => {
@@ -125,6 +484,36 @@ describe("discoverProject", () => {
       path.join(FIXTURES_DIRECTORY, "bun-grouped-catalog", "apps", "web"),
     );
     expect(projectInfo.reactVersion).toBe("19.2.0");
+  });
+
+  it("resolves React version from a Bun grouped catalog when the leaf also uses devDependencies", () => {
+    const monorepoRoot = path.join(tempDirectory, "bun-grouped-catalog-dev-deps");
+    fs.mkdirSync(path.join(monorepoRoot, "apps", "web"), { recursive: true });
+    fs.writeFileSync(
+      path.join(monorepoRoot, "package.json"),
+      JSON.stringify({
+        name: "monorepo",
+        private: true,
+        workspaces: ["apps/*"],
+        catalogs: {
+          react19: {
+            react: "19.2.1",
+            "react-dom": "19.2.1",
+          },
+        },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(monorepoRoot, "apps", "web", "package.json"),
+      JSON.stringify({
+        name: "web",
+        devDependencies: { react: "catalog:react19", "react-dom": "catalog:react19" },
+      }),
+    );
+
+    const projectInfo = discoverProject(path.join(monorepoRoot, "apps", "web"));
+    expect(projectInfo.reactVersion).toBe("19.2.1");
+    expect(projectInfo.reactMajorVersion).toBe(19);
   });
 
   it("picks the leaf-referenced group when multiple Bun grouped catalogs define the same package", () => {
@@ -213,6 +602,30 @@ describe("discoverProject", () => {
     expect(projectInfo.reactVersion).toBe("^19.0.0");
   });
 
+  it("discovers React and framework from workspace packages when scanning a monorepo root", () => {
+    const monorepoRoot = path.join(tempDirectory, "root-project-from-workspace-packages");
+    fs.mkdirSync(path.join(monorepoRoot, "apps", "web"), { recursive: true });
+    fs.writeFileSync(
+      path.join(monorepoRoot, "package.json"),
+      JSON.stringify({
+        name: "monorepo-root",
+        private: true,
+        workspaces: ["apps/*"],
+      }),
+    );
+    fs.writeFileSync(
+      path.join(monorepoRoot, "apps", "web", "package.json"),
+      JSON.stringify({
+        name: "web",
+        dependencies: { next: "^15.0.0", react: "^19.0.0", "react-dom": "^19.0.0" },
+      }),
+    );
+
+    const projectInfo = discoverProject(monorepoRoot);
+    expect(projectInfo.reactVersion).toBe("^19.0.0");
+    expect(projectInfo.framework).toBe("nextjs");
+  });
+
   it("does not detect React Compiler when next.config sets reactCompiler to false", () => {
     const projectDirectory = path.join(tempDirectory, "next-react-compiler-disabled");
     fs.mkdirSync(projectDirectory, { recursive: true });
@@ -271,6 +684,57 @@ describe("listWorkspacePackages", () => {
     expect(packageNames).toContain("monorepo-root");
     expect(packageNames).toContain("ui");
     expect(packages).toHaveLength(2);
+  });
+
+  it("supports package.json workspaces object form", () => {
+    const rootDirectory = path.join(tempDirectory, "workspace-object-form");
+    const appDirectory = path.join(rootDirectory, "apps", "web");
+    fs.mkdirSync(appDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(rootDirectory, "package.json"),
+      JSON.stringify({
+        name: "workspace-object-root",
+        workspaces: { packages: ["apps/*"] },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(appDirectory, "package.json"),
+      JSON.stringify({ name: "web", dependencies: { react: "^19.0.0" } }),
+    );
+
+    const packages = listWorkspacePackages(rootDirectory);
+    expect(packages).toEqual([{ name: "web", directory: appDirectory }]);
+  });
+
+  // HACK: cal.com's workspace patterns include both `"packages/*"` AND
+  // `"packages/app-store"` — overlapping globs that resolve the same
+  // directory through two patterns. Without dedup-by-directory the
+  // same workspace gets scanned twice and downstream every diagnostic
+  // is emitted twice. Pin the invariant that overlapping patterns
+  // produce ONE entry per directory.
+  it("dedupes packages discovered via overlapping workspace patterns (same directory matched twice)", () => {
+    const rootDirectory = path.join(tempDirectory, "overlapping-workspaces");
+    fs.mkdirSync(path.join(rootDirectory, "packages", "ui"), { recursive: true });
+    fs.writeFileSync(
+      path.join(rootDirectory, "package.json"),
+      JSON.stringify({
+        name: "monorepo-root",
+        workspaces: ["packages/*", "packages/ui"],
+      }),
+    );
+    fs.writeFileSync(
+      path.join(rootDirectory, "packages", "ui", "package.json"),
+      JSON.stringify({ name: "@example/ui", dependencies: { react: "^19.0.0" } }),
+    );
+
+    const packages = listWorkspacePackages(rootDirectory);
+    const directories = packages.map((workspacePackage) => workspacePackage.directory);
+    const uiOccurrences = directories.filter((directory) =>
+      directory.endsWith(path.join("packages", "ui")),
+    );
+
+    expect(packages, "overlapping workspace patterns should yield one entry").toHaveLength(1);
+    expect(uiOccurrences, "packages/ui should appear exactly once").toHaveLength(1);
   });
 });
 
@@ -415,6 +879,207 @@ describe("discoverReactSubprojects", () => {
     const packages = discoverReactSubprojects(rootDirectory);
     expect(packages).toHaveLength(1);
     expect(packages[0].name).toBe("my-app");
+  });
+});
+
+describe("discoverProject — hasReactNativeWorkspace", () => {
+  it("is true when the entry-point package itself declares `react-native`", () => {
+    const projectDirectory = path.join(tempDirectory, "rn-aware-self");
+    fs.mkdirSync(projectDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDirectory, "package.json"),
+      JSON.stringify({
+        name: "mobile-app",
+        dependencies: { react: "^19.0.0", "react-native": "0.76.0" },
+      }),
+    );
+
+    const projectInfo = discoverProject(projectDirectory);
+    expect(projectInfo.hasReactNativeWorkspace).toBe(true);
+  });
+
+  it("is true when the entry-point package declares `expo`", () => {
+    const projectDirectory = path.join(tempDirectory, "rn-aware-expo");
+    fs.mkdirSync(projectDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDirectory, "package.json"),
+      JSON.stringify({
+        name: "expo-app",
+        dependencies: { react: "^19.0.0", expo: "^51.0.0", "expo-router": "^3.5.0" },
+      }),
+    );
+
+    const projectInfo = discoverProject(projectDirectory);
+    expect(projectInfo.hasReactNativeWorkspace).toBe(true);
+  });
+
+  it("is true when a workspace sibling declares `react-native` even if the root is web-only (inverted-gate fixture)", () => {
+    // Root `package.json` is Next.js-shaped; `apps/mobile` is an Expo
+    // workspace. The capability gate in `buildCapabilities` keys off
+    // this bit so `rn-*` rules still load on `apps/mobile` despite
+    // the root framework being `nextjs`. Without the workspace walk
+    // the bit would be `false` and every `rn-*` rule would be
+    // dropped at the project level before the file-level wrapper
+    // could ever silence them.
+    const rootDirectory = path.join(tempDirectory, "inverted-monorepo");
+    const webDirectory = path.join(rootDirectory, "apps", "web");
+    const mobileDirectory = path.join(rootDirectory, "apps", "mobile");
+    fs.mkdirSync(webDirectory, { recursive: true });
+    fs.mkdirSync(mobileDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(rootDirectory, "package.json"),
+      JSON.stringify({
+        name: "inverted-monorepo",
+        dependencies: { next: "^14.0.0", react: "^19.0.0", "react-dom": "^19.0.0" },
+        workspaces: ["apps/*"],
+      }),
+    );
+    fs.writeFileSync(
+      path.join(webDirectory, "package.json"),
+      JSON.stringify({
+        name: "web",
+        dependencies: { next: "^14.0.0", react: "^19.0.0", "react-dom": "^19.0.0" },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(mobileDirectory, "package.json"),
+      JSON.stringify({
+        name: "mobile",
+        dependencies: { react: "^19.0.0", "react-native": "0.76.0", expo: "^51.0.0" },
+      }),
+    );
+
+    const projectInfo = discoverProject(rootDirectory);
+    expect(projectInfo.hasReactNativeWorkspace).toBe(true);
+  });
+
+  it("is true when a workspace lists `react-native` only in `optionalDependencies` (parity with the file-level classifier)", () => {
+    // pinned because the project-info predicate previously only
+    // walked `dependencies` / `devDependencies` / `peerDependencies`
+    // while the oxlint plugin's `classifyPackagePlatform` also walks
+    // `optionalDependencies`. The drift meant a workspace with
+    // `react-native` in optionalDependencies would classify as RN
+    // for the file-level rule gate but stay invisible to the
+    // project-level capability gate, dropping every `rn-*` rule.
+    const rootDirectory = path.join(tempDirectory, "inverted-monorepo-opt-deps");
+    const mobileDirectory = path.join(rootDirectory, "apps", "mobile");
+    fs.mkdirSync(mobileDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(rootDirectory, "package.json"),
+      JSON.stringify({
+        name: "opt-deps-root",
+        dependencies: { next: "^14.0.0", react: "^19.0.0", "react-dom": "^19.0.0" },
+        workspaces: ["apps/*"],
+      }),
+    );
+    fs.writeFileSync(
+      path.join(mobileDirectory, "package.json"),
+      JSON.stringify({
+        name: "mobile",
+        dependencies: { react: "^19.0.0" },
+        optionalDependencies: { "react-native": "0.76.0" },
+      }),
+    );
+
+    const projectInfo = discoverProject(rootDirectory);
+    expect(projectInfo.hasReactNativeWorkspace).toBe(true);
+  });
+
+  it("is true when a workspace declares only an `@react-native-*` namespace dependency (prefix match)", () => {
+    const rootDirectory = path.join(tempDirectory, "inverted-monorepo-namespace");
+    const mobileDirectory = path.join(rootDirectory, "apps", "mobile");
+    fs.mkdirSync(mobileDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(rootDirectory, "package.json"),
+      JSON.stringify({
+        name: "namespace-root",
+        dependencies: { next: "^14.0.0", react: "^19.0.0", "react-dom": "^19.0.0" },
+        workspaces: ["apps/*"],
+      }),
+    );
+    fs.writeFileSync(
+      path.join(mobileDirectory, "package.json"),
+      JSON.stringify({
+        name: "mobile",
+        dependencies: { react: "^19.0.0", "@react-native-firebase/app": "^21.0.0" },
+      }),
+    );
+
+    const projectInfo = discoverProject(rootDirectory);
+    expect(projectInfo.hasReactNativeWorkspace).toBe(true);
+  });
+
+  it("is true when a workspace library sets Metro's top-level `react-native` resolution field", () => {
+    const rootDirectory = path.join(tempDirectory, "inverted-monorepo-metro-field");
+    const libDirectory = path.join(rootDirectory, "packages", "native-lib");
+    fs.mkdirSync(libDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(rootDirectory, "package.json"),
+      JSON.stringify({
+        name: "metro-field-root",
+        dependencies: { next: "^14.0.0", react: "^19.0.0", "react-dom": "^19.0.0" },
+        workspaces: ["packages/*"],
+      }),
+    );
+    fs.writeFileSync(
+      path.join(libDirectory, "package.json"),
+      JSON.stringify({
+        name: "native-lib",
+        dependencies: { react: "^19.0.0" },
+        "react-native": "./dist/native/index.js",
+      }),
+    );
+
+    const projectInfo = discoverProject(rootDirectory);
+    expect(projectInfo.hasReactNativeWorkspace).toBe(true);
+  });
+
+  it("is false on a pure web monorepo where no workspace declares any RN dependency", () => {
+    const rootDirectory = path.join(tempDirectory, "pure-web-monorepo");
+    const webDirectory = path.join(rootDirectory, "apps", "web");
+    const docsDirectory = path.join(rootDirectory, "apps", "docs");
+    fs.mkdirSync(webDirectory, { recursive: true });
+    fs.mkdirSync(docsDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(rootDirectory, "package.json"),
+      JSON.stringify({
+        name: "pure-web",
+        dependencies: { next: "^14.0.0", react: "^19.0.0", "react-dom": "^19.0.0" },
+        workspaces: ["apps/*"],
+      }),
+    );
+    fs.writeFileSync(
+      path.join(webDirectory, "package.json"),
+      JSON.stringify({
+        name: "web",
+        dependencies: { next: "^14.0.0", react: "^19.0.0", "react-dom": "^19.0.0" },
+      }),
+    );
+    fs.writeFileSync(
+      path.join(docsDirectory, "package.json"),
+      JSON.stringify({
+        name: "docs",
+        dependencies: { "@docusaurus/core": "^3.4.0", react: "^19.0.0", "react-dom": "^19.0.0" },
+      }),
+    );
+
+    const projectInfo = discoverProject(rootDirectory);
+    expect(projectInfo.hasReactNativeWorkspace).toBe(false);
+  });
+
+  it("is false on a single-package web project (no workspaces, no RN deps)", () => {
+    const projectDirectory = path.join(tempDirectory, "single-web-app");
+    fs.mkdirSync(projectDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDirectory, "package.json"),
+      JSON.stringify({
+        name: "single-web",
+        dependencies: { next: "^14.0.0", react: "^19.0.0", "react-dom": "^19.0.0" },
+      }),
+    );
+
+    const projectInfo = discoverProject(projectDirectory);
+    expect(projectInfo.hasReactNativeWorkspace).toBe(false);
   });
 });
 

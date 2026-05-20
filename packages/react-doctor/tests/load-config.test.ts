@@ -2,7 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vite-plus/test";
-import { clearConfigCache, loadConfig, loadConfigWithSource } from "../src/utils/load-config.js";
+import { clearConfigCache, loadConfigWithSource } from "@react-doctor/core";
+import type { ReactDoctorConfig } from "@react-doctor/types";
+
+const loadConfig = (rootDirectory: string): ReactDoctorConfig | null =>
+  loadConfigWithSource(rootDirectory)?.config ?? null;
 
 const tempRootDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "react-doctor-config-test-"));
 
@@ -21,7 +25,7 @@ describe("loadConfig", () => {
         path.join(configDirectory, "react-doctor.config.json"),
         JSON.stringify({
           ignore: {
-            rules: ["react/no-danger", "knip/exports"],
+            rules: ["react/no-danger", "react-doctor/no-giant-component"],
             files: ["src/generated/**"],
           },
         }),
@@ -32,7 +36,7 @@ describe("loadConfig", () => {
       const config = loadConfig(configDirectory);
       expect(config).toEqual({
         ignore: {
-          rules: ["react/no-danger", "knip/exports"],
+          rules: ["react/no-danger", "react-doctor/no-giant-component"],
           files: ["src/generated/**"],
         },
       });
@@ -130,7 +134,6 @@ describe("loadConfig", () => {
         JSON.stringify({
           ignore: { rules: ["react/no-danger"] },
           lint: true,
-          deadCode: false,
           verbose: true,
           diff: "main",
         }),
@@ -142,7 +145,6 @@ describe("loadConfig", () => {
       expect(config).toEqual({
         ignore: { rules: ["react/no-danger"] },
         lint: true,
-        deadCode: false,
         verbose: true,
         diff: "main",
       });
