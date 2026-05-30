@@ -1,4 +1,5 @@
 import { defineRule } from "../../utils/define-rule.js";
+import { normalizeFilename } from "../../utils/normalize-filename.js";
 import { walkAst } from "../../utils/walk-ast.js";
 import type { EsTreeNode } from "../../utils/es-tree-node.js";
 import type { Rule } from "../../utils/rule.js";
@@ -128,6 +129,7 @@ const collectIdentifierParams = (params: EsTreeNode[]): Set<string> => {
 // handler(req, res)` in `pages/api/...`).
 export const serverHoistStaticIo = defineRule<Rule>({
   id: "server-hoist-static-io",
+  tags: ["test-noise"],
   severity: "warn",
   recommendation:
     "Hoist the read to module scope: `const FONT_DATA = await fetch(new URL('./fonts/Inter.ttf', import.meta.url)).then(r => r.arrayBuffer())` runs once at module load",
@@ -146,7 +148,7 @@ export const serverHoistStaticIo = defineRule<Rule>({
       );
     },
     ExportDefaultDeclaration(node: EsTreeNodeOfType<"ExportDefaultDeclaration">) {
-      const filename = context.getFilename?.() ?? "";
+      const filename = normalizeFilename(context.filename ?? "");
       if (!PAGES_ROUTER_API_PATH_PATTERN.test(filename)) return;
       const declaration = node.declaration;
       if (

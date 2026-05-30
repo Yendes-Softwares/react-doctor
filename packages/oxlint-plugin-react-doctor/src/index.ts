@@ -5,11 +5,10 @@ export default reactDoctorPlugin;
 export {
   ALL_REACT_DOCTOR_RULE_KEYS,
   ALL_REACT_DOCTOR_RULES,
-  BUILTIN_A11Y_RULES,
-  BUILTIN_REACT_RULES,
   EXTERNAL_RULES,
   FRAMEWORK_SPECIFIC_RULE_KEYS,
   NEXTJS_RULES,
+  PREACT_RULES,
   REACT_COMPILER_RULES,
   REACT_DOCTOR_RULES,
   REACT_NATIVE_RULES,
@@ -17,10 +16,15 @@ export {
   RULES,
   TANSTACK_QUERY_RULES,
   TANSTACK_START_RULES,
-  YOU_MIGHT_NOT_NEED_EFFECT_RULES,
 } from "./rules.js";
 
 export { MOTION_LIBRARY_PACKAGES } from "./plugin/constants/style.js";
+
+export {
+  REACT_NATIVE_DEPENDENCY_NAMES,
+  REACT_NATIVE_DEPENDENCY_PREFIXES,
+  isReactNativeDependencyName,
+} from "./react-native-dependency-names.js";
 
 export type { OxlintRuleSeverity } from "./types.js";
 export type { EsTreeNode } from "./plugin/utils/es-tree-node.js";

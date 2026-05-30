@@ -6,19 +6,30 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        node-version: [22, 24]
+        os: [ubuntu-latest]
+        node-version: ["20.19.0", "22.18.0", "24", "25", "26"]
+        include:
+          - os: windows-latest
+            node-version: "22.18.0"
+          - os: macos-latest
+            node-version: "22.18.0"
     steps:
       - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v5
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v5
         with:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
@@ -28,12 +39,44 @@ jobs:
       - run: pnpm test
 
       - run: pnpm typecheck
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.node-version == '22.18.0' }}
 
       - run: pnpm lint
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.node-version == '22.18.0' }}
 
-      - run: pnpm format:check
+      - name: Check formatting
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.node-version == '22.18.0' }}
+        shell: bash
+        run: |
+          format_output_file="$(mktemp)"
+
+          set +e
+          pnpm format:check 2>&1 | tee "$format_output_file"
+          format_status=${PIPESTATUS[0]}
+          set -e
+
+          if [ "$format_status" -ne 0 ]; then
+            while IFS= read -r format_line; do
+              format_file="${format_line%% (*}"
+
+              if [ "$format_file" = "$format_line" ] || [ ! -f "$format_file" ]; then
+                continue
+              fi
+
+              format_annotation_file="${format_file//'%'/'%25'}"
+              format_annotation_file="${format_annotation_file//$'\r'/'%0D'}"
+              format_annotation_file="${format_annotation_file//$'\n'/'%0A'}"
+              format_annotation_file="${format_annotation_file//':'/'%3A'}"
+              format_annotation_file="${format_annotation_file//','/'%2C'}"
+              echo "::error file=$format_annotation_file::File is not formatted. Run pnpm format."
+            done < "$format_output_file"
+          fi
+
+          rm -f "$format_output_file"
+          exit "$format_status"
 
       - name: Smoke test built CLI
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.node-version == '22.18.0' }}
         run: |
           cd packages/react-doctor
           pnpm build
@@ -43,3 +86,7 @@ jobs:
             echo "Built CLI version is missing or 0.0.0; build env did not inject VERSION"
             exit 1
           fi
+
+      - name: Smoke test JSON report shape
+        if: ${{ matrix.os == 'ubuntu-latest' && matrix.node-version == '22.18.0' }}
+        run: pnpm smoke:json-report

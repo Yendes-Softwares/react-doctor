@@ -1,4 +1,5 @@
 import { defineRule } from "../../utils/define-rule.js";
+import { normalizeFilename } from "../../utils/normalize-filename.js";
 import type { EsTreeNode } from "../../utils/es-tree-node.js";
 import type { Rule } from "../../utils/rule.js";
 import type { RuleContext } from "../../utils/rule-context.js";
@@ -33,7 +34,7 @@ const objectExpressionHasNextRevalidate = (objectExpression: EsTreeNode): boolea
 // HACK: in Next.js (App Router), `fetch(url)` inside a Server Component
 // or route handler is cached *forever* by default unless the response
 // is dynamic. The fix is to set `next: { revalidate: <seconds> }` (or
-// `cache: "no-store"` for fully dynamic data, or `next: { tags: [...] }`
+// `cache: "no-store"` for fully dynamic data, or `next: { tags: [..., "test-noise"] }`
 // for tag-based invalidation). Forgetting this is a common silent-stale
 // data bug.
 //
@@ -63,7 +64,7 @@ export const serverFetchWithoutRevalidate = defineRule<Rule>({
 
     return {
       Program(node: EsTreeNodeOfType<"Program">) {
-        const filename = context.getFilename?.() ?? "";
+        const filename = normalizeFilename(context.filename ?? "");
         if (!APP_ROUTER_FILE_PATTERN.test(filename)) {
           isServerSideFile = false;
           return;

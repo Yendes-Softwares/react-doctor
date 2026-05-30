@@ -1,9 +1,11 @@
 import { defineRule } from "../../utils/define-rule.js";
 import { isComponentAssignment } from "../../utils/is-component-assignment.js";
+import { isInlineFunctionExpression } from "../../utils/is-inline-function-expression.js";
 import { isUppercaseName } from "../../utils/is-uppercase-name.js";
 import type { EsTreeNode } from "../../utils/es-tree-node.js";
 import type { Rule } from "../../utils/rule.js";
 import type { RuleContext } from "../../utils/rule-context.js";
+import { isImportedFromModule } from "../../utils/find-import-source-for-name.js";
 import { isNodeOfType } from "../../utils/is-node-of-type.js";
 import type { EsTreeNodeOfType } from "../../utils/es-tree-node-of-type.js";
 
@@ -15,6 +17,23 @@ const HOOK_OBJECTS_WITH_METHODS = new Map<string, Set<string>>([
   ],
   ["useSearchParams", new Set(["get", "getAll", "has", "set"])],
 ]);
+
+// Some libraries expose method-bearing hook objects where destructuring is not
+// part of the supported API shape, even though the hook name and method access
+// look like a normal React Compiler candidate. Keep those carve-outs keyed by
+// hook name and import source so similarly named userland hooks still report.
+const HOOK_IMPORT_SOURCES_WITH_UNSAFE_METHOD_DESTRUCTURING = new Map<string, Set<string>>([
+  ["useNavigation", new Set(["@react-navigation/native", "@react-navigation/core"])],
+]);
+
+const isUnsafeMethodDestructureHookImport = (node: EsTreeNode, hookSource: string): boolean => {
+  const moduleSources = HOOK_IMPORT_SOURCES_WITH_UNSAFE_METHOD_DESTRUCTURING.get(hookSource);
+  if (!moduleSources) return false;
+  for (const moduleSource of moduleSources) {
+    if (isImportedFromModule(node, hookSource, moduleSource)) return true;
+  }
+  return false;
+};
 
 // HACK: O(1) lookup. Indexes top-level `const x = useFooBar(...)`
 // declarations once per component on enter, so subsequent
@@ -50,6 +69,7 @@ const buildHookBindingMap = (componentBody: EsTreeNode | null | undefined): Map<
 // We don't fire when the binding is destructured already.
 export const reactCompilerDestructureMethod = defineRule<Rule>({
   id: "react-compiler-destructure-method",
+  tags: ["test-noise"],
   severity: "warn",
   recommendation:
     "Destructure the method up front: `const { push } = useRouter()` then call `push(...)` directly — clearer dependency graph and easier for React Compiler to memoize",
@@ -81,11 +101,7 @@ export const reactCompilerDestructureMethod = defineRule<Rule>({
         body = node.body;
       } else if (isNodeOfType(node, "VariableDeclarator")) {
         const initializer = node.init;
-        body =
-          isNodeOfType(initializer, "ArrowFunctionExpression") ||
-          isNodeOfType(initializer, "FunctionExpression")
-            ? initializer.body
-            : null;
+        body = isInlineFunctionExpression(initializer) ? initializer.body : null;
       }
       hookBindingMapStack.push(buildHookBindingMap(body));
     };
@@ -112,6 +128,7 @@ export const reactCompilerDestructureMethod = defineRule<Rule>({
 
         const allowedMethods = HOOK_OBJECTS_WITH_METHODS.get(hookSource);
         if (!allowedMethods || !allowedMethods.has(methodName)) return;
+        if (isUnsafeMethodDestructureHookImport(node, hookSource)) return;
 
         if (!isNodeOfType(node.parent, "CallExpression") || node.parent.callee !== node) return;
 

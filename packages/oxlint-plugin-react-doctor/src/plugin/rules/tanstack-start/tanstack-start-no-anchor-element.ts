@@ -1,5 +1,6 @@
 import { TANSTACK_ROUTE_FILE_PATTERN } from "../../constants/tanstack.js";
 import { defineRule } from "../../utils/define-rule.js";
+import { normalizeFilename } from "../../utils/normalize-filename.js";
 import type { Rule } from "../../utils/rule.js";
 import type { RuleContext } from "../../utils/rule-context.js";
 import { isNodeOfType } from "../../utils/is-node-of-type.js";
@@ -7,13 +8,14 @@ import type { EsTreeNodeOfType } from "../../utils/es-tree-node-of-type.js";
 
 export const tanstackStartNoAnchorElement = defineRule<Rule>({
   id: "tanstack-start-no-anchor-element",
+  tags: ["test-noise"],
   requires: ["tanstack-start"],
   severity: "warn",
   recommendation:
     "`import { Link } from '@tanstack/react-router'` — enables type-safe routes, preloading via `preload=\"intent\"`, and client-side navigation",
   create: (context: RuleContext) => ({
     JSXOpeningElement(node: EsTreeNodeOfType<"JSXOpeningElement">) {
-      const filename = context.getFilename?.() ?? "";
+      const filename = normalizeFilename(context.filename ?? "");
       const isRouteFile = TANSTACK_ROUTE_FILE_PATTERN.test(filename);
       if (!isRouteFile) return;
 

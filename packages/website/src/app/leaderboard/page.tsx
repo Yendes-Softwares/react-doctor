@@ -1,13 +1,13 @@
 import type { Metadata } from "next";
+import Image from "next/image";
 import Link from "next/link";
-import { PERFECT_SCORE } from "@/constants";
+import { PERFECT_SCORE, RUN_COMMAND } from "@/constants";
 import { clampScore } from "@/utils/clamp-score";
 import { getDoctorFace } from "@/utils/get-doctor-face";
 import { getScoreColorClass } from "@/utils/get-score-color-class";
 
 const SCORE_BAR_WIDTH = 20;
 const REVALIDATE_SECONDS = 60 * 60;
-const COMMAND = "npx react-doctor@latest";
 const BENCHMARKS_REPO_URL = "https://github.com/millionco/react-doctor-benchmarks";
 const LEADERBOARD_URL =
   "https://raw.githubusercontent.com/millionco/react-doctor-benchmarks/main/results/leaderboard.json";
@@ -47,11 +47,26 @@ const formatGeneratedAt = (isoTimestamp: string): string => {
   return `${parsedDate.toISOString().replace("T", " ").slice(0, 16)} UTC`;
 };
 
+const isSafeGithubUrl = (candidate: unknown): candidate is string => {
+  if (typeof candidate !== "string") return false;
+  try {
+    const parsed = new URL(candidate);
+    return parsed.protocol === "https:" && parsed.host === "github.com";
+  } catch {
+    return false;
+  }
+};
+
+const sanitizeLeaderboardEntries = (entries: LeaderboardEntry[]): LeaderboardEntry[] =>
+  entries.filter((entry) => isSafeGithubUrl(entry.githubUrl));
+
 const fetchLeaderboard = async (): Promise<LeaderboardFile | null> => {
   try {
     const response = await fetch(LEADERBOARD_URL, { next: { revalidate: REVALIDATE_SECONDS } });
     if (!response.ok) return null;
-    return (await response.json()) as LeaderboardFile;
+    const payload = (await response.json()) as LeaderboardFile;
+    if (!payload || !Array.isArray(payload.entries)) return null;
+    return { ...payload, entries: sanitizeLeaderboardEntries(payload.entries) };
   } catch {
     return null;
   }
@@ -116,7 +131,7 @@ const LeaderboardPage = async () => {
           href="/"
           className="inline-flex items-center gap-2 text-neutral-500 transition-colors hover:text-neutral-300"
         >
-          <img src="/favicon.svg" alt="React Doctor" width={20} height={20} />
+          <Image src="/favicon.svg" alt="React Doctor" width={20} height={20} unoptimized />
           <span>react-doctor</span>
         </Link>
       </div>
@@ -164,7 +179,7 @@ const LeaderboardPage = async () => {
 
       <div className="text-neutral-500">Run it on your codebase:</div>
       <div className="mt-2">
-        <span className="border border-white/20 px-3 py-1.5 text-white">{COMMAND}</span>
+        <span className="border border-white/20 px-3 py-1.5 text-white">{RUN_COMMAND}</span>
       </div>
 
       <div className="min-h-[1.4em]" />

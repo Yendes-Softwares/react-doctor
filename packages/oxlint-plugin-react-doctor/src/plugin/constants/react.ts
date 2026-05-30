@@ -55,6 +55,29 @@ export const REACT_HANDLER_PROP_PATTERN = /^on[A-Z]/;
 export const EFFECT_HOOK_NAMES = new Set(["useEffect", "useLayoutEffect"]);
 export const HOOKS_WITH_DEPS = new Set(["useEffect", "useLayoutEffect", "useMemo", "useCallback"]);
 
+// React's two component-wrapping HOCs that the rule visitor needs to
+// "see through" — `memo(Comp)` and `forwardRef(Comp)`. Both forms
+// (`memo` from a named import + `React.memo` via the namespace) are
+// included so the chain root resolves uniformly regardless of how
+// the consumer imports React. Source of truth for the
+// `exhaustive-deps`, `rules-of-hooks`, and `no-multi-comp` rule
+// detectors which were all maintaining their own identical copy of
+// this set.
+export const REACT_HOC_NAMES = new Set(["memo", "forwardRef", "React.memo", "React.forwardRef"]);
+
+// Value-memoising hooks whose callback genuinely memoises the
+// allocations declared inside it. Shared by the jotai render-body rule
+// and the module-scope hoisting rules so they can't disagree about
+// which hooks count as "the user already opted into memoisation here".
+export const MEMOIZING_HOOK_NAMES = new Set(["useMemo", "useCallback"]);
+
+// Component HOC wrappers the enclosing-component resolver unwraps so
+// `const App = memo(() => {})` / `forwardRef((props, ref) => {})` are
+// attributed to the `App` binding. Distinct from `REACT_HOC_NAMES`,
+// which also carries the dotted `React.memo` forms the deps/hooks
+// detectors match against.
+export const COMPONENT_HOC_WRAPPER_NAMES = new Set(["memo", "forwardRef", "observer", "lazy"]);
+
 // Subscription-shaped method names recognized by `prefer-use-sync-external-store`.
 // Covers the canonical `store.subscribe`, the browser `addEventListener` /
 // `addListener`, the EventEmitter `on` / `watch` / `listen`, and shorter
@@ -71,11 +94,9 @@ export const SUBSCRIPTION_METHOD_NAMES = new Set([
   "sub",
 ]);
 
-// Methods that pair with the subscription methods above as their cleanup
-// counterparts. Used to recognize a valid `return () => removeEventListener(...)`
-// cleanup form even when the subscribe call is `addEventListener` rather
-// than a `subscribe()` whose return value gets re-bound.
-export const UNSUBSCRIPTION_METHOD_NAMES = new Set([
+export const CLEANUP_RETURNING_SUBSCRIPTION_METHOD_NAMES = new Set(["subscribe", "sub"]);
+
+export const GLOBAL_RELEASE_METHOD_NAMES = new Set([
   "unsubscribe",
   "removeEventListener",
   "removeListener",
@@ -83,16 +104,20 @@ export const UNSUBSCRIPTION_METHOD_NAMES = new Set([
   "unwatch",
   "unlisten",
   "unsub",
+  "abort",
 ]);
 
-// Identifier names recognized as "this is a release/teardown call"
-// when they appear as a direct call inside an effect's cleanup
-// return — covers both library unsubscribe shorthands
-// (UNSUBSCRIPTION_METHOD_NAMES) and the generic teardown vocabulary
-// (`cleanup`, `dispose`, `destroy`, `teardown`). Matched
-// case-insensitively at the call site.
+export const BOUND_RESOURCE_RELEASE_METHOD_NAMES = new Set([
+  "remove",
+  "cleanup",
+  "dispose",
+  "destroy",
+  "stop",
+  "teardown",
+]);
+
 export const CLEANUP_LIKE_RELEASE_CALLEE_NAMES = new Set([
-  ...UNSUBSCRIPTION_METHOD_NAMES,
+  ...GLOBAL_RELEASE_METHOD_NAMES,
   "cleanup",
   "dispose",
   "destroy",

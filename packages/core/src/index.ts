@@ -1,3 +1,28 @@
+export * from "./types/index.js";
+export * from "./project-info/index.js";
+export * from "./build-diagnostic-pipeline.js";
+export * from "./errors.js";
+export * from "./observability.js";
+export * from "./refs.js";
+export * from "./resolve-scan-target.js";
+export * from "./run-inspect.js";
+// Selective re-exports from `./schemas.js` only — most class names
+// (Diagnostic, JsonReport, JsonReportSummary, …) collide with the
+// TypeScript-type definitions in `./types/index.js`. Consumers that
+// need the Schema classes import directly via
+// `@react-doctor/core/schemas` or the in-tree relative path.
+export { Severity, JsonReportV1, buildDiagnosticIdentity } from "./schemas.js";
+export * from "./services/config.js";
+export * from "./services/dead-code.js";
+export * from "./services/files.js";
+export * from "./services/git.js";
+export * from "./services/linter.js";
+export * from "./services/node-resolver.js";
+export * from "./services/progress.js";
+export * from "./services/project.js";
+export * from "./services/reporter.js";
+export * from "./services/score.js";
+export * from "./services/staged-files.js";
 export * from "./apply-ignore-overrides.js";
 export * from "./apply-severity-controls.js";
 export * from "./build-rule-severity-controls.js";
@@ -6,14 +31,14 @@ export * from "./build-json-report-error.js";
 export * from "./build-json-report.js";
 export * from "./calculate-score.js";
 export * from "./can-oxlint-extend-config.js";
+export * from "./check-dead-code.js";
+export * from "./check-pnpm-hardening.js";
 export * from "./check-reduced-motion.js";
 export * from "./collect-ignore-patterns.js";
-export * from "./combine-diagnostics.js";
 export * from "./constants.js";
 export * from "./detect-user-lint-config.js";
 export * from "./diagnostic-surface.js";
 export * from "./evaluate-suppression.js";
-export * from "./filter-diagnostics.js";
 export * from "./filter-for-surface.js";
 export * from "./find-enclosing-jsx-opener.js";
 export * from "./find-jsx-opener-span.js";
@@ -27,7 +52,6 @@ export * from "./is-rule-listed-in-comment.js";
 export * from "./is-test-file.js";
 export * from "./jsx-include-paths.js";
 export * from "./load-config.js";
-export * from "./logger.js";
 export * from "./merge-and-filter-diagnostics.js";
 export * from "./neutralize-disable-directives.js";
 export * from "./parse-gitattributes-linguist.js";
@@ -41,9 +65,11 @@ export * from "./resolve-lint-include-paths.js";
 export * from "./run-oxlint.js";
 export * from "./summarize-diagnostics.js";
 export * from "./validate-config-types.js";
+export * from "./utils/build-rule-prompt-url.js";
 export * from "./utils/dedupe-diagnostics.js";
 export * from "./utils/group-by.js";
 export * from "./utils/match-glob-pattern.js";
+export * from "./utils/resolve-github-actions-score-metadata.js";
 export * from "./utils/to-relative-path.js";
 export * from "./utils/warn-config-issue.js";
 export * from "./runners/oxlint/capabilities.js";

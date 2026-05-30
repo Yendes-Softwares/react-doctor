@@ -1,84 +1,43 @@
-import { spawnSync } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
-import { GIT_SHOW_MAX_BUFFER_BYTES, SOURCE_FILE_PATTERN } from "@react-doctor/core";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import { Git, StagedFiles, type StagedSnapshot } from "@react-doctor/core";
 
-// HACK: --diff-filter=ACMR excludes Deleted (D) — staged-only scans cannot
-// lint files that no longer exist in the staging area.
-const getStagedFilePaths = (directory: string): string[] => {
-  const result = spawnSync(
-    "git",
-    ["diff", "--cached", "-z", "--name-only", "--diff-filter=ACMR", "--relative"],
-    { cwd: directory, stdio: "pipe", maxBuffer: GIT_SHOW_MAX_BUFFER_BYTES },
-  );
-  if (result.error || result.status !== 0) return [];
-  const output = result.stdout.toString();
-  if (!output) return [];
-  return output.split("\0").filter((filePath) => filePath.length > 0);
+const stagedFilesLayer = StagedFiles.layerNode.pipe(Layer.provide(Git.layerNode));
+
+export const getStagedSourceFiles = async (directory: string): Promise<string[]> => {
+  try {
+    const files = await Effect.runPromise(
+      Effect.gen(function* () {
+        const stagedFiles = yield* StagedFiles;
+        return yield* stagedFiles.discoverSourceFiles(directory);
+      }).pipe(Effect.provide(stagedFilesLayer)),
+    );
+    return [...files];
+  } catch {
+    return [];
+  }
 };
 
-const readStagedContent = (directory: string, relativePath: string): string | null => {
-  const result = spawnSync("git", ["show", `:${relativePath}`], {
-    cwd: directory,
-    stdio: "pipe",
-    maxBuffer: GIT_SHOW_MAX_BUFFER_BYTES,
-  });
-  if (result.error || result.status !== 0) return null;
-  return result.stdout.toString();
-};
-
-interface StagedSnapshot {
+interface MaterializeResult {
   tempDirectory: string;
   stagedFiles: string[];
   cleanup: () => void;
 }
 
-export const getStagedSourceFiles = (directory: string): string[] =>
-  getStagedFilePaths(directory).filter((filePath) => SOURCE_FILE_PATTERN.test(filePath));
-
-const PROJECT_CONFIG_FILENAMES = [
-  "tsconfig.json",
-  "tsconfig.base.json",
-  "package.json",
-  "react-doctor.config.json",
-  "oxlint.json",
-  ".oxlintrc.json",
-];
-
-export const materializeStagedFiles = (
+export const materializeStagedFiles = async (
   directory: string,
   stagedFiles: string[],
   tempDirectory: string,
-): StagedSnapshot => {
-  const materializedFiles: string[] = [];
-
-  for (const relativePath of stagedFiles) {
-    const content = readStagedContent(directory, relativePath);
-    if (content === null) continue;
-
-    const targetPath = path.join(tempDirectory, relativePath);
-    fs.mkdirSync(path.dirname(targetPath), { recursive: true });
-    fs.writeFileSync(targetPath, content);
-    materializedFiles.push(relativePath);
-  }
-
-  for (const configFilename of PROJECT_CONFIG_FILENAMES) {
-    const sourcePath = path.join(directory, configFilename);
-    const targetPath = path.join(tempDirectory, configFilename);
-    if (fs.existsSync(sourcePath) && !fs.existsSync(targetPath)) {
-      fs.cpSync(sourcePath, targetPath);
-    }
-  }
-
+): Promise<MaterializeResult> => {
+  const snapshot: StagedSnapshot = await Effect.runPromise(
+    Effect.gen(function* () {
+      const staged = yield* StagedFiles;
+      return yield* staged.materialize({ directory, stagedFiles, tempDirectory });
+    }).pipe(Effect.provide(stagedFilesLayer)),
+  );
   return {
-    tempDirectory,
-    stagedFiles: materializedFiles,
-    cleanup: () => {
-      try {
-        fs.rmSync(tempDirectory, { recursive: true, force: true });
-      } catch {
-        // Best-effort cleanup; tempdir reapers will eventually clean up.
-      }
-    },
+    tempDirectory: snapshot.tempDirectory,
+    stagedFiles: [...snapshot.stagedFiles],
+    cleanup: snapshot.cleanup,
   };
 };

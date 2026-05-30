@@ -40,7 +40,7 @@ import {
   isDirectory,
   readDirectoryEntries,
   readPackageJson,
-} from "@react-doctor/project-info";
+} from "@react-doctor/core";
 import {
   getStagedSourceFiles,
   materializeStagedFiles,
@@ -271,7 +271,7 @@ describe("issue #275 + #290: filesystem walks tolerate EPERM/EACCES (macOS Libra
 });
 
 describe("issue #115: --staged uses git INDEX content, not working tree", () => {
-  it("getStagedSourceFiles returns staged JSX/TSX paths from the index", () => {
+  it("getStagedSourceFiles returns staged JSX/TSX paths from the index", async () => {
     const repoDir = path.join(tempRoot, "issue-115-paths");
     fs.mkdirSync(path.join(repoDir, "src"), { recursive: true });
     writeJson(path.join(repoDir, "package.json"), { name: "staged-paths" });
@@ -281,12 +281,12 @@ describe("issue #115: --staged uses git INDEX content, not working tree", () => 
     initGitRepo(repoDir);
     spawnSync("git", ["add", "src/App.tsx", "src/ignored.txt"], { cwd: repoDir });
 
-    const stagedFiles = getStagedSourceFiles(repoDir);
+    const stagedFiles = await getStagedSourceFiles(repoDir);
     expect(stagedFiles).toContain("src/App.tsx");
     expect(stagedFiles).not.toContain("src/ignored.txt");
   });
 
-  it("materializeStagedFiles snapshots INDEX content even when working tree differs", () => {
+  it("materializeStagedFiles snapshots INDEX content even when working tree differs", async () => {
     const repoDir = path.join(tempRoot, "issue-115-snapshot");
     fs.mkdirSync(path.join(repoDir, "src"), { recursive: true });
     writeJson(path.join(repoDir, "package.json"), { name: "staged-snapshot" });
@@ -301,11 +301,11 @@ describe("issue #115: --staged uses git INDEX content, not working tree", () => 
     spawnSync("git", ["add", "src/App.tsx"], { cwd: repoDir });
     writeFile(path.join(repoDir, "src", "App.tsx"), "export const WORKING_TREE = 3;\n");
 
-    const stagedFiles = getStagedSourceFiles(repoDir);
+    const stagedFiles = await getStagedSourceFiles(repoDir);
     expect(stagedFiles).toEqual(["src/App.tsx"]);
 
     const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "rd-staged-snapshot-"));
-    const snapshot = materializeStagedFiles(repoDir, stagedFiles, tempDirectory);
+    const snapshot = await materializeStagedFiles(repoDir, stagedFiles, tempDirectory);
     try {
       const snapshotted = fs.readFileSync(
         path.join(snapshot.tempDirectory, "src", "App.tsx"),
@@ -318,12 +318,12 @@ describe("issue #115: --staged uses git INDEX content, not working tree", () => 
     }
   });
 
-  it("getStagedSourceFiles returns [] for a repo with nothing staged", () => {
+  it("getStagedSourceFiles returns [] for a repo with nothing staged", async () => {
     const repoDir = path.join(tempRoot, "issue-115-empty");
     fs.mkdirSync(repoDir, { recursive: true });
     writeJson(path.join(repoDir, "package.json"), { name: "empty-staged" });
     initGitRepo(repoDir);
-    expect(getStagedSourceFiles(repoDir)).toEqual([]);
+    await expect(getStagedSourceFiles(repoDir)).resolves.toEqual([]);
   });
 });
 
@@ -382,7 +382,7 @@ describe("issue #141: oxlint config must not reference unloaded plugins", () => 
   });
 
   it("REACT_COMPILER_RULES are gated on react-hooks-js plugin resolution", () => {
-    // When eslint-plugin-react-hooks IS resolvable from react-doctor,
+    // When eslint-plugin-react-hooks IS resolvable from the project,
     // REACT_COMPILER_RULES should
     // appear AND `react-hooks-js` must be in jsPlugins by name.
     const config = createOxlintConfig({
@@ -421,6 +421,21 @@ describe("issue #141: oxlint config must not reference unloaded plugins", () => 
 
     expect(reactHooksJsRuleKeys).toHaveLength(0);
     expect(hasReactHooksJsPluginEntry).toBe(false);
+  });
+
+  it("honors top-level off overrides before registering react-hooks-js rules", () => {
+    const config = createOxlintConfig({
+      pluginPath: "/tmp/react-doctor-plugin.js",
+      project: buildTestProject({ rootDirectory: "/tmp/test", hasReactCompiler: true }),
+      severityControls: {
+        rules: { "react-hooks-js/void-use-memo": "off" },
+      },
+    });
+
+    expect(config.rules["react-hooks-js/void-use-memo"]).toBeUndefined();
+    expect(Object.keys(config.rules).some((ruleKey) => ruleKey.startsWith("react-hooks-js/"))).toBe(
+      true,
+    );
   });
 
   it("emits every react-hooks-js rule at error severity (so they fail CI under --fail-on error)", () => {
@@ -469,57 +484,178 @@ describe("issue #141: oxlint config must not reference unloaded plugins", () => 
     }
   });
 
-  it("loads eslint-plugin-react-you-might-not-need-an-effect when installed (#187)", () => {
+  it("ships the 8 ported `you-might-not-need-an-effect` rules as react-doctor rules", () => {
+    // After the native port (#187 follow-up), the previously-external
+    // `effect/*` rule surface lives inside `oxlint-plugin-react-doctor`
+    // as plain `react-doctor/*` global rules. No JS plugin entry, no
+    // separate `effect/` namespace, no optional peer dependency.
     const config = createOxlintConfig({
       pluginPath: "/tmp/react-doctor-plugin.js",
       project: buildTestProject({ rootDirectory: "/tmp/test" }),
     });
 
-    const effectRuleKeys = Object.keys(config.rules).filter((ruleKey) =>
-      ruleKey.startsWith("effect/"),
-    );
-    const hasEffectPluginEntry = config.jsPlugins.some(
-      (jsPlugin) => typeof jsPlugin === "object" && jsPlugin.name === "effect",
-    );
+    // `no-adjust-state-on-prop-change` is intentionally promoted to
+    // `error` — the pattern always causes an extra render with a stale
+    // UI between commits, there is no benign instance. See SOURCE.md.
+    const portedRuleSeverity: Record<string, "warn" | "error"> = {
+      "no-derived-state": "warn",
+      "no-chain-state-updates": "warn",
+      "no-event-handler": "warn",
+      "no-adjust-state-on-prop-change": "error",
+      "no-reset-all-state-on-prop-change": "warn",
+      "no-pass-live-state-to-parent": "warn",
+      "no-pass-data-to-parent": "warn",
+      "no-initialize-state": "warn",
+    };
+    for (const [ruleId, expectedSeverity] of Object.entries(portedRuleSeverity)) {
+      const fullKey = `react-doctor/${ruleId}`;
+      expect(config.rules[fullKey]).toBe(expectedSeverity);
+    }
 
-    expect(hasEffectPluginEntry).toBe(true);
-    expect(effectRuleKeys.length).toBeGreaterThan(0);
-    expect(effectRuleKeys.every((ruleKey) => config.rules[ruleKey] === "warn")).toBe(true);
+    expect(Object.keys(config.rules).some((ruleKey) => ruleKey.startsWith("effect/"))).toBe(false);
+    expect(
+      config.jsPlugins.some(
+        (jsPlugin) => typeof jsPlugin === "object" && jsPlugin.name === "effect",
+      ),
+    ).toBe(false);
   });
 
-  it("emits no effect/* rules when customRulesOnly skips third-party plugins (#187)", () => {
+  it("customRulesOnly still excludes the ported effect rule family", () => {
     const config = createOxlintConfig({
       pluginPath: "/tmp/react-doctor-plugin.js",
       project: buildTestProject({ rootDirectory: "/tmp/test" }),
       customRulesOnly: true,
     });
 
-    const effectRuleKeys = Object.keys(config.rules).filter((ruleKey) =>
-      ruleKey.startsWith("effect/"),
-    );
-    const hasEffectPluginEntry = config.jsPlugins.some(
-      (jsPlugin) => typeof jsPlugin === "object" && jsPlugin.name === "effect",
-    );
-
-    expect(effectRuleKeys).toHaveLength(0);
-    expect(hasEffectPluginEntry).toBe(false);
+    const portedRuleIds = [
+      "no-derived-state",
+      "no-chain-state-updates",
+      "no-event-handler",
+      "no-adjust-state-on-prop-change",
+      "no-reset-all-state-on-prop-change",
+      "no-pass-live-state-to-parent",
+      "no-pass-data-to-parent",
+      "no-initialize-state",
+    ];
+    for (const ruleId of portedRuleIds) {
+      expect(config.rules[`react-doctor/${ruleId}`]).toBeUndefined();
+    }
   });
 
-  it("only enables effect/* rules that the resolved plugin actually exports (#187)", async () => {
-    const config = createOxlintConfig({
+  // The four `jsx-no-new-*-as-prop` perf rules guard against a footgun
+  // (new array/object/function/JSX as a prop breaks downstream
+  // `React.memo`) that React Compiler auto-fixes at compile time. When
+  // RC is in scope they're unactionable noise, so they ship with
+  // `disabledBy: ["react-compiler"]` and the gate must drop them.
+  it("disables react-compiler-redundant perf rules when React Compiler is detected", () => {
+    const reactCompilerGatedRules = [
+      "react-doctor/jsx-no-new-object-as-prop",
+      "react-doctor/jsx-no-new-array-as-prop",
+      "react-doctor/jsx-no-new-function-as-prop",
+      "react-doctor/jsx-no-jsx-as-prop",
+    ];
+
+    const withoutCompiler = createOxlintConfig({
+      pluginPath: "/tmp/react-doctor-plugin.js",
+      project: buildTestProject({ rootDirectory: "/tmp/test", hasReactCompiler: false }),
+    });
+    for (const ruleKey of reactCompilerGatedRules) {
+      expect(withoutCompiler.rules[ruleKey]).toBe("warn");
+    }
+
+    const withCompiler = createOxlintConfig({
+      pluginPath: "/tmp/react-doctor-plugin.js",
+      project: buildTestProject({ rootDirectory: "/tmp/test", hasReactCompiler: true }),
+    });
+    for (const ruleKey of reactCompilerGatedRules) {
+      expect(withCompiler.rules[ruleKey]).toBeUndefined();
+    }
+  });
+
+  // The inverse of the rule above: `react-compiler-no-manual-memoization`
+  // is gated with `requires: ["react-compiler"]` so it ONLY fires once
+  // the project ships with React Compiler. Without the compiler, manual
+  // `useMemo` / `useCallback` / `memo()` are still legitimate perf
+  // tools — the gate must keep the rule out of the default config.
+  it("enables react-compiler-no-manual-memoization only when React Compiler is detected", () => {
+    const ruleKey = "react-doctor/react-compiler-no-manual-memoization";
+
+    const withoutCompiler = createOxlintConfig({
+      pluginPath: "/tmp/react-doctor-plugin.js",
+      project: buildTestProject({ rootDirectory: "/tmp/test", hasReactCompiler: false }),
+    });
+    expect(withoutCompiler.rules[ruleKey]).toBeUndefined();
+
+    const withCompiler = createOxlintConfig({
+      pluginPath: "/tmp/react-doctor-plugin.js",
+      project: buildTestProject({ rootDirectory: "/tmp/test", hasReactCompiler: true }),
+    });
+    expect(withCompiler.rules[ruleKey]).toBe("error");
+  });
+
+  // The three noisy upstream rules ship `defaultEnabled: false` —
+  // they're imported and runnable, but the default config skips them.
+  // Users opt in via `severityControls.rules`.
+  it("default-disabled rules are off until explicitly enabled via severityControls", () => {
+    const defaultDisabledRules = [
+      "react-doctor/react-in-jsx-scope",
+      "react-doctor/forbid-component-props",
+      "react-doctor/jsx-props-no-spreading",
+    ];
+
+    const defaultConfig = createOxlintConfig({
       pluginPath: "/tmp/react-doctor-plugin.js",
       project: buildTestProject({ rootDirectory: "/tmp/test" }),
     });
-    const pluginModule = await import("eslint-plugin-react-you-might-not-need-an-effect");
-    const availableRuleNames = new Set(
-      Object.keys((pluginModule.default ?? pluginModule).rules ?? {}),
-    );
-    const enabledRuleNames = Object.keys(config.rules)
-      .filter((ruleKey) => ruleKey.startsWith("effect/"))
-      .map((ruleKey) => ruleKey.replace(/^effect\//, ""));
-    expect(enabledRuleNames.length).toBeGreaterThan(0);
-    for (const ruleName of enabledRuleNames) {
-      expect(availableRuleNames.has(ruleName)).toBe(true);
+    for (const ruleKey of defaultDisabledRules) {
+      expect(defaultConfig.rules[ruleKey]).toBeUndefined();
+    }
+
+    const optedInConfig = createOxlintConfig({
+      pluginPath: "/tmp/react-doctor-plugin.js",
+      project: buildTestProject({ rootDirectory: "/tmp/test" }),
+      severityControls: {
+        rules: Object.fromEntries(defaultDisabledRules.map((ruleKey) => [ruleKey, "warn"])),
+      },
+    });
+    for (const ruleKey of defaultDisabledRules) {
+      expect(optedInConfig.rules[ruleKey]).toBe("warn");
+    }
+  });
+
+  // Bugbot #fa3d54f2: `RECOMMENDED_RULES` / `NEXTJS_RULES` / etc. (the
+  // ESLint flat-config presets exported by `oxlint-plugin-react-doctor`
+  // and consumed by `eslint-plugin-react-doctor`) used to include
+  // every `framework: global` rule regardless of `defaultEnabled`. The
+  // oxlint config builder honored the flag but the ESLint presets
+  // didn't, so ESLint users on the `recommended` preset would
+  // silently get every default-disabled rule. Regression test: confirm
+  // none of the default-disabled rules leak into the recommended set.
+  it("RECOMMENDED_RULES (ESLint preset) honors `defaultEnabled: false`", async () => {
+    const pluginModule = await import("oxlint-plugin-react-doctor");
+    const recommendedRuleKeys = new Set(Object.keys(pluginModule.RECOMMENDED_RULES));
+    const defaultDisabledRules = [
+      "react-doctor/react-in-jsx-scope",
+      "react-doctor/forbid-component-props",
+      "react-doctor/jsx-props-no-spreading",
+      "react-doctor/no-unescaped-entities",
+      "react-doctor/jsx-boolean-value",
+      "react-doctor/jsx-curly-brace-presence",
+      "react-doctor/self-closing-comp",
+      "react-doctor/jsx-no-useless-fragment",
+      "react-doctor/display-name",
+      "react-doctor/no-set-state",
+      "react-doctor/no-clone-element",
+      "react-doctor/hook-use-state",
+      "react-doctor/jsx-handler-names",
+      "react-doctor/prefer-function-component",
+      "react-doctor/jsx-fragments",
+      "react-doctor/state-in-constructor",
+      "react-doctor/jsx-filename-extension",
+      "react-doctor/no-react-children",
+    ];
+    for (const ruleKey of defaultDisabledRules) {
+      expect(recommendedRuleKeys.has(ruleKey)).toBe(false);
     }
   });
 });

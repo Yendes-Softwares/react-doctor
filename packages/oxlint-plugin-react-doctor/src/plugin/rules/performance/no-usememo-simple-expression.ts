@@ -1,10 +1,12 @@
 import { defineRule } from "../../utils/define-rule.js";
-import { isHookCall } from "../../utils/is-hook-call.js";
 import type { EsTreeNode } from "../../utils/es-tree-node.js";
+import type { EsTreeNodeOfType } from "../../utils/es-tree-node-of-type.js";
+import { isImportedFromModule } from "../../utils/find-import-source-for-name.js";
+import { isCanonicalReactNamespaceName } from "../../utils/is-canonical-react-namespace-name.js";
+import { isHookCall } from "../../utils/is-hook-call.js";
+import { isNodeOfType } from "../../utils/is-node-of-type.js";
 import type { Rule } from "../../utils/rule.js";
 import type { RuleContext } from "../../utils/rule-context.js";
-import { isNodeOfType } from "../../utils/is-node-of-type.js";
-import type { EsTreeNodeOfType } from "../../utils/es-tree-node-of-type.js";
 
 const isSimpleExpression = (node: EsTreeNode | null): boolean => {
   if (!node) return false;
@@ -43,12 +45,32 @@ const isTriviallyCheapExpression = (node: EsTreeNode | null): boolean => {
 
 export const noUsememoSimpleExpression = defineRule<Rule>({
   id: "no-usememo-simple-expression",
+  tags: ["test-noise"],
   severity: "warn",
   recommendation:
     "Remove useMemo — property access, math, and ternaries are already cheap without memoization",
   create: (context: RuleContext) => ({
     CallExpression(node: EsTreeNodeOfType<"CallExpression">) {
       if (!isHookCall(node, "useMemo")) return;
+      // Skip non-React useMemo lookalikes — `Dispatcher.useMemo(...)`,
+      // `MyTestRenderer.useMemo(...)`, etc. The hook-call helper above
+      // matches both `useMemo` and `React.useMemo` namespaced forms,
+      // but the React-style call is always bound to `react`-flavour
+      // identifiers (`React`, `react`, lowercased import alias). A
+      // `Dispatcher.useMemo` is the internal scheduler API and isn't
+      // governed by the same trivial-allocation reasoning.
+      if (isNodeOfType(node.callee, "MemberExpression")) {
+        const namespaceIdentifier = node.callee.object;
+        if (isNodeOfType(namespaceIdentifier, "Identifier")) {
+          const namespaceName = namespaceIdentifier.name;
+          if (
+            !isCanonicalReactNamespaceName(namespaceName) &&
+            !isImportedFromModule(namespaceIdentifier, namespaceName, "react")
+          ) {
+            return;
+          }
+        }
+      }
 
       const callback = node.arguments?.[0];
       if (!callback) return;

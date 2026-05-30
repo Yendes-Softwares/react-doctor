@@ -1,49 +1,65 @@
 import { createRequire } from "node:module";
+import path from "node:path";
 import type { OxlintRuleSeverity } from "oxlint-plugin-react-doctor";
-
-const esmRequire = createRequire(import.meta.url);
+import { warnConfigIssue } from "../../utils/warn-config-issue.js";
 
 export interface JsPluginEntry {
   name: string;
   specifier: string;
 }
 
-type ReactHooksJsPluginEntry = JsPluginEntry;
+/**
+ * Shape an oxlint plugin module is expected to export. Marked
+ * structurally permissive (`Record<string, unknown>` for rules,
+ * `unknown` for `meta.name`) because the module crosses our trust
+ * boundary — the introspection helper validates before we use the
+ * shape downstream.
+ */
+interface MaybePluginModule {
+  meta?: { name?: unknown };
+  rules?: Record<string, unknown>;
+  default?: MaybePluginModule;
+}
+
+interface PluginShape {
+  /** Plugin's declared `meta.name` (the namespace for rule keys), or `null`. */
+  readonly name: string | null;
+  /** Rule names exported by the plugin (e.g. `"void-use-memo"`). */
+  readonly ruleNames: ReadonlySet<string>;
+}
+
+/**
+ * Loads a plugin module via the local require resolver and extracts
+ * `(name, ruleNames)` from either `module.exports.meta + rules` or
+ * the `module.exports.default.meta + rules` ESM shape. Returns a
+ * shape with empty `ruleNames` when the module can't be loaded or
+ * doesn't expose a `rules` field — callers check `ruleNames.size`
+ * to decide whether the plugin is usable.
+ */
+const readPluginShape = (
+  pluginSpecifier: string,
+  loadModule: (specifier: string) => unknown,
+): PluginShape => {
+  let pluginModule: MaybePluginModule;
+  try {
+    pluginModule = loadModule(pluginSpecifier) as MaybePluginModule;
+  } catch {
+    return { name: null, ruleNames: new Set() };
+  }
+  const moduleNamespace = pluginModule.default ?? pluginModule;
+  const rules = moduleNamespace.rules ?? {};
+  const rawName = moduleNamespace.meta?.name;
+  const name = typeof rawName === "string" && rawName.length > 0 ? rawName : null;
+  return { name, ruleNames: new Set(Object.keys(rules)) };
+};
 
 interface ResolvedReactHooksJsPlugin {
-  entry: ReactHooksJsPluginEntry;
+  entry: JsPluginEntry;
   /** Rule names exported by the loaded plugin (e.g. "void-use-memo"). */
   availableRuleNames: ReadonlySet<string>;
 }
 
-interface ResolvedYouMightNotNeedEffectPlugin {
-  entry: JsPluginEntry;
-  availableRuleNames: ReadonlySet<string>;
-}
-
-interface MaybePluginModule {
-  rules?: Record<string, unknown>;
-  default?: { rules?: Record<string, unknown> };
-}
-
-const readPluginRuleNames = (pluginSpecifier: string): ReadonlySet<string> => {
-  // HACK: oxlint resolves the plugin itself at scan time; we just need
-  // a fast rule-name listing to filter our config so we don't
-  // reference rules that don't exist in the user's installed version
-  // (e.g. older eslint-plugin-react-hooks releases do not expose every
-  // compiler rule). Failing to read the module is non-fatal - we fall
-  // back to enabling every rule we have
-  // configured for and let oxlint surface the mismatch (which preserves
-  // pre-fix behavior for unknown plugin shapes).
-  try {
-    const pluginModule: MaybePluginModule = esmRequire(pluginSpecifier);
-    const rules = pluginModule.rules ?? pluginModule.default?.rules;
-    if (rules === undefined) return new Set();
-    return new Set(Object.keys(rules));
-  } catch {
-    return new Set();
-  }
-};
+const bundledRequire = createRequire(import.meta.url);
 
 export const resolveReactHooksJsPlugin = (
   hasReactCompiler: boolean,
@@ -52,36 +68,14 @@ export const resolveReactHooksJsPlugin = (
   if (!hasReactCompiler || customRulesOnly) return null;
   let pluginSpecifier: string;
   try {
-    pluginSpecifier = esmRequire.resolve("eslint-plugin-react-hooks");
+    pluginSpecifier = bundledRequire.resolve("eslint-plugin-react-hooks");
   } catch {
     return null;
   }
+  const { ruleNames } = readPluginShape(pluginSpecifier, (spec) => bundledRequire(spec));
   return {
     entry: { name: "react-hooks-js", specifier: pluginSpecifier },
-    availableRuleNames: readPluginRuleNames(pluginSpecifier),
-  };
-};
-
-// HACK: oxlint-namespaces this third-party ESLint plugin under
-// `effect` so the long upstream package name doesn't clutter rule
-// keys. Issue #187 - adds the plugin's complementary rule surface
-// alongside react-doctor's native `state-and-effects` rules. The
-// plugin is opt-in: skipped when not installed (peer is optional).
-export const YOU_MIGHT_NOT_NEED_EFFECT_NAMESPACE = "effect";
-
-export const resolveYouMightNotNeedEffectPlugin = (
-  customRulesOnly: boolean,
-): ResolvedYouMightNotNeedEffectPlugin | null => {
-  if (customRulesOnly) return null;
-  let pluginSpecifier: string;
-  try {
-    pluginSpecifier = esmRequire.resolve("eslint-plugin-react-you-might-not-need-an-effect");
-  } catch {
-    return null;
-  }
-  return {
-    entry: { name: YOU_MIGHT_NOT_NEED_EFFECT_NAMESPACE, specifier: pluginSpecifier },
-    availableRuleNames: readPluginRuleNames(pluginSpecifier),
+    availableRuleNames: ruleNames,
   };
 };
 
@@ -107,4 +101,93 @@ export const filterRulesToAvailable = (
     }
   }
   return filtered;
+};
+
+/**
+ * A user-declared oxlint plugin (via `config.plugins: [...]`),
+ * resolved to an absolute file path with introspected metadata.
+ */
+export interface ResolvedUserPlugin {
+  readonly entry: JsPluginEntry;
+  readonly availableRuleNames: ReadonlySet<string>;
+  /** The original spec from `config.plugins`, for diagnostics. */
+  readonly originalSpec: string;
+}
+
+/**
+ * Resolves a user plugin spec from `react-doctor.config.json`'s
+ * `plugins: [...]` to an absolute file path. Two accepted spec
+ * shapes:
+ *
+ * - **Relative path** (`./`, `../`, or absolute): resolved relative
+ *   to `configSourceDirectory` (the dir of the config file that
+ *   declared it). Mirrors how `rootDir` is resolved.
+ * - **npm package name**: resolved via Node module resolution from
+ *   the config source directory's `node_modules`.
+ *
+ * Returns `null` (with a warning) when the spec can't be resolved,
+ * the module doesn't expose any rules, or `meta.name` is missing.
+ * `meta.name` is required — there's no slug fallback — so rule
+ * keys in `config.rules` can't silently change when a file gets
+ * renamed.
+ */
+export const resolveUserPlugin = (
+  spec: string,
+  configSourceDirectory: string,
+): ResolvedUserPlugin | null => {
+  const isRelative = spec.startsWith("./") || spec.startsWith("../") || path.isAbsolute(spec);
+  const candidateRequire = createRequire(path.join(configSourceDirectory, "noop.js"));
+  let resolvedSpecifier: string;
+  try {
+    resolvedSpecifier = isRelative
+      ? path.resolve(configSourceDirectory, spec)
+      : candidateRequire.resolve(spec);
+  } catch (error) {
+    warnConfigIssue(
+      `config.plugins entry "${spec}" could not be resolved from ${configSourceDirectory}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return null;
+  }
+  const { name, ruleNames } = readPluginShape(resolvedSpecifier, (target) =>
+    candidateRequire(target),
+  );
+  if (ruleNames.size === 0) {
+    warnConfigIssue(
+      `config.plugins entry "${spec}" (resolved to ${resolvedSpecifier}) exports no rules (expected \`{ meta: { name }, rules: {...} }\` shape) — skipping.`,
+    );
+    return null;
+  }
+  if (name === null) {
+    warnConfigIssue(
+      `config.plugins entry "${spec}" is missing \`meta.name\` — add \`module.exports = { meta: { name: "..." }, rules: {...} }\` so rule keys in \`config.rules\` resolve. Skipping.`,
+    );
+    return null;
+  }
+  return {
+    entry: { name, specifier: resolvedSpecifier },
+    availableRuleNames: ruleNames,
+    originalSpec: spec,
+  };
+};
+
+export const resolveUserPlugins = (
+  specs: ReadonlyArray<string> | undefined,
+  configSourceDirectory: string,
+): ReadonlyArray<ResolvedUserPlugin> => {
+  if (!specs || specs.length === 0) return [];
+  const resolved: ResolvedUserPlugin[] = [];
+  const seenNames = new Set<string>();
+  for (const spec of specs) {
+    const plugin = resolveUserPlugin(spec, configSourceDirectory);
+    if (plugin === null) continue;
+    if (seenNames.has(plugin.entry.name)) {
+      warnConfigIssue(
+        `config.plugins entry "${spec}" declares duplicate plugin name "${plugin.entry.name}" — skipping. Rename via \`meta.name\` to load multiple variants.`,
+      );
+      continue;
+    }
+    seenNames.add(plugin.entry.name);
+    resolved.push(plugin);
+  }
+  return resolved;
 };

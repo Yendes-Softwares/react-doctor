@@ -1,5 +1,6 @@
 import { INTERNAL_PAGE_PATH_PATTERN, PAGE_FILE_PATTERN } from "../../constants/nextjs.js";
 import { defineRule } from "../../utils/define-rule.js";
+import { normalizeFilename } from "../../utils/normalize-filename.js";
 import type { Rule } from "../../utils/rule.js";
 import type { RuleContext } from "../../utils/rule-context.js";
 import { isNodeOfType } from "../../utils/is-node-of-type.js";
@@ -7,13 +8,14 @@ import type { EsTreeNodeOfType } from "../../utils/es-tree-node-of-type.js";
 
 export const nextjsMissingMetadata = defineRule<Rule>({
   id: "nextjs-missing-metadata",
+  tags: ["test-noise"],
   requires: ["nextjs"],
   severity: "warn",
   recommendation:
     "Add `export const metadata = { title: '...', description: '...' }` or `export async function generateMetadata()`",
   create: (context: RuleContext) => ({
     Program(programNode: EsTreeNodeOfType<"Program">) {
-      const filename = context.getFilename?.() ?? "";
+      const filename = normalizeFilename(context.filename ?? "");
       if (!PAGE_FILE_PATTERN.test(filename)) return;
       if (INTERNAL_PAGE_PATH_PATTERN.test(filename)) return;
 

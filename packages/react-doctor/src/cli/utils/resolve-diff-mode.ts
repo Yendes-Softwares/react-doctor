@@ -1,5 +1,6 @@
-import { filterSourceFiles, logger } from "@react-doctor/core";
-import type { DiffInfo } from "@react-doctor/types";
+import { filterSourceFiles } from "@react-doctor/core";
+import type { DiffInfo } from "@react-doctor/core";
+import { cliLogger as logger } from "./cli-logger.js";
 import { prompts } from "./prompts.js";
 
 export const resolveDiffMode = async (
@@ -35,16 +36,22 @@ export const resolveDiffMode = async (
   if (shouldSkipPrompts) return false;
   if (isQuiet) return false;
 
-  const currentBranchLabel = diffInfo.currentBranch ?? "(detached HEAD)";
-  const promptMessage = diffInfo.isCurrentChanges
-    ? `Found ${changedSourceFiles.length} uncommitted changed files. Only scan those?`
-    : `On branch ${currentBranchLabel} (${changedSourceFiles.length} files changed vs ${diffInfo.baseBranch}). Only scan changed files?`;
+  const changedFilesTitle = diffInfo.isCurrentChanges
+    ? `Uncommitted changes (${changedSourceFiles.length})`
+    : `Changed files on ${diffInfo.currentBranch ?? "this branch"} (${changedSourceFiles.length})`;
+  const changedFilesDescription = diffInfo.isCurrentChanges
+    ? "Compare working tree changes against HEAD"
+    : `Compare against ${diffInfo.baseBranch} from the branch merge-base`;
 
-  const { shouldScanChangedOnly } = await prompts({
-    type: "confirm",
-    name: "shouldScanChangedOnly",
-    message: promptMessage,
-    initial: true,
+  const { scanScope } = await prompts({
+    type: "select",
+    name: "scanScope",
+    message: "Choose what to scan",
+    choices: [
+      { title: "Full codebase", description: "Scan every source file", value: "full" },
+      { title: changedFilesTitle, description: changedFilesDescription, value: "branch" },
+    ],
+    initial: diffInfo.isCurrentChanges ? 0 : 1,
   });
-  return Boolean(shouldScanChangedOnly);
+  return scanScope === "branch";
 };

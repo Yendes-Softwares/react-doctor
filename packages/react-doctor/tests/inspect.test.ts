@@ -6,7 +6,14 @@ import { inspect } from "../src/inspect.js";
 import { clearConfigCache } from "@react-doctor/core";
 import { setupReactProject } from "./regressions/_helpers.js";
 
-const FIXTURES_DIRECTORY = path.resolve(import.meta.dirname, "fixtures");
+const FIXTURES_DIRECTORY = path.resolve(
+  import.meta.dirname,
+  "..",
+  "..",
+  "core",
+  "tests",
+  "fixtures",
+);
 
 vi.mock("ora", () => ({
   default: () => ({
@@ -38,6 +45,7 @@ describe("inspect", () => {
     try {
       await inspect(path.join(FIXTURES_DIRECTORY, "basic-react"), {
         lint: true,
+        deadCode: false,
       });
     } finally {
       consoleSpy.mockRestore();
@@ -55,11 +63,36 @@ describe("inspect", () => {
     }
   });
 
+  // Regression (#552): a Preact project has no `react` package, so the run
+  // gate must let it through instead of aborting with "No React dependency".
+  it("does NOT throw for a Preact project without a react dependency", async () => {
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const preactDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "react-doctor-preact-"));
+    try {
+      fs.writeFileSync(
+        path.join(preactDirectory, "package.json"),
+        JSON.stringify({ name: "preact-app", dependencies: { preact: "^10.22.0" } }),
+      );
+      fs.writeFileSync(
+        path.join(preactDirectory, "App.tsx"),
+        "export function App() { return <div>hi</div>; }\n",
+      );
+
+      const result = await inspect(preactDirectory, { lint: true });
+      expect(result.project.preactVersion).toBe("^10.22.0");
+      expect(result.project.reactVersion).toBe(null);
+    } finally {
+      consoleSpy.mockRestore();
+      fs.rmSync(preactDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("skips lint when option is disabled", async () => {
     const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
     try {
       await inspect(path.join(FIXTURES_DIRECTORY, "basic-react"), {
         lint: false,
+        deadCode: false,
       });
     } finally {
       consoleSpy.mockRestore();
@@ -72,6 +105,7 @@ describe("inspect", () => {
       const startTime = performance.now();
       await inspect(path.join(FIXTURES_DIRECTORY, "basic-react"), {
         lint: true,
+        deadCode: false,
       });
       const elapsedMilliseconds = performance.now() - startTime;
 
@@ -99,6 +133,7 @@ describe("inspect", () => {
 
       const result = await inspect(adminProjectDirectory, {
         lint: false,
+        deadCode: false,
         configOverride: null,
       });
 
@@ -126,6 +161,7 @@ describe("inspect", () => {
 
       const result = await inspect(tempDirectory, {
         lint: false,
+        deadCode: false,
       });
 
       expect(result.project.rootDirectory).toBe(webProjectDirectory);

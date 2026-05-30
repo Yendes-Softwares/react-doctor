@@ -22,9 +22,10 @@ const REGISTRY_OUTPUT = path.join(PACKAGE_ROOT, "src/plugin/rule-registry.ts");
 // never authored). Buckets not listed here default to "global".
 const BUCKET_TO_FRAMEWORK = {
   nextjs: "nextjs",
+  preact: "preact",
   "react-native": "react-native",
-  "tanstack-start": "tanstack-start",
   "tanstack-query": "tanstack-query",
+  "tanstack-start": "tanstack-start",
 };
 
 // Bucket directory → behavioral tags merged onto every rule in that
@@ -39,18 +40,66 @@ const BUCKET_TO_AUTO_TAGS = {
   server: ["server-action"],
 };
 
+// Buckets containing rules ported from external upstream linters
+// (OXC's `react/*` plugin and `jsx-a11y/*` plugin). Even though these
+// rules now ship inside `react-doctor`, semantically they ARE the
+// previously-external rules — users opting into `customRulesOnly`
+// (which skips third-party rule sets to keep diagnostics narrow to
+// react-doctor's distinctive checks) should still not receive them.
+// `originallyExternal: true` flows through the registry into the
+// oxlint-config builder so `customRulesOnly` can filter them out.
+const BUCKETS_PORTED_FROM_EXTERNAL = new Set(["react-builtins", "a11y"]);
+const EFFECT_RULES_PORTED_FROM_EXTERNAL = new Set([
+  "no-derived-state",
+  "no-chain-state-updates",
+  "no-event-handler",
+  "no-adjust-state-on-prop-change",
+  "no-reset-all-state-on-prop-change",
+  "no-pass-live-state-to-parent",
+  "no-pass-data-to-parent",
+  "no-initialize-state",
+]);
+// Rules that LIVE in an externally-ported bucket (e.g. `a11y/`) but were
+// authored in-house — they're semantically distinct from the upstream
+// jsx-a11y / react/* rule sets and should NOT be filtered out by
+// `customRulesOnly`. Without this list every new in-house rule we drop
+// into `a11y/` would silently disappear for users who narrow scope.
+const RULES_NOT_PORTED_FROM_EXTERNAL = new Set(["prefer-html-dialog"]);
+
+// Rule ids whose source files are kept on disk but intentionally NOT
+// registered. Use sparingly — the canonical way to retire a rule is to
+// delete its file (and its tests, fixture references, etc.). This
+// skiplist exists for rules we want to stop shipping right away while
+// preserving their implementation, tests, and regression fixtures so
+// re-enabling is a one-line change. Add a brief justification next to
+// every entry.
+const RULE_IDS_TO_SKIP_REGISTRATION = new Set([
+  // The React-Compiler memoization premise didn't hold: the three
+  // canonical hooks it targeted (`useRouter`, `useSearchParams`,
+  // `useNavigation`) all return stable references, so destructuring
+  // their methods produces no measurable compiler win — and on Pages
+  // Router (`next/router`) destructuring `push` captures a stale
+  // reference. Implementation + regression suite + fixture lines kept
+  // in place; remove this entry to re-enable.
+  "react-compiler-destructure-method",
+]);
+
 // Bucket directory → default category. A rule MAY override its category
 // with an explicit `category: "..."` field in its `defineRule({...})` call
 // (e.g. some `tanstack-start/` and `nextjs/` rules override to "Security").
 const BUCKET_TO_DEFAULT_CATEGORY = {
+  a11y: "Accessibility",
   architecture: "Architecture",
   "bundle-size": "Bundle Size",
   client: "Performance",
   correctness: "Correctness",
   design: "Architecture",
   "js-performance": "Performance",
+  jotai: "State & Effects",
   nextjs: "Next.js",
   performance: "Performance",
+  preact: "Preact",
+  "react-builtins": "Correctness",
   "react-native": "React Native",
   "react-ui": "Accessibility",
   security: "Security",
@@ -59,6 +108,7 @@ const BUCKET_TO_DEFAULT_CATEGORY = {
   "tanstack-query": "TanStack Query",
   "tanstack-start": "TanStack Start",
   "view-transitions": "Correctness",
+  zod: "Architecture",
 };
 
 const ruleEntries = [];
@@ -98,6 +148,7 @@ for (const bucket of fs.readdirSync(PLUGIN_RULES_ROOT, { withFileTypes: true }))
       process.exit(1);
     }
     const ruleId = idMatch[1];
+    if (RULE_IDS_TO_SKIP_REGISTRATION.has(ruleId)) continue;
     const category = categoryMatch ? categoryMatch[1] : defaultCategory;
     const severity = severityMatch[1];
     // Force POSIX separators — `path.relative()` returns backslashes on
@@ -109,6 +160,10 @@ for (const bucket of fs.readdirSync(PLUGIN_RULES_ROOT, { withFileTypes: true }))
         .replaceAll(path.sep, "/")
         .replace(/\.ts$/, ".js");
     const autoTags = BUCKET_TO_AUTO_TAGS[bucket.name] ?? [];
+    const originallyExternal =
+      !RULES_NOT_PORTED_FROM_EXTERNAL.has(ruleId) &&
+      (BUCKETS_PORTED_FROM_EXTERNAL.has(bucket.name) ||
+        EFFECT_RULES_PORTED_FROM_EXTERNAL.has(ruleId));
     ruleEntries.push({
       ruleId,
       identifier,
@@ -117,6 +172,7 @@ for (const bucket of fs.readdirSync(PLUGIN_RULES_ROOT, { withFileTypes: true }))
       category,
       severity,
       autoTags,
+      originallyExternal,
     });
   }
 }
@@ -152,6 +208,14 @@ const formatAutoTagsLine = (entry) => {
   return `      tags: [...new Set([${autoTagLiteral}, ...(${entry.identifier}.tags ?? [])])],\n`;
 };
 
+// Per-entry shape:
+//   { key, id, source, originallyExternal, rule: { ...sourceRule, framework, category, tags? } }
+//
+// `framework` / `category` / `severity` live on the inner `rule` object
+// (set by the spread + codegen merge) — consumers that need them read
+// `entry.rule.framework` / `.category` / `.severity` so we don't ship
+// the same value twice per entry. Saves ~3 lines × N rules on the
+// generated file and on the published bundle.
 const ruleLines = ruleEntries
   .map(
     (entry) =>
@@ -159,9 +223,7 @@ const ruleLines = ruleEntries
       `    key: "react-doctor/${entry.ruleId}",\n` +
       `    id: "${entry.ruleId}",\n` +
       `    source: "react-doctor",\n` +
-      `    framework: "${entry.framework}",\n` +
-      `    category: "${entry.category}",\n` +
-      `    severity: "${entry.severity}",\n` +
+      `    originallyExternal: ${entry.originallyExternal},\n` +
       `    rule: {\n` +
       `      ...${entry.identifier},\n` +
       `      framework: "${entry.framework}",\n` +

@@ -1,10 +1,9 @@
 import type { EsTreeNode } from "../../../utils/es-tree-node.js";
+import { isInlineFunctionExpression } from "../../../utils/is-inline-function-expression.js";
 import { isNodeOfType } from "../../../utils/is-node-of-type.js";
 import {
-  getStaticMemberPropertyName,
   getStaticMemberReferenceName,
   getStaticPropertyKeyName,
-  isFunctionLike,
 } from "./event-handler-reference.js";
 import {
   addPatternBindings,
@@ -14,6 +13,7 @@ import {
   resolveBindingName,
   type BindingScope,
 } from "./scope-aware-reference-names.js";
+import { getStaticMemberPropertyName } from "./static-member-property-name.js";
 
 const isUseCallbackCall = (node: EsTreeNode): boolean =>
   isNodeOfType(node, "CallExpression") && getCalleeName(node.callee) === "useCallback";
@@ -29,7 +29,7 @@ const isFunctionLikeReference = (
   functionLikeLocalNames: Set<string>,
   scope: BindingScope,
 ): boolean => {
-  if (isFunctionLike(node) || isUseCallbackCall(node)) return true;
+  if (isInlineFunctionExpression(node) || isUseCallbackCall(node)) return true;
   if (isNodeOfType(node, "Identifier"))
     return functionLikeLocalNames.has(resolveBindingName(scope, node.name));
   const memberReferenceName = getStaticMemberReferenceName(node, (name) =>

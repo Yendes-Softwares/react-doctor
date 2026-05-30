@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
+import Image from "next/image";
 import { Copy, Check, ChevronRight, RotateCcw } from "lucide-react";
-import { PERFECT_SCORE } from "@/constants";
+import { PERFECT_SCORE, RUN_COMMAND } from "@/constants";
 import { getDoctorFace } from "@/utils/get-doctor-face";
 import { getScoreColorClass } from "@/utils/get-score-color-class";
 import { getScoreLabel } from "@/utils/get-score-label";
@@ -27,7 +28,6 @@ const AFFECTED_FILE_COUNT = 18;
 const ELAPSED_TIME = "2.1s";
 
 const ANIMATION_COMPLETED_KEY = "react-doctor-animation-completed";
-const COMMAND = "npx react-doctor@latest";
 const GITHUB_URL = "https://github.com/millionco/react-doctor";
 const GITHUB_ICON_PATH =
   "M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.531 1.032 1.531 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z";
@@ -86,8 +86,25 @@ const DIAGNOSTICS: RuleDiagnostic[] = [
 
 const easeOutCubic = (progress: number) => 1 - Math.pow(1 - progress, 3);
 
-const sleep = (milliseconds: number) =>
-  new Promise<void>((resolve) => setTimeout(resolve, milliseconds));
+const sleep = (milliseconds: number, signal: AbortSignal) =>
+  new Promise<void>((resolve, reject) => {
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    const timeoutId = setTimeout(() => {
+      signal.removeEventListener("abort", handleAbort);
+      resolve();
+    }, milliseconds);
+    const handleAbort = () => {
+      clearTimeout(timeoutId);
+      reject(signal.reason);
+    };
+    signal.addEventListener("abort", handleAbort, { once: true });
+  });
+
+const isAbortError = (error: unknown): boolean =>
+  error instanceof DOMException && error.name === "AbortError";
 
 const Spacer = () => <div className="min-h-[1.4em]" />;
 
@@ -137,7 +154,7 @@ const ScoreHeader = ({ score }: { score: number }) => {
           </span>
         </div>
         <div>
-          React Doctor <span className="text-neutral-500">(www.react.doctor)</span>
+          React Doctor <span className="text-neutral-500">(https://react.doctor)</span>
         </div>
       </div>
     </div>
@@ -189,7 +206,7 @@ const CopyCommand = () => {
   const [didCopy, setDidCopy] = useState(false);
 
   const handleCopy = useCallback(async () => {
-    await navigator.clipboard.writeText(COMMAND);
+    await navigator.clipboard.writeText(RUN_COMMAND);
     setDidCopy(true);
     setTimeout(() => setDidCopy(false), COPIED_RESET_DELAY_MS);
   }, []);
@@ -201,7 +218,7 @@ const CopyCommand = () => {
 
   return (
     <div className="group flex items-center gap-4 border border-white/20 px-3 py-1.5 transition-colors hover:bg-white/5">
-      <span className="select-all whitespace-nowrap text-white">{COMMAND}</span>
+      <span className="select-all whitespace-nowrap text-white">{RUN_COMMAND}</span>
       <button onClick={handleCopy}>
         <IconComponent size={16} className={iconClass} />
       </button>
@@ -230,7 +247,7 @@ const INITIAL_STATE: AnimationState = {
 };
 
 const COMPLETED_STATE: AnimationState = {
-  typedCommand: COMMAND,
+  typedCommand: RUN_COMMAND,
   isTyping: false,
   showVersion: true,
   visibleDiagnosticCount: DIAGNOSTICS.length,
@@ -262,59 +279,56 @@ const Terminal = () => {
       return;
     }
 
-    let cancelled = false;
+    const abortController = new AbortController();
+    const { signal } = abortController;
 
     const update = (patch: Partial<AnimationState>) => {
-      if (!cancelled) setState((previous) => ({ ...previous, ...patch }));
+      if (signal.aborted) return;
+      setState((previous) => ({ ...previous, ...patch }));
     };
 
     const run = async () => {
-      await sleep(INITIAL_DELAY_MS);
+      await sleep(INITIAL_DELAY_MS, signal);
 
-      for (let index = 0; index <= COMMAND.length; index++) {
-        if (cancelled) return;
-        update({ typedCommand: COMMAND.slice(0, index) });
-        await sleep(TYPING_DELAY_MS);
+      for (let index = 0; index <= RUN_COMMAND.length; index++) {
+        update({ typedCommand: RUN_COMMAND.slice(0, index) });
+        await sleep(TYPING_DELAY_MS, signal);
       }
 
       update({ isTyping: false });
-      await sleep(POST_COMMAND_DELAY_MS);
-      if (cancelled) return;
+      await sleep(POST_COMMAND_DELAY_MS, signal);
 
       update({ showVersion: true });
-      await sleep(POST_VERSION_DELAY_MS);
+      await sleep(POST_VERSION_DELAY_MS, signal);
 
       for (let index = 0; index < DIAGNOSTICS.length; index++) {
-        if (cancelled) return;
         update({ visibleDiagnosticCount: index + 1 });
         const jitteredDelay =
           DIAGNOSTIC_MIN_DELAY_MS +
           Math.random() * (DIAGNOSTIC_MAX_DELAY_MS - DIAGNOSTIC_MIN_DELAY_MS);
-        await sleep(jitteredDelay);
+        await sleep(jitteredDelay, signal);
       }
 
-      await sleep(SCORE_REVEAL_DELAY_MS);
+      await sleep(SCORE_REVEAL_DELAY_MS, signal);
 
       for (let frame = 0; frame <= SCORE_FRAME_COUNT; frame++) {
-        if (cancelled) return;
         update({ score: Math.round(easeOutCubic(frame / SCORE_FRAME_COUNT) * TARGET_SCORE) });
-        await sleep(SCORE_FRAME_DELAY_MS);
+        await sleep(SCORE_FRAME_DELAY_MS, signal);
       }
 
-      await sleep(POST_SCORE_DELAY_MS);
-      if (cancelled) return;
+      await sleep(POST_SCORE_DELAY_MS, signal);
       update({ showCountsSummary: true });
 
-      await sleep(POST_SCORE_DELAY_MS);
-      if (cancelled) return;
+      await sleep(POST_SCORE_DELAY_MS, signal);
       update({ showCta: true });
       markAnimationCompleted();
     };
 
-    run();
-    return () => {
-      cancelled = true;
-    };
+    run().catch((error) => {
+      if (!isAbortError(error)) throw error;
+    });
+
+    return () => abortController.abort();
   }, []);
 
   return (
@@ -329,7 +343,7 @@ const Terminal = () => {
         <FadeIn>
           <Spacer />
           <div className="flex items-center gap-2">
-            <img src="/favicon.svg" alt="React Doctor" width={24} height={24} />
+            <Image src="/favicon.svg" alt="React Doctor" width={24} height={24} unoptimized />
             react-doctor
           </div>
           <div className="text-neutral-500">Your agent writes bad React, this catches it.</div>

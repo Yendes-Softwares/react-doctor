@@ -1,9 +1,15 @@
+import * as Console from "effect/Console";
+import * as Effect from "effect/Effect";
 import fs from "node:fs";
 import path from "node:path";
-import type { ReactDoctorConfig } from "@react-doctor/types";
-import { isFile, isMonorepoRoot, isPlainObject } from "@react-doctor/project-info";
-import { logger } from "./logger.js";
+import type { ReactDoctorConfig } from "./types/index.js";
+import { isFile, isPlainObject } from "./project-info/index.js";
+import { isProjectBoundary } from "./utils/is-project-boundary.js";
 import { validateConfigTypes } from "./validate-config-types.js";
+
+const warn = (message: string): void => {
+  Effect.runSync(Console.warn(message));
+};
 
 const CONFIG_FILENAME = "react-doctor.config.json";
 const PACKAGE_JSON_CONFIG_KEY = "reactDoctor";
@@ -32,9 +38,9 @@ const loadConfigFromDirectory = (directory: string): LoadedReactDoctorConfig | n
           sourceDirectory: directory,
         };
       }
-      logger.warn(`${CONFIG_FILENAME} must be a JSON object, ignoring.`);
+      warn(`${CONFIG_FILENAME} must be a JSON object, ignoring.`);
     } catch (error) {
-      logger.warn(
+      warn(
         `Failed to parse ${CONFIG_FILENAME}: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
@@ -65,9 +71,6 @@ const loadConfigFromDirectory = (directory: string): LoadedReactDoctorConfig | n
 // HACK: `.git` exists either as a directory (regular repo) or a file
 // (git worktree pointing back to the main .git dir). `fs.existsSync`
 // covers both — no need for a separate `isFile` check.
-const isProjectBoundary = (directory: string): boolean =>
-  fs.existsSync(path.join(directory, ".git")) || isMonorepoRoot(directory);
-
 const cachedConfigs = new Map<string, LoadedReactDoctorConfig | null>();
 
 // HACK: expose a way to clear the module-level config cache so programmatic

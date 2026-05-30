@@ -1,5 +1,147 @@
 # eslint-plugin-react-doctor
 
+## 0.2.13
+
+### Patch Changes
+
+- Updated dependencies []:
+  - oxlint-plugin-react-doctor@0.2.13
+
+## 0.2.12
+
+### Patch Changes
+
+- [#570](https://github.com/millionco/react-doctor/pull/570) [`d917f62`](https://github.com/millionco/react-doctor/commit/d917f62ed6215e9a984c9bfa83940bba723ff5de) Thanks [@aidenybai](https://github.com/aidenybai)! - Add the `no-prop-types` architecture rule. React 19 removed runtime `propTypes` validation entirely — React no longer reads `Component.propTypes`, so invalid props that used to log a console warning now pass silently. The rule flags `Component.propTypes = { ... }` assignments and `static propTypes` class fields on component-cased identifiers, and is version-gated to React 19+ (`requires: ["react:19"]`) so projects where `propTypes` still runs stay quiet. It steers users toward TypeScript prop types plus explicit runtime validation. See [#460](https://github.com/millionco/react-doctor/issues/460).
+
+- [#582](https://github.com/millionco/react-doctor/pull/582) [`b2934f9`](https://github.com/millionco/react-doctor/commit/b2934f93e439027ed132e40688d45ef682f05efb) Thanks [@rayhanadev](https://github.com/rayhanadev)! - Fix a `rn-no-raw-text` false positive on fbtee translation tags. fbtee's `<fbt>` / `<fbs>` (and namespaced children like `<fbt:param>`) are compile-time translation tags that disappear at build time, so text inside `<Text><fbt>…</fbt></Text>` is really rendered inside `<Text>` and is safe on React Native. The rule now treats `fbt` / `fbs` as transparent wrappers when every ancestor up to a text-handling component is also transparent, while still reporting raw text when an `<fbt>` is used outside a `<Text>` boundary. See [#581](https://github.com/millionco/react-doctor/issues/581).
+
+- Updated dependencies [[`d917f62`](https://github.com/millionco/react-doctor/commit/d917f62ed6215e9a984c9bfa83940bba723ff5de), [`d0f5206`](https://github.com/millionco/react-doctor/commit/d0f52062e09c7bfe11eda2c06ad6e9ab0ab7da58), [`b2934f9`](https://github.com/millionco/react-doctor/commit/b2934f93e439027ed132e40688d45ef682f05efb)]:
+  - oxlint-plugin-react-doctor@0.2.12
+
+## 0.2.11
+
+### Patch Changes
+
+- Updated dependencies [[`6f8640f`](https://github.com/millionco/react-doctor/commit/6f8640f6d98a75db90d28b56fdaf5abc81a53163)]:
+  - oxlint-plugin-react-doctor@0.2.11
+
+## 0.2.10
+
+### Patch Changes
+
+- Inherit the latest shared rule registry from `oxlint-plugin-react-doctor@0.2.10`: Preact compatibility checks, HTML correctness and dialog accessibility rules, `hooks-no-nan-in-deps`, Jotai atom diagnostics, React Native performance rules, `js-async-reduce-without-awaited-acc`, and React 19.2 `<Activity>` effect-boundary checks.
+
+- Inherit false-positive fixes for `control-has-associated-label` and `no-giant-component`.
+
+- Dependency bump: `oxlint-plugin-react-doctor@0.2.10`.
+
+## 0.2.9
+
+### Patch Changes
+
+- Published with the trusted-publishing workflow update. No ESLint rule behavior changed in this package.
+
+- Dependency bump: `oxlint-plugin-react-doctor@0.2.9`.
+
+## 0.2.8
+
+### Patch Changes
+
+- add react-doctor.config.json schema field
+
+- Updated dependencies []:
+  - oxlint-plugin-react-doctor@0.2.8
+
+## 0.2.7
+
+### Patch Changes
+
+- Bundle `eslint-plugin-react-hooks` as a direct dependency so React Compiler rules resolve without requiring users to install the peer separately.
+
+- Inherit the `no-mutating-reducer-state` rule and helper consolidation from `oxlint-plugin-react-doctor@0.2.7`.
+
+- Updated dependencies []:
+  - oxlint-plugin-react-doctor@0.2.7
+
+## 0.2.6
+
+### Patch Changes
+
+- Inherit the `design-no-bold-heading` rule removal from `oxlint-plugin-react-doctor@0.2.6`.
+
+- Updated dependencies []:
+  - oxlint-plugin-react-doctor@0.2.6
+
+## 0.2.5
+
+### Patch Changes
+
+- Inherit the `jsx-key` shorthand fragment fix, static template literal normalization, and Node 20 support from `oxlint-plugin-react-doctor@0.2.5`.
+
+- Updated dependencies []:
+  - oxlint-plugin-react-doctor@0.2.5
+
+## 0.2.4
+
+### Patch Changes
+
+- Inherit the Effect v4 runtime adoption, deprecated type stub removal, and user-plugin extension support from `oxlint-plugin-react-doctor@0.2.4`.
+
+- Updated dependencies []:
+  - oxlint-plugin-react-doctor@0.2.4
+
+## 0.2.3
+
+### Patch Changes
+
+- Fix build configuration so the ESLint plugin resolves its dependency on `oxlint-plugin-react-doctor` correctly at publish time.
+
+- Updated dependencies []:
+  - oxlint-plugin-react-doctor@0.2.3
+
+## 0.2.2
+
+### Patch Changes
+
+- Restore `eslint-plugin-react-hooks` as a hard dependency so React Compiler rules resolve without requiring users to install the peer separately.
+
+- [#273](https://github.com/millionco/react-doctor/pull/273) [`47772b7`](https://github.com/millionco/react-doctor/commit/47772b7da4f6e412b09e3a4f74d888307faf74a1) - Natively port the 8 rules from `eslint-plugin-react-you-might-not-need-an-effect`
+  (NickvanDyke, MIT) into `oxlint-plugin-react-doctor`. They now ship as
+  `react-doctor/*` rules and no longer require the optional peer
+  dependency. The optional peer-dep surface (`effect/*` rules,
+  `resolveYouMightNotNeedEffectPlugin`,
+  `YOU_MIGHT_NOT_NEED_EFFECT_NAMESPACE`) is removed from
+  `@react-doctor/core`.
+
+  The ports use a real `eslint-scope` ScopeManager (cached per Program
+  via `WeakMap`) - same `references` / `resolved.defs[].node.init` /
+  `isEventualCallTo` chasing the upstream plugin uses. Diagnostic
+  messages match upstream verbatim with template variables substituted
+  in JS.
+
+  | Rule (now `react-doctor/<id>`)      | What it catches                                                          |
+  | ----------------------------------- | ------------------------------------------------------------------------ |
+  | `no-derived-state`                  | Storing derived state via a useEffect instead of computing during render |
+  | `no-chain-state-updates`            | Chaining state updates across effects                                    |
+  | `no-event-handler`                  | Using state + a guarded effect as an event handler                       |
+  | `no-adjust-state-on-prop-change`    | Adjusting state in an effect when a prop changes                         |
+  | `no-reset-all-state-on-prop-change` | Resetting all state in an effect (use a `key` prop)                      |
+  | `no-pass-live-state-to-parent`      | Pushing live state to a parent via a callback in an effect               |
+  | `no-pass-data-to-parent`            | Passing fetched data to a parent via a callback in an effect             |
+  | `no-initialize-state`               | Initializing state inside a mount-only effect                            |
+
+  Parity coverage: 195 of 196 upstream test cases pass (the 1 remaining
+  case is upstream's own `todo: true`, "Set derived state via identical
+  intermediate setter").
+
+  These coexist with React Doctor's existing thematically-related rules
+  (`no-derived-state-effect`, `no-effect-chain`, `no-event-trigger-state`,
+  `no-prop-callback-in-effect`) - different IDs, different shapes,
+  different messages.
+
+- Updated dependencies [[`47772b7`](https://github.com/millionco/react-doctor/commit/47772b7da4f6e412b09e3a4f74d888307faf74a1)]:
+  - oxlint-plugin-react-doctor@0.2.2
+
 ## 0.2.1
 
 ### Patch Changes
@@ -13,15 +155,13 @@
 
 ### Minor Changes
 
-- fix
-
-- [`5be2ead`](https://github.com/millionco/react-doctor/commit/5be2eadd90b2248b28b228fad306808cec1bf758) Thanks [@aidenybai](https://github.com/aidenybai)! - Add configuration-level controls for React Doctor's rule output. Users can now set top-level `rules` and `categories` severity overrides, tune individual output surfaces (`cli`, `prComment`, `score`, and `ciFailure`) by tag/category/rule id, and rely on registered rule-family tags such as `design`, `react-native`, `server-action`, `test-noise`, and `migration-hint` for broad filtering.
+- [`5be2ead`](https://github.com/millionco/react-doctor/commit/5be2eadd90b2248b28b228fad306808cec1bf758) - Add configuration-level controls for React Doctor's rule output. Users can now set top-level `rules` and `categories` severity overrides, tune individual output surfaces (`cli`, `prComment`, `score`, and `ciFailure`) by tag/category/rule id, and rely on registered rule-family tags such as `design`, `react-native`, `server-action`, `test-noise`, and `migration-hint` for broad filtering.
 
   The scan pipeline now applies those controls both when generating the oxlint config and when post-processing diagnostics, so `"off"` can skip rules before they run while `"warn"` / `"error"` restamp emitted diagnostics consistently across the CLI, score, PR comments, and CI failure gate. The oxlint plugin also exposes shared rule-set maps that the ESLint plugin reuses for its flat configs.
 
   Expose the GitHub Action's `annotations` input so workflow users can opt into inline PR annotations without dropping down to the raw CLI.
 
-- [`809e38c`](https://github.com/millionco/react-doctor/commit/809e38cebabc15c42b3c40ee8c7a753c3d7549d0) Thanks [@aidenybai](https://github.com/aidenybai)! - Extract project / dependency / framework detection, the oxlint runner +
+- [`809e38c`](https://github.com/millionco/react-doctor/commit/809e38cebabc15c42b3c40ee8c7a753c3d7549d0) - Extract project / dependency / framework detection, the oxlint runner +
   scoring engine, and the shared TypeScript type layer out of the
   `react-doctor` monolith into three new public workspace packages:
   `@react-doctor/types`, `@react-doctor/project-info`, and
@@ -37,7 +177,7 @@
 
 ### Patch Changes
 
-- [`99f6a6a`](https://github.com/millionco/react-doctor/commit/99f6a6ad1cc41828172b26f17a84bcf2d66ff17c) Thanks [@aidenybai](https://github.com/aidenybai)! - Rule-fix wave for the 0.2.0-beta.5 release:
+- [`99f6a6a`](https://github.com/millionco/react-doctor/commit/99f6a6ad1cc41828172b26f17a84bcf2d66ff17c) - Rule-fix wave for the 0.2.0-beta.5 release:
 
   - Scope `no-secrets-in-client-code` to client-reachable bindings -
     skips server-only modules, public env-prefixed values, and
@@ -68,7 +208,7 @@
     from the default PR-comment surface while staying visible in the
     CLI report and at the CI failure gate ([#271](https://github.com/millionco/react-doctor/issues/271)).
 
-- [#266](https://github.com/millionco/react-doctor/pull/266) [`529015d`](https://github.com/millionco/react-doctor/commit/529015d1d89441c4708f49413ecd540db7c04255) Thanks [@aidenybai](https://github.com/aidenybai)! - Scope React Native rules to per-package boundaries. Previously every
+- [#266](https://github.com/millionco/react-doctor/pull/266) [`529015d`](https://github.com/millionco/react-doctor/commit/529015d1d89441c4708f49413ecd540db7c04255) - Scope React Native rules to per-package boundaries. Previously every
   `rn-*` rule fired on every file in a project whose top-level framework
   was detected as React Native or Expo - even on sibling workspaces that
   were clearly web targets. In a mixed RN + web monorepo (`apps/mobile`
@@ -107,7 +247,7 @@
   keep the rule active even when the surrounding package classification
   is ambiguous.
 
-- [`99f6a6a`](https://github.com/millionco/react-doctor/commit/99f6a6ad1cc41828172b26f17a84bcf2d66ff17c) Thanks [@aidenybai](https://github.com/aidenybai)! - False-positive sweep across the rule plugin and the oxlint runner:
+- [`99f6a6a`](https://github.com/millionco/react-doctor/commit/99f6a6ad1cc41828172b26f17a84bcf2d66ff17c) - False-positive sweep across the rule plugin and the oxlint runner:
 
   - Gate React-19-only rules on the detected React major version so they
     stay silent on React 18 projects, with hardened catalog / peer-range /

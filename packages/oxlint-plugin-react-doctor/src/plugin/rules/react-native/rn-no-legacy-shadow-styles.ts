@@ -31,13 +31,16 @@ const reportLegacyShadowProperties = (
 
 export const rnNoLegacyShadowStyles = defineRule<Rule>({
   id: "rn-no-legacy-shadow-styles",
+  tags: ["test-noise"],
   requires: ["react-native"],
   severity: "warn",
   recommendation:
     "Use `boxShadow` for cross-platform shadows on the new architecture instead of platform-specific shadow properties",
   create: (context: RuleContext) => ({
     JSXAttribute(node: EsTreeNodeOfType<"JSXAttribute">) {
-      if (!isNodeOfType(node.name, "JSXIdentifier") || node.name.name !== "style") return;
+      if (!isNodeOfType(node.name, "JSXIdentifier")) return;
+      const attrName = node.name.name;
+      if (attrName !== "style" && !attrName.endsWith("Style")) return;
       if (!isNodeOfType(node.value, "JSXExpressionContainer")) return;
 
       const expression = node.value.expression;

@@ -33,8 +33,8 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { runOxlint } from "@react-doctor/core";
-import { discoverProject } from "@react-doctor/project-info";
-import type { Diagnostic, PackageJson } from "@react-doctor/types";
+import { discoverProject } from "@react-doctor/core";
+import type { Diagnostic, PackageJson } from "@react-doctor/core";
 import { buildTestProject, setupReactProject, writeFile, writeJson } from "./_helpers.js";
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rd-rn-scope-"));
@@ -43,7 +43,15 @@ afterAll(() => {
   fs.rmSync(tempRoot, { recursive: true, force: true });
 });
 
-const FIXTURES_DIRECTORY = path.resolve(import.meta.dirname, "..", "fixtures");
+const FIXTURES_DIRECTORY = path.resolve(
+  import.meta.dirname,
+  "..",
+  "..",
+  "..",
+  "core",
+  "tests",
+  "fixtures",
+);
 const MIXED_MONOREPO_FIXTURE = path.join(FIXTURES_DIRECTORY, "mixed-rn-web-monorepo");
 
 const findRnDiagnostics = (diagnostics: Diagnostic[]): Diagnostic[] =>

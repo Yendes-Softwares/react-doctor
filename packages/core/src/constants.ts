@@ -1,16 +1,38 @@
 // SOURCE_FILE_PATTERN, GIT_LS_FILES_MAX_BUFFER_BYTES, and
-// IGNORED_DIRECTORIES live in @react-doctor/project-info (which core
-// already depends on). Re-exported here so core consumers don't have
-// to know which package owns each constant.
+// IGNORED_DIRECTORIES live in `./project-info/constants.js`
+// (the project-discovery subtree). Re-exported here so core
+// consumers don't have to know which subtree owns each constant.
 export {
   GIT_LS_FILES_MAX_BUFFER_BYTES,
   IGNORED_DIRECTORIES,
   SOURCE_FILE_PATTERN,
-} from "@react-doctor/project-info";
+} from "./project-info/constants.js";
 
 export const JSX_FILE_PATTERN = /\.(tsx|jsx)$/;
 
 export const MILLISECONDS_PER_SECOND = 1000;
+
+// Upper bound for the `react:<major>` capability loop in
+// `buildCapabilities`, clamping an unvalidated package.json spec like
+// `"react": "20240101"` that would otherwise drive the loop to tens of
+// millions of iterations (hang / OOM). Set generously — React ships
+// ~one major a year and is probably only gonna be around for another
+// 10 yrs, so 30 is plenty of headroom; any unused `react:<n>` capability
+// strings above the latest real major are harmless.
+export const LATEST_KNOWN_REACT_MAJOR = 30;
+
+// Lowest React major react-doctor emits a `react:<major>` capability
+// for (rules gate on `react:17`+ at the floor).
+export const EARLIEST_GATED_REACT_MAJOR = 17;
+
+// Preact mirror of `LATEST_KNOWN_REACT_MAJOR`. Preact ships majors slowly
+// (X/10 since 2019, 11 next), so 20 is ample headroom; surplus
+// `preact:<n>` capability strings above the latest real major are harmless.
+export const LATEST_KNOWN_PREACT_MAJOR = 20;
+
+// Lowest Preact major react-doctor emits a `preact:<major>` capability
+// for. Preact X (10) is the modern baseline.
+export const EARLIEST_GATED_PREACT_MAJOR = 10;
 
 export const ERROR_PREVIEW_LENGTH_CHARS = 200;
 
@@ -26,21 +48,28 @@ export const SCORE_API_URL = "https://www.react.doctor/api/score";
 
 export const SHARE_BASE_URL = "https://www.react.doctor/share";
 
-export const REACT_REVIEW_URL = "https://react.review";
+// Base URL for the per-rule fix recipes the `/doctor` playbook fetches
+// on demand. The full URL for one rule is
+// `<base>/<plugin>/<rule>.md` (see `buildRulePromptUrl`).
+export const PROMPTS_RULES_BASE_URL = "https://www.react.doctor/prompts/rules";
 
 export const FETCH_TIMEOUT_MS = 10_000;
+
+export const GITHUB_VIEWER_PERMISSION_TIMEOUT_MS = 2_000;
 
 // HACK: Windows CreateProcessW limits total command-line length to 32,767 chars.
 // Use a conservative threshold to leave room for the executable path and quoting overhead.
 export const SPAWN_ARGS_MAX_LENGTH_CHARS = 24_000;
 
 // HACK: bound per-batch work so that JS-evaluated plugins with bad
-// scaling (notably `eslint-plugin-react-you-might-not-need-an-effect`
-// — verified to hit the 5-min spawn timeout on supabase/studio's ~3500
-// source files at batch=500, productive at batch=100) stay tractable
-// AND so that oxlint doesn't SIGABRT from memory pressure on very
-// large file sets. Smaller batches add ~50ms spawn overhead per
-// extra batch — negligible vs the hard-cap perf cliffs they prevent.
+// scaling (originally the upstream `effect` plugin — verified to hit
+// the 5-min spawn timeout on supabase/studio's ~3500 source files at
+// batch=500, productive at batch=100; same characteristics apply to
+// the ported `react-doctor/no-derived-state` family because both rely
+// on whole-component scope walking) stay tractable AND so that oxlint
+// doesn't SIGABRT from memory pressure on very large file sets.
+// Smaller batches add ~50ms spawn overhead per extra batch — negligible
+// vs the hard-cap perf cliffs they prevent.
 export const OXLINT_MAX_FILES_PER_BATCH = 100;
 
 export const DEFAULT_BRANCH_CANDIDATES = ["main", "master"];
@@ -58,11 +87,48 @@ export const OXLINT_RECOMMENDED_NODE_MAJOR = 24;
 
 export const GIT_SHOW_MAX_BUFFER_BYTES = 10 * 1024 * 1024;
 
+/**
+ * Project-config files that `StagedFiles.materialize` copies into
+ * the temp directory alongside staged sources so oxlint resolves
+ * `tsconfig` / `package.json` / lint configs the same way it would
+ * in the working tree. Hoisted out of the staged-files helper so
+ * the constant lives next to the rest of the IO budget knobs.
+ */
+export const STAGED_FILES_PROJECT_CONFIG_FILENAMES = [
+  "tsconfig.json",
+  "tsconfig.base.json",
+  "package.json",
+  "react-doctor.config.json",
+  "oxlint.json",
+  ".oxlintrc.json",
+] as const;
+
 export const CANONICAL_GITHUB_URL = "https://github.com/millionco/react-doctor";
 
 export const SKILL_NAME = "react-doctor";
 
+// HACK: cap on combined stdout+stderr bytes per oxlint batch. Above
+// this we kill the process (SIGKILL) and ask the user to narrow the
+// scan with --diff. Pinned to 50 MiB because oxlint emits ~1 KB of
+// JSON per diagnostic and the largest real-world batches in the eval
+// corpus (supabase/studio at 3,567 source files) produce ~3 MiB
+// total — 50 MiB leaves an order of magnitude of headroom for
+// pathological JS-plugin rules that emit one diagnostic per AST node.
 export const OXLINT_OUTPUT_MAX_BYTES = 50 * 1024 * 1024;
+
+// HACK: per-batch wall-clock budget for an oxlint spawn. Each batch
+// is at most OXLINT_MAX_FILES_PER_BATCH (= 100) files and a healthy
+// batch finishes in well under a second; 60 s leaves a large safety
+// margin while still firing fast enough that the binary-split
+// recovery in spawnLintBatches narrows a pathological batch to the
+// single offending file rather than killing the whole scan as the
+// previous 5-min budget did on supabase/studio. The eval harness
+// overrides this via the OxlintSpawnTimeoutMs Context.Reference when
+// running under Vercel Sandbox microVMs where the oxlint native
+// binding is markedly slower than on a developer laptop.
+export const OXLINT_SPAWN_TIMEOUT_MS = 60_000;
+
+export const DEAD_CODE_WORKER_TIMEOUT_MS = 120_000;
 
 // HACK: lookahead cap for JSX opener-span scanning; bounds worst-case
 // work on pathological files. Real openers stay well under this.
@@ -78,6 +144,11 @@ export const SUPPRESSION_NEAR_MISS_MAX_LINES = 10;
 export const MAX_CATEGORY_GROUPS_SHOWN_NON_VERBOSE = 5;
 
 export const MAX_RULE_GROUPS_PER_CATEGORY_NON_VERBOSE = 3;
+
+// `minimumReleaseAge` in `pnpm-workspace.yaml` is denominated in
+// minutes. 7 days × 24 h × 60 min = 10080. Surfaced as the
+// recommended starting point for the supply-chain hardening check.
+export const RECOMMENDED_PNPM_MINIMUM_RELEASE_AGE_MINUTES = 10_080;
 
 // Minimum width of the rule-name column in the diagnostics list. Pads
 // shorter rule names so the right-aligned `N sites` count stays in a
@@ -101,3 +172,24 @@ export const SPINNER_INDENT_CHARS = 0;
 export const MAX_GLOB_PATTERN_LENGTH_CHARS = 1024;
 
 export const MAX_GLOB_PATTERN_WILDCARD_COUNT = 24;
+
+// `Config.layerNode` caches resolved configs per directory so the CLI's
+// repeated `inspect()` calls (one per project in a monorepo loop) don't
+// reload the same `react-doctor.config.json` each time. Capacity bounds
+// memory on monorepos with hundreds of workspace packages; TTL handles
+// long-running consumers (watch-mode tools, language servers).
+export const CONFIG_CACHE_CAPACITY = 16;
+
+export const CONFIG_CACHE_TTL_MS = 5 * 60 * 1_000;
+
+/**
+ * Max sample size shown in partial-failure preview text (e.g.
+ * "and N more files: a.ts, b.ts, c.ts") emitted by the oxlint
+ * binary-split-retry loop.
+ */
+export const OXLINT_PARTIAL_FAILURE_PREVIEW_COUNT = 3;
+
+// HACK: interval for simulated per-file progress ticks while an oxlint
+// batch subprocess runs. The timer increments a counter so the spinner
+// updates smoothly instead of jumping by the batch size on completion.
+export const PROGRESS_TICK_INTERVAL_MS = 50;

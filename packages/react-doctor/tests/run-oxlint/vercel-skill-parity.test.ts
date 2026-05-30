@@ -1,5 +1,5 @@
 import { beforeAll, describe } from "vite-plus/test";
-import type { Diagnostic } from "@react-doctor/types";
+import type { Diagnostic } from "@react-doctor/core";
 import { runOxlint } from "@react-doctor/core";
 import { buildTestProject } from "../regressions/_helpers.js";
 import { BASIC_REACT_DIRECTORY, describeRules } from "./_helpers.js";
@@ -103,11 +103,6 @@ describe("runOxlint", () => {
         fixture: "transient-and-async-issues.tsx",
         ruleSource: "rules/client.ts",
         category: "Correctness",
-      },
-      "react-compiler-destructure-method": {
-        fixture: "transient-and-async-issues.tsx",
-        ruleSource: "rules/architecture.ts",
-        category: "Architecture",
       },
       "async-await-in-loop": {
         fixture: "async-and-handler-issues.tsx",

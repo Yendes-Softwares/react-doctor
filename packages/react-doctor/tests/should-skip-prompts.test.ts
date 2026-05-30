@@ -1,52 +1,24 @@
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import {
+  CODING_AGENT_ENVIRONMENT_VALUE_VARIABLES,
+  CODING_AGENT_ENVIRONMENT_VARIABLES,
+} from "../src/cli/utils/is-ci-environment.js";
+import { NON_INTERACTIVE_ENVIRONMENT_VARIABLES } from "../src/cli/utils/is-non-interactive-environment.js";
 import { shouldSkipPrompts } from "../src/cli/utils/should-skip-prompts.js";
-
-interface ProcessStdinTtyHandle {
-  restore: () => void;
-}
-
-const stubProcessStdinIsTty = (value: boolean): ProcessStdinTtyHandle => {
-  const originalDescriptor = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
-  Object.defineProperty(process.stdin, "isTTY", { value, configurable: true });
-  return {
-    restore: () => {
-      if (originalDescriptor) {
-        Object.defineProperty(process.stdin, "isTTY", originalDescriptor);
-      } else {
-        delete (process.stdin as unknown as { isTTY?: boolean }).isTTY;
-      }
-    },
-  };
-};
+import { stubProcessStdinProperty } from "./helpers/stub-process-stdin-property.js";
 
 // The env vars `isNonInteractiveEnvironment()` consults. Cleared at the
 // start of each test so the helper's result depends only on what the
 // individual test sets.
 const NON_INTERACTIVE_ENV_VARS = [
-  "CI",
-  "GITHUB_ACTIONS",
-  "GITLAB_CI",
-  "BUILDKITE",
-  "JENKINS_URL",
-  "TF_BUILD",
-  "CODEBUILD_BUILD_ID",
-  "TEAMCITY_VERSION",
-  "BITBUCKET_BUILD_NUMBER",
-  "CIRCLECI",
-  "TRAVIS",
-  "DRONE",
-  "CLAUDECODE",
-  "CLAUDE_CODE",
-  "CURSOR_AGENT",
-  "CODEX_CI",
-  "OPENCODE",
-  "AMP_HOME",
-  "GIT_DIR",
+  ...NON_INTERACTIVE_ENVIRONMENT_VARIABLES,
+  ...CODING_AGENT_ENVIRONMENT_VARIABLES,
+  ...CODING_AGENT_ENVIRONMENT_VALUE_VARIABLES,
 ] as const;
 
 describe("shouldSkipPrompts", () => {
   let savedEnv: Record<string, string | undefined>;
-  let ttyHandle: ProcessStdinTtyHandle;
+  let restoreStdinIsTty: () => void;
 
   beforeEach(() => {
     savedEnv = {};
@@ -54,7 +26,7 @@ describe("shouldSkipPrompts", () => {
       savedEnv[envVarName] = process.env[envVarName];
       delete process.env[envVarName];
     }
-    ttyHandle = stubProcessStdinIsTty(true);
+    restoreStdinIsTty = stubProcessStdinProperty("isTTY", true);
   });
 
   afterEach(() => {
@@ -66,7 +38,7 @@ describe("shouldSkipPrompts", () => {
         process.env[envVarName] = previousValue;
       }
     }
-    ttyHandle.restore();
+    restoreStdinIsTty();
   });
 
   it("returns false with an interactive TTY and no other signals", () => {
@@ -86,8 +58,8 @@ describe("shouldSkipPrompts", () => {
   });
 
   it("returns true when stdin is not a TTY", () => {
-    ttyHandle.restore();
-    ttyHandle = stubProcessStdinIsTty(false);
+    restoreStdinIsTty();
+    restoreStdinIsTty = stubProcessStdinProperty("isTTY", false);
     expect(shouldSkipPrompts()).toBe(true);
   });
 

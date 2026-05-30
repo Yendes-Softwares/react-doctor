@@ -14,6 +14,7 @@ import type { EsTreeNodeOfType } from "../../utils/es-tree-node-of-type.js";
 // the content.
 export const rnScrollviewDynamicPadding = defineRule<Rule>({
   id: "rn-scrollview-dynamic-padding",
+  tags: ["test-noise"],
   requires: ["react-native"],
   severity: "warn",
   recommendation:
@@ -22,12 +23,8 @@ export const rnScrollviewDynamicPadding = defineRule<Rule>({
     JSXOpeningElement(node: EsTreeNodeOfType<"JSXOpeningElement">) {
       const elementName = resolveJsxElementName(node);
       if (!elementName) return;
-      if (
-        !SCROLLVIEW_NAMES.has(elementName) &&
-        elementName !== "FlatList" &&
-        elementName !== "FlashList"
-      )
-        return;
+      if (!SCROLLVIEW_NAMES.has(elementName) && elementName !== "FlashList") return;
+      if (elementName === "KeyboardAwareScrollView") return;
 
       for (const attr of node.attributes ?? []) {
         if (!isNodeOfType(attr, "JSXAttribute")) continue;

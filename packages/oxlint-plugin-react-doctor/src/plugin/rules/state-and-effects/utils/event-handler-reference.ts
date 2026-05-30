@@ -1,17 +1,9 @@
 import type { EsTreeNode } from "../../../utils/es-tree-node.js";
+import { isInlineFunctionExpression } from "../../../utils/is-inline-function-expression.js";
 import { isNodeOfType } from "../../../utils/is-node-of-type.js";
-
-export const isFunctionLike = (node: EsTreeNode): boolean =>
-  isNodeOfType(node, "FunctionExpression") || isNodeOfType(node, "ArrowFunctionExpression");
+import { getStaticMemberPropertyName } from "./static-member-property-name.js";
 
 export const isEventHandlerName = (name: string): boolean => /^on[A-Z]/.test(name);
-
-export const getStaticMemberPropertyName = (node: EsTreeNode): string | null => {
-  if (!isNodeOfType(node, "MemberExpression")) return null;
-  if (node.computed) return null;
-  if (isNodeOfType(node.property, "Identifier")) return node.property.name;
-  return null;
-};
 
 export const getStaticMemberReferenceName = (
   node: EsTreeNode,
@@ -36,7 +28,7 @@ export const isEventHandlerValue = (
   eventHandlerReferenceNames: Set<string>,
   resolveName: (name: string) => string = (name) => name,
 ): boolean => {
-  if (isFunctionLike(node)) return true;
+  if (isInlineFunctionExpression(node)) return true;
   if (isNodeOfType(node, "Identifier"))
     return eventHandlerReferenceNames.has(resolveName(node.name));
   const memberReferenceName = getStaticMemberReferenceName(node, resolveName);

@@ -5,10 +5,13 @@ import { installAction } from "./commands/install.js";
 import { exitGracefully } from "./utils/exit-gracefully.js";
 import { handleError } from "./utils/handle-error.js";
 import { isJsonModeActive, writeJsonErrorReport } from "./utils/json-mode.js";
+import { stripUnknownCliFlags } from "./utils/strip-unknown-cli-flags.js";
+import { unrefStdin } from "./utils/unref-stdin.js";
 import { VERSION } from "./utils/version.js";
 
 process.on("SIGINT", exitGracefully);
 process.on("SIGTERM", exitGracefully);
+unrefStdin();
 
 const program = new Command()
   .name("react-doctor")
@@ -17,6 +20,11 @@ const program = new Command()
   .argument("[directory]", "project directory to scan", ".")
   .option("--lint", "enable linting")
   .option("--no-lint", "skip linting")
+  .option("--dead-code", "enable dead-code analysis (default)")
+  .option(
+    "--no-dead-code",
+    "skip dead-code analysis (unused files / exports / dependencies, circular imports)",
+  )
   .option("--verbose", "show every rule and per-file details (default shows top 3 rules)")
   .option("--score", "output only the score")
   .option("--json", "output a single structured JSON report (suppresses other output)")
@@ -28,11 +36,15 @@ const program = new Command()
     "--diff [base]",
     "scan only files changed vs base branch (pass `false` to disable; overridden by --full)",
   )
-  .option("--offline", "skip the score API and the share URL (no score is shown)")
+  .option(
+    "--changed-files-from <file>",
+    "internal: scan source files listed in a newline-delimited changed-files file",
+  )
+  .option("--no-score", "skip the score API and the share URL")
   .option("--staged", "scan only staged (git index) files for pre-commit hooks")
   .option(
     "--fail-on <level>",
-    "exit with error code on diagnostics: error, warning, none (default: error)",
+    "exit with error code on diagnostics: error, warning, none (default: none)",
   )
   .option("--annotations", "output diagnostics as GitHub Actions annotations")
   .option(
@@ -69,9 +81,10 @@ program.action(inspectAction);
 program
   .command("install")
   .alias("setup")
-  .description("Install the react-doctor skill into your coding agents")
+  .description("Install the react-doctor skill into your coding agents and optional git hook")
   .option("-y, --yes", "skip prompts, install for all detected agents")
   .option("--dry-run", "show what would be installed without writing files")
+  .option("--agent-hooks", "install native non-blocking agent hooks for Claude Code and Cursor")
   .option("-c, --cwd <cwd>", "working directory", process.cwd())
   .action(installAction);
 
@@ -82,7 +95,7 @@ process.stdout.on("error", (error: NodeJS.ErrnoException) => {
   if (error.code === "EPIPE") process.exit(0);
 });
 
-program.parseAsync().catch((error: unknown) => {
+program.parseAsync(stripUnknownCliFlags(process.argv)).catch((error: unknown) => {
   if (isJsonModeActive()) {
     writeJsonErrorReport(error);
     process.exit(1);

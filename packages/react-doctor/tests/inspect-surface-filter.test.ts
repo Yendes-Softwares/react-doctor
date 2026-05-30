@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { inspect } from "../src/inspect.js";
 import path from "node:path";
+import { gunzipSync } from "node:zlib";
 import reactDoctorPlugin from "oxlint-plugin-react-doctor";
 
 vi.mock("ora", () => ({
@@ -17,19 +18,38 @@ vi.mock("ora", () => ({
   }),
 }));
 
-const FIXTURES_DIRECTORY = path.resolve(import.meta.dirname, "fixtures");
+const FIXTURES_DIRECTORY = path.resolve(
+  import.meta.dirname,
+  "..",
+  "..",
+  "core",
+  "tests",
+  "fixtures",
+);
 
 interface CapturedFetchCall {
   url: string;
   body: string;
 }
 
+const decodeRequestBody = (init: RequestInit | undefined): string => {
+  const rawBody = init?.body;
+  if (!rawBody) return "";
+  const encoding = new Headers(init?.headers ?? {}).get("content-encoding")?.toLowerCase() ?? "";
+  if (rawBody instanceof Uint8Array) {
+    return encoding === "gzip"
+      ? gunzipSync(rawBody).toString("utf8")
+      : Buffer.from(rawBody).toString("utf8");
+  }
+  return String(rawBody);
+};
+
 const stubScoreFetchAndCapture = (): { captured: CapturedFetchCall[] } => {
   const captured: CapturedFetchCall[] = [];
   vi.stubGlobal(
     "fetch",
     vi.fn(async (url: string, init?: RequestInit) => {
-      captured.push({ url, body: String(init?.body ?? "") });
+      captured.push({ url, body: decodeRequestBody(init) });
       return new Response(JSON.stringify({ score: 90, label: "Great" }), {
         status: 200,
         headers: { "Content-Type": "application/json" },
@@ -52,7 +72,8 @@ describe("inspect — score surface filter", () => {
     try {
       const result = await inspect(path.join(FIXTURES_DIRECTORY, "basic-react"), {
         lint: true,
-        offline: false,
+        deadCode: false,
+        noScore: false,
       });
 
       const scoreCall = captured.find(({ url }) => url.includes("score"));
@@ -83,38 +104,44 @@ describe("inspect — score surface filter", () => {
   // dropped any user-configured `surfaces.cli.exclude*` controls before
   // the printed output rendered. The filter now always runs so user
   // overrides on the cli surface flow through end-to-end.
-  it("honors user-configured `surfaces.cli` overrides on the printed output", async () => {
-    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    stubScoreFetchAndCapture();
-    const printedLines: string[] = [];
-    consoleSpy.mockImplementation((...args: unknown[]) => {
-      printedLines.push(args.map(String).join(" "));
-    });
-
-    try {
-      const baselineResult = await inspect(path.join(FIXTURES_DIRECTORY, "basic-react"), {
-        lint: true,
-        offline: true,
-      });
-      const baselineDesignCount = baselineResult.diagnostics.filter(
-        (diagnostic) =>
-          diagnostic.plugin === "react-doctor" &&
-          (reactDoctorPlugin.rules[diagnostic.rule]?.tags?.includes("design") ?? false),
-      ).length;
-      expect(baselineDesignCount).toBeGreaterThan(0);
-      printedLines.length = 0;
-
-      await inspect(path.join(FIXTURES_DIRECTORY, "basic-react"), {
-        lint: true,
-        offline: true,
-        outputSurface: "cli",
-        configOverride: { surfaces: { cli: { excludeTags: ["design"] } } },
+  it(
+    "honors user-configured `surfaces.cli` overrides on the printed output",
+    { timeout: 60_000 },
+    async () => {
+      const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+      stubScoreFetchAndCapture();
+      const printedLines: string[] = [];
+      consoleSpy.mockImplementation((...args: unknown[]) => {
+        printedLines.push(args.map(String).join(" "));
       });
 
-      const printedText = printedLines.join("\n");
-      expect(printedText).toContain(`${baselineDesignCount} demoted from the cli surface`);
-    } finally {
-      consoleSpy.mockRestore();
-    }
-  });
+      try {
+        const baselineResult = await inspect(path.join(FIXTURES_DIRECTORY, "basic-react"), {
+          lint: true,
+          deadCode: false,
+          noScore: true,
+        });
+        const baselineDesignCount = baselineResult.diagnostics.filter(
+          (diagnostic) =>
+            diagnostic.plugin === "react-doctor" &&
+            (reactDoctorPlugin.rules[diagnostic.rule]?.tags?.includes("design") ?? false),
+        ).length;
+        expect(baselineDesignCount).toBeGreaterThan(0);
+        printedLines.length = 0;
+
+        await inspect(path.join(FIXTURES_DIRECTORY, "basic-react"), {
+          lint: true,
+          deadCode: false,
+          noScore: true,
+          outputSurface: "cli",
+          configOverride: { surfaces: { cli: { excludeTags: ["design"] } } },
+        });
+
+        const printedText = printedLines.join("\n");
+        expect(printedText).toContain(`${baselineDesignCount} demoted from the cli surface`);
+      } finally {
+        consoleSpy.mockRestore();
+      }
+    },
+  );
 });

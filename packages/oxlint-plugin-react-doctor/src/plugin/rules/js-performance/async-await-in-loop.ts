@@ -1,21 +1,19 @@
+import { INTENTIONAL_SEQUENCING_CALLEE_NAMES } from "../../constants/js.js";
 import { defineRule } from "../../utils/define-rule.js";
-import { walkAst } from "../../utils/walk-ast.js";
 import type { EsTreeNode } from "../../utils/es-tree-node.js";
+import type { EsTreeNodeOfType } from "../../utils/es-tree-node-of-type.js";
+import { isFunctionLike } from "../../utils/is-function-like.js";
+import { isInlineFunctionExpression } from "../../utils/is-inline-function-expression.js";
+import { isNodeOfType } from "../../utils/is-node-of-type.js";
 import type { Rule } from "../../utils/rule.js";
 import type { RuleContext } from "../../utils/rule-context.js";
-import { isNodeOfType } from "../../utils/is-node-of-type.js";
-import type { EsTreeNodeOfType } from "../../utils/es-tree-node-of-type.js";
+import { walkAst } from "../../utils/walk-ast.js";
 
 const findFirstAwaitOutsideNestedFunctions = (block: EsTreeNode): EsTreeNode | null => {
   let firstAwait: EsTreeNode | null = null;
   walkAst(block, (child: EsTreeNode): boolean | void => {
     if (firstAwait) return false;
-    if (
-      child !== block &&
-      (isNodeOfType(child, "FunctionDeclaration") ||
-        isNodeOfType(child, "FunctionExpression") ||
-        isNodeOfType(child, "ArrowFunctionExpression"))
-    ) {
+    if (child !== block && isFunctionLike(child)) {
       // Don't descend into nested functions — their `await`s belong to
       // their own async parent, not this loop. (`child !== block` so we
       // still walk the body of the loop callback itself when called with
@@ -29,40 +27,32 @@ const findFirstAwaitOutsideNestedFunctions = (block: EsTreeNode): EsTreeNode | n
   return firstAwait;
 };
 
-// HACK: heuristics to reduce false positives in the asyncAwaitInLoop
-// rule. Polling loops (`while (true) { await sleep(1000); ... }`) and
-// paginated fetches (`while (hasMore) { page = await fetch(cursor); cursor = page.next; }`)
-// are intentionally sequential and should not be flagged.
-const SLEEP_LIKE_FUNCTION_NAMES = new Set([
-  "sleep",
-  "delay",
-  "wait",
-  "setTimeout",
-  "pause",
-  "throttle",
-]);
-
+// HACK: heuristic to reduce false positives in the asyncAwaitInLoop
+// rule. Polling loops (`while (true) { await sleep(1000); … }`) and
+// paginated fetches (`while (hasMore) { page = await fetch(cursor);
+// cursor = page.next; }`) are intentionally sequential and should not
+// be flagged. Same applies to database / file-system / process
+// operations where serialization is required for transactions, FK
+// constraints, mutation ordering, etc. The callee list is shared with
+// `INTENTIONAL_SEQUENCING_CALLEE_NAMES` so the two rules can't diverge.
 const isAwaitingSleepLikeCall = (awaitNode: EsTreeNode): boolean => {
   if (!isNodeOfType(awaitNode, "AwaitExpression")) return false;
   const argument = awaitNode.argument;
   if (!argument) return false;
-
-  if (isNodeOfType(argument, "CallExpression")) {
-    if (
-      isNodeOfType(argument.callee, "Identifier") &&
-      SLEEP_LIKE_FUNCTION_NAMES.has(argument.callee.name)
-    ) {
-      return true;
-    }
-    if (
-      isNodeOfType(argument.callee, "MemberExpression") &&
-      isNodeOfType(argument.callee.property, "Identifier") &&
-      SLEEP_LIKE_FUNCTION_NAMES.has(argument.callee.property.name)
-    ) {
-      return true;
-    }
+  if (!isNodeOfType(argument, "CallExpression")) return false;
+  if (
+    isNodeOfType(argument.callee, "Identifier") &&
+    INTENTIONAL_SEQUENCING_CALLEE_NAMES.has(argument.callee.name)
+  ) {
+    return true;
   }
-
+  if (
+    isNodeOfType(argument.callee, "MemberExpression") &&
+    isNodeOfType(argument.callee.property, "Identifier") &&
+    INTENTIONAL_SEQUENCING_CALLEE_NAMES.has(argument.callee.property.name)
+  ) {
+    return true;
+  }
   return false;
 };
 
@@ -86,15 +76,11 @@ const collectPatternIdentifiers = (pattern: EsTreeNode, target: Set<string>): vo
   }
 };
 
-const isFunctionishExpression = (
-  node: EsTreeNode,
-): node is EsTreeNodeOfType<"ArrowFunctionExpression"> | EsTreeNodeOfType<"FunctionExpression"> =>
-  isNodeOfType(node, "ArrowFunctionExpression") || isNodeOfType(node, "FunctionExpression");
-
 const collectAssignedIdentifiers = (block: EsTreeNode): Set<string> => {
   const assigned = new Set<string>();
   walkAst(block, (child: EsTreeNode): boolean | void => {
-    if (isFunctionishExpression(child) || isNodeOfType(child, "FunctionDeclaration")) return false;
+    if (isInlineFunctionExpression(child) || isNodeOfType(child, "FunctionDeclaration"))
+      return false;
     if (isNodeOfType(child, "AssignmentExpression") && child.left) {
       collectPatternIdentifiers(child.left, assigned);
     }
@@ -105,7 +91,8 @@ const collectAssignedIdentifiers = (block: EsTreeNode): Set<string> => {
 const collectAwaitedArgIdentifiers = (block: EsTreeNode): Set<string> => {
   const referenced = new Set<string>();
   walkAst(block, (child: EsTreeNode): boolean | void => {
-    if (isFunctionishExpression(child) || isNodeOfType(child, "FunctionDeclaration")) return false;
+    if (isInlineFunctionExpression(child) || isNodeOfType(child, "FunctionDeclaration"))
+      return false;
     if (!isNodeOfType(child, "AwaitExpression") || !child.argument) return;
     walkAst(child.argument, (innerChild: EsTreeNode) => {
       if (isNodeOfType(innerChild, "Identifier")) referenced.add(innerChild.name);
@@ -137,7 +124,8 @@ const loopBodyHasOnlySleepLikeAwaits = (block: EsTreeNode): boolean => {
   let allAreSleepLike = true;
   let foundAny = false;
   walkAst(block, (child: EsTreeNode): boolean | void => {
-    if (isFunctionishExpression(child) || isNodeOfType(child, "FunctionDeclaration")) return false;
+    if (isInlineFunctionExpression(child) || isNodeOfType(child, "FunctionDeclaration"))
+      return false;
     if (isNodeOfType(child, "AwaitExpression")) {
       foundAny = true;
       if (!isAwaitingSleepLikeCall(child)) allAreSleepLike = false;
@@ -182,6 +170,7 @@ const isWrappedInPromiseConcurrency = (mapCall: EsTreeNode): boolean => {
 export const asyncAwaitInLoop = defineRule<Rule>({
   id: "async-await-in-loop",
   severity: "warn",
+  tags: ["test-noise"],
   recommendation:
     "Collect the items and use `await Promise.all(items.map(...))` to run independent operations concurrently",
   create: (context: RuleContext) => {
@@ -227,7 +216,7 @@ export const asyncAwaitInLoop = defineRule<Rule>({
         if (!ITERATION_METHOD_NAMES_WITH_CALLBACK.has(methodName)) return;
 
         const callback = node.arguments?.[0];
-        if (!callback || !isFunctionishExpression(callback)) return;
+        if (!callback || !isInlineFunctionExpression(callback)) return;
         if (!callback.async) return;
         const body = callback.body;
         if (!body) return;

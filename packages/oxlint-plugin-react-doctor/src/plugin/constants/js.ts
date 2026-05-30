@@ -6,6 +6,16 @@ export const LOOP_TYPES = [
   "DoWhileStatement",
 ];
 
+// ESTree node type names for the three "function-like" syntactic
+// forms — declaration, expression, arrow. Used by the scope analyzer
+// (to bound function scopes) and by `rules-of-hooks` (to skip into
+// nested function bodies). Was duplicated verbatim in both places.
+export const FUNCTION_LIKE_TYPES: ReadonlySet<string> = new Set([
+  "FunctionDeclaration",
+  "FunctionExpression",
+  "ArrowFunctionExpression",
+]);
+
 // Built-in JS globals whose method calls (`Math.floor(x)`,
 // `Date.now()`, `JSON.parse(x)`, …) are not reactive reads and don't
 // count as "expensive derivations". The chain root is what matters —
@@ -43,6 +53,11 @@ export const MUTATING_ARRAY_METHODS = new Set([
   "fill",
   "copyWithin",
 ]);
+
+// In-place `Set` / `Map` mutators. Paired with `MUTATING_ARRAY_METHODS`
+// to describe the full set of receiver-mutating built-in collection
+// methods (`byId.set(...)`, `seen.add(...)`, `cache.delete(...)`).
+export const MUTATING_COLLECTION_METHODS = new Set(["add", "clear", "delete", "set"]);
 
 export const CHAINABLE_ITERATION_METHODS = new Set(["map", "filter", "forEach", "flatMap"]);
 
@@ -209,12 +224,17 @@ export const ORDERED_UI_FLOW_CALLEE_NAMES: ReadonlySet<string> = new Set([
 export const ORDERED_UI_FLOW_CALLEE_PREFIXES: ReadonlyArray<string> = ["findBy", "findAllBy"];
 
 // Callees that signal intentional pacing — animation tweens, demo
-// sequencing, polling waits, throttles. Awaits on these are
-// inherently serial: parallelizing a `sleep(200)` and a `sleep(400)`
-// would defeat the point. Matches the rightmost identifier in the
+// sequencing, polling waits, throttles, DB transactions, sequential
+// file-system mutations, process spawning, browser-automation steps.
+// Awaits on these are inherently serial: parallelizing a `sleep(200)`
+// and a `sleep(400)` would defeat the point; running migrations in
+// parallel breaks invariants. Matches the rightmost identifier in the
 // callee chain (so `await timer.tick(16)` matches "tick" and
-// `await animations.spring(...)` matches "spring"). Kept in sync with
-// the sister set in `async-await-in-loop`.
+// `await animations.spring(...)` matches "spring").
+//
+// Single source of truth — `async-await-in-loop` imports this so the
+// two rules can't silently diverge on what counts as intentional
+// sequencing.
 export const INTENTIONAL_SEQUENCING_CALLEE_NAMES: ReadonlySet<string> = new Set([
   "sleep",
   "delay",
@@ -242,4 +262,53 @@ export const INTENTIONAL_SEQUENCING_CALLEE_NAMES: ReadonlySet<string> = new Set(
   "sequence",
   "timeline",
   "scrub",
+  // Database / ORM operations are intentionally sequential — transactions,
+  // FK constraints, and migration ordering all depend on serialized execution.
+  // Parallelizing them either races on connection pools or breaks invariants.
+  "query",
+  "execute",
+  "exec",
+  "raw",
+  "transaction",
+  "$transaction",
+  "$executeRaw",
+  "$queryRaw",
+  "$executeRawUnsafe",
+  "$queryRawUnsafe",
+  "begin",
+  "commit",
+  "rollback",
+  "savepoint",
+  "lock",
+  "unlock",
+  // Process spawning and shell commands run in a sequence the user
+  // controls deliberately (env setup, cleanup, etc.).
+  "spawn",
+  "spawnSync",
+  "execSync",
+  "execFile",
+  "execFileSync",
+  "fork",
+  "$",
+  "sh",
+  // Sequential file-system mutations — order matters for mkdir/rename/etc.
+  "mkdir",
+  "rmdir",
+  "rename",
+  "rm",
+  "unlink",
+  "writeFile",
+  "appendFile",
+  "copyFile",
+  // Sequential network steps (auth flows / page navigation)
+  "navigate",
+  "goto",
+  "waitForNavigation",
+  "waitForURL",
+  "waitForLoadState",
+  "waitForResponse",
+  "waitForRequest",
+  "waitForSelector",
+  "waitForFunction",
+  "waitForEvent",
 ]);

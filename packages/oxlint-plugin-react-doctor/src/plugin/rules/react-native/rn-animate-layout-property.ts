@@ -16,18 +16,32 @@ const REANIMATED_LAYOUT_KEYS = new Set([
   "minHeight",
   "maxWidth",
   "maxHeight",
+  "margin",
   "marginTop",
   "marginBottom",
   "marginLeft",
   "marginRight",
+  "marginHorizontal",
+  "marginVertical",
+  "padding",
   "paddingTop",
   "paddingBottom",
   "paddingLeft",
   "paddingRight",
+  "paddingHorizontal",
+  "paddingVertical",
   "flex",
   "flexBasis",
   "flexGrow",
   "flexShrink",
+  "borderWidth",
+  "borderTopWidth",
+  "borderBottomWidth",
+  "borderLeftWidth",
+  "borderRightWidth",
+  "fontSize",
+  "lineHeight",
+  "letterSpacing",
 ]);
 
 const findReturnedObject = (callback: EsTreeNode): EsTreeNodeOfType<"ObjectExpression"> | null => {
@@ -56,6 +70,7 @@ const findReturnedObject = (callback: EsTreeNode): EsTreeNodeOfType<"ObjectExpre
 // `opacity` instead.
 export const rnAnimateLayoutProperty = defineRule<Rule>({
   id: "rn-animate-layout-property",
+  tags: ["test-noise"],
   requires: ["react-native"],
   severity: "error",
   recommendation:

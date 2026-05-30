@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vite-plus/test";
 import { buildJsonReport, buildJsonReportError } from "@react-doctor/core";
-import type { Diagnostic, InspectResult, ProjectInfo } from "@react-doctor/types";
+import type { Diagnostic, InspectResult, ProjectInfo } from "@react-doctor/core";
 
 const SAMPLE_PROJECT: ProjectInfo = {
   rootDirectory: "/repo",
@@ -8,11 +8,16 @@ const SAMPLE_PROJECT: ProjectInfo = {
   reactVersion: "19.0.0",
   reactMajorVersion: 19,
   tailwindVersion: null,
+  zodVersion: null,
+  zodMajorVersion: null,
   framework: "vite",
   hasTypeScript: true,
   hasReactCompiler: false,
   hasTanStackQuery: false,
   hasReactNativeWorkspace: false,
+  hasReanimated: false,
+  preactVersion: null,
+  preactMajorVersion: null,
   sourceFileCount: 42,
 };
 

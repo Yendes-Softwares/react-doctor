@@ -28,81 +28,85 @@ const extractStep = (actionYaml: string, marker: string): string => {
 };
 
 describe("GitHub Action contract", () => {
-  it("issue #190: score collection cannot fail the job on Needs work scores", () => {
-    const scoreStep = normalizeWhitespace(extractStep(readActionYaml(), "- id: score"));
-
-    expect(scoreStep).toContain("--score");
-    expect(scoreStep).toContain('"--fail-on" "none"');
-    expect(scoreStep).toContain("SCORE=$(npx react-doctor@latest");
-    expect(scoreStep).toContain("|| true");
-  });
-
-  it("issue #188 + #61: action exposes CI inputs used by the scan step", () => {
+  it("exposes the low-config public inputs and useful JSON-derived outputs", () => {
     const actionYaml = readActionYaml();
     const inputsBlock = extractBlock(actionYaml, "inputs:", "\noutputs:");
-    const scanStep = normalizeWhitespace(
-      extractStep(actionYaml, "INPUT_FAIL_ON: ${{ inputs.fail-on }}"),
-    );
+    const outputsBlock = extractBlock(actionYaml, "outputs:", "\nruns:");
 
-    for (const inputName of ["github-token", "fail-on", "diff"]) {
+    for (const inputName of [
+      "directory",
+      "project",
+      "fail-on",
+      "comment",
+      "annotations",
+      "node-version",
+      "version",
+    ]) {
       expect(inputsBlock).toContain(`  ${inputName}:`);
     }
-    expect(scanStep).toContain('"--fail-on" "$INPUT_FAIL_ON"');
-    expect(scanStep).toContain('"--diff" "$INPUT_DIFF"');
-    expect(scanStep).toContain("$INPUT_GITHUB_TOKEN");
+
+    expect(inputsBlock).not.toContain("  github-token:");
+    expect(inputsBlock).not.toContain("  verbose:");
+    expect(inputsBlock).not.toContain("  no-score:");
+    expect(inputsBlock).not.toContain("  diff:");
+    expect(inputsBlock).toContain('    default: "true"');
+    expect(outputsBlock).toContain("${{ steps.render.outputs.score }}");
+    expect(outputsBlock).toContain("${{ steps.render.outputs.total-issues }}");
+    expect(outputsBlock).toContain("${{ steps.render.outputs.affected-files }}");
   });
 
-  it("guards diff fetch refs against shell-option injection", () => {
-    const fetchStep = extractStep(readActionYaml(), "DIFF_BASE: ${{ inputs.diff }}");
-
-    expect(fetchStep).toContain('case "$DIFF_BASE" in -* )');
-    expect(fetchStep).toContain('case "$HEAD_REF" in -* )');
-    expect(fetchStep).toContain('git fetch origin "$DIFF_BASE"');
-  });
-
-  it("demotes design rules from the sticky PR comment via --pr-comment", () => {
-    const scanStep = normalizeWhitespace(
-      extractStep(readActionYaml(), "INPUT_FAIL_ON: ${{ inputs.fail-on }}"),
-    );
-
-    expect(scanStep).toContain('if [ -n "$INPUT_GITHUB_TOKEN" ]; then');
-    expect(scanStep).toContain('"${FLAGS[@]}" --pr-comment | tee "$RAW_FILE"');
-    expect(scanStep).toContain('PIPELINE_EXIT_CODES=("${PIPESTATUS[@]}")');
-    expect(scanStep).toContain('sed -E \'/^::(error|warning) /d\' "$RAW_FILE" > "$OUTPUT_FILE"');
-    expect(scanStep).toContain('exit "${PIPELINE_EXIT_CODES[0]}"');
-    expect(scanStep).not.toContain('"${FLAGS[@]}" --pr-comment\n        else');
-  });
-
-  it("creates the sticky PR comment output before preserving scan failure", () => {
-    const scanStep = normalizeWhitespace(
-      extractStep(readActionYaml(), "INPUT_FAIL_ON: ${{ inputs.fail-on }}"),
-    );
-    const disableExitOnErrorIndex = scanStep.indexOf("set +e");
-    const captureExitCodesIndex = scanStep.indexOf('PIPELINE_EXIT_CODES=("${PIPESTATUS[@]}")');
-    const restoreExitOnErrorIndex = scanStep.indexOf("set -e", captureExitCodesIndex);
-    const stripAnnotationsIndex = scanStep.indexOf(
-      'sed -E \'/^::(error|warning) /d\' "$RAW_FILE" > "$OUTPUT_FILE"',
-    );
-    const restoreScanExitCodeIndex = scanStep.indexOf('exit "${PIPELINE_EXIT_CODES[0]}"');
-
-    expect(disableExitOnErrorIndex).toBeGreaterThan(-1);
-    expect(captureExitCodesIndex).toBeGreaterThan(disableExitOnErrorIndex);
-    expect(restoreExitOnErrorIndex).toBeGreaterThan(captureExitCodesIndex);
-    expect(stripAnnotationsIndex).toBeGreaterThan(restoreExitOnErrorIndex);
-    expect(restoreScanExitCodeIndex).toBeGreaterThan(stripAnnotationsIndex);
-  });
-
-  it("forwards --annotations to the CLI when the annotations input is true", () => {
+  it("collects PR changed files through the GitHub API instead of git ref checkout", () => {
     const actionYaml = readActionYaml();
-    const inputsBlock = extractBlock(actionYaml, "inputs:", "\noutputs:");
+    const prFilesStep = normalizeWhitespace(extractStep(actionYaml, "- id: pr-files"));
+
+    expect(actionYaml).toContain("actions/setup-node@v5");
+    expect(actionYaml).toContain("actions/github-script@v8");
+    expect(actionYaml).not.toContain("actions/setup-node@v4");
+    expect(actionYaml).not.toContain("actions/github-script@v7");
+    expect(prFilesStep).toContain("github.rest.pulls.listFiles");
+    expect(prFilesStep).toContain('new Set(["added", "modified", "renamed"])');
+    expect(prFilesStep).toContain(".map((file) => file.filename);");
+    expect(prFilesStep).toContain('core.setOutput("path", outputPath)');
+    expect(prFilesStep).not.toContain("filename)h");
+    expect(actionYaml).not.toContain("git fetch origin");
+    expect(actionYaml).not.toContain('git checkout "$HEAD_REF"');
+  });
+
+  it("runs one JSON scan, captures its status, and passes PR files to the CLI", () => {
     const scanStep = normalizeWhitespace(
-      extractStep(actionYaml, "INPUT_FAIL_ON: ${{ inputs.fail-on }}"),
+      extractStep(readActionYaml(), "INPUT_FAIL_ON: ${{ inputs.fail-on }}"),
     );
 
-    expect(inputsBlock).toContain("  annotations:");
-    expect(scanStep).toContain("INPUT_ANNOTATIONS: ${{ inputs.annotations }}");
+    expect(scanStep).toContain('"--json" "--json-compact" "--fail-on" "$INPUT_FAIL_ON"');
+    expect(scanStep).not.toContain("--pr-comment");
     expect(scanStep).toContain(
       'if [ "$INPUT_ANNOTATIONS" = "true" ]; then FLAGS+=("--annotations"); fi',
     );
+    expect(scanStep).toContain('FLAGS+=("--changed-files-from" "$CHANGED_FILES_FROM")');
+    expect(scanStep).toContain(
+      'npm exec --yes --package "$PACKAGE_SPEC" -- react-doctor "$INPUT_DIRECTORY" "${FLAGS[@]}" > "$REPORT_FILE"',
+    );
+    expect(scanStep).toContain('PACKAGE_SPEC="react-doctor@$INPUT_VERSION"');
+    expect(scanStep).toContain("SCAN_STATUS=$?");
+    expect(scanStep).toContain("scripts/ensure-json-report.mjs");
+    expect(readActionYaml()).not.toContain("--score");
+  });
+
+  it("renders and posts the sticky comment before restoring scan failure", () => {
+    const actionYaml = readActionYaml();
+    const renderIndex = actionYaml.indexOf("- id: render");
+    const commentIndex = actionYaml.indexOf("- name: Update sticky PR comment");
+    const failIndex = actionYaml.indexOf("- name: Fail if React Doctor found blocking issues");
+    const commentStep = normalizeWhitespace(
+      extractStep(actionYaml, "- name: Update sticky PR comment"),
+    );
+
+    expect(renderIndex).toBeGreaterThan(-1);
+    expect(commentIndex).toBeGreaterThan(renderIndex);
+    expect(failIndex).toBeGreaterThan(commentIndex);
+    expect(commentStep).toContain("<!-- react-doctor:summary -->");
+    expect(commentStep).toContain("github.rest.issues.updateComment");
+    expect(commentStep).toContain("github.rest.issues.createComment");
+    expect(commentStep).toContain("core.warning");
   });
 });

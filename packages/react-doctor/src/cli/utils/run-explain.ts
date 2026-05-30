@@ -1,6 +1,8 @@
-import { highlighter, logger, toRelativePath } from "@react-doctor/core";
+import { highlighter, toRelativePath } from "@react-doctor/core";
+import { cliLogger as logger } from "./cli-logger.js";
 import { inspect } from "../../inspect.js";
-import type { Diagnostic, InspectOptions, ReactDoctorConfig } from "@react-doctor/types";
+import type { Diagnostic, InspectOptions, ReactDoctorConfig } from "@react-doctor/core";
+import { buildDiagnosticIssueUrl } from "./build-diagnostic-issue-url.js";
 import { findOwningProjectDirectory } from "./find-owning-project.js";
 import { parseFileLineArgument } from "./parse-file-line-argument.js";
 import { selectProjects } from "./select-projects.js";
@@ -46,7 +48,7 @@ export const runExplain = async (
   const scanResult = await inspect(targetDirectory, {
     ...context.scanOptions,
     silent: true,
-    offline: true,
+    noScore: true,
     configOverride: context.userConfig,
   });
 
@@ -72,6 +74,12 @@ export const runExplain = async (
     );
     if (diagnostic.category) logger.dim(`  Category: ${diagnostic.category}`);
     if (diagnostic.help) logger.dim(`  ${diagnostic.help}`);
+    logger.dim(
+      `  If this needs follow-up or looks like a false positive, open: ${buildDiagnosticIssueUrl({
+        diagnostic,
+        relativeFilePath: requestedRelativePath,
+      })}`,
+    );
     if (diagnostic.suppressionHint) {
       logger.break();
       logger.log(`  Suppression diagnosis: ${diagnostic.suppressionHint}`);

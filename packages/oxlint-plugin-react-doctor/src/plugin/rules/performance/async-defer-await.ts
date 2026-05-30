@@ -6,6 +6,7 @@ import { containsDirectAwait } from "../../utils/contains-direct-await.js";
 import type { EsTreeNode } from "../../utils/es-tree-node.js";
 import { isBareAwaitExpressionStatement } from "../../utils/is-bare-await-expression-statement.js";
 import { isEarlyExitIfStatement } from "../../utils/is-early-exit-if-statement.js";
+import { isFunctionLike } from "../../utils/is-function-like.js";
 import { isNodeOfType } from "../../utils/is-node-of-type.js";
 import type { Rule } from "../../utils/rule.js";
 import type { RuleContext } from "../../utils/rule-context.js";
@@ -81,6 +82,51 @@ interface AwaitWindow {
   guardCandidateIndex: number;
 }
 
+// `await Y(); if (cancelled) return;` is the cancellation-check
+// idiom — the await isn't there for its value, it's there to yield
+// control so an outer flag (a captured `cancelled`/`isMounted`
+// variable, or an `AbortSignal.aborted`) can flip during the
+// suspension. Moving the await *after* the check defeats the entire
+// pattern; the check would race instead of see the cancellation.
+const CANCELLATION_GUARD_NAMES: ReadonlySet<string> = new Set([
+  "cancelled",
+  "canceled",
+  "isCancelled",
+  "isCanceled",
+  "aborted",
+  "isAborted",
+  "disposed",
+  "isDisposed",
+  "destroyed",
+  "isDestroyed",
+  "stopped",
+  "isStopped",
+  "mounted",
+  "isMounted",
+  "unmounted",
+  "isUnmounted",
+  "active",
+  "isActive",
+  "stale",
+  "isStale",
+  "signal",
+  "abortSignal",
+  "abortController",
+]);
+
+const isCancellationGuardTest = (test: EsTreeNode | null): boolean => {
+  if (!test) return false;
+  const referenced = new Set<string>();
+  collectReferenceIdentifierNames(test, referenced);
+  if (referenced.size === 0) return false;
+  // Match either a bare identifier reference (`cancelled`, `!cancelled`)
+  // or a property access on one (`controller.signal.aborted`).
+  for (const name of referenced) {
+    if (CANCELLATION_GUARD_NAMES.has(name)) return true;
+  }
+  return false;
+};
+
 // Walks forward from `startIndex` collecting an "await preamble" — the
 // originating awaited statement plus any contiguous bare-await statements
 // or VariableDeclarations whose declarators introduce their own await OR
@@ -130,6 +176,7 @@ const collectAwaitWindow = (statements: EsTreeNode[], startIndex: number): Await
 export const asyncDeferAwait = defineRule<Rule>({
   id: "async-defer-await",
   severity: "warn",
+  tags: ["test-noise"],
   recommendation:
     "Move the `await` after the synchronous early-return guard so the skip path stays fast",
   create: (context: RuleContext) => {
@@ -145,6 +192,10 @@ export const asyncDeferAwait = defineRule<Rule>({
         const testIdentifierNames = new Set<string>();
         collectReferenceIdentifierNames(guardStatement.test, testIdentifierNames);
         if (hasAnyIdentifierName(testIdentifierNames, window.awaitedBindingNames)) {
+          statementIndex = window.guardCandidateIndex - 1;
+          continue;
+        }
+        if (isCancellationGuardTest(guardStatement.test)) {
           statementIndex = window.guardCandidateIndex - 1;
           continue;
         }
@@ -168,13 +219,7 @@ export const asyncDeferAwait = defineRule<Rule>({
     const inspectAllStatementBlocks = (functionBody: EsTreeNode | null | undefined): void => {
       if (!functionBody) return;
       walkAst(functionBody, (descendant: EsTreeNode) => {
-        if (
-          isNodeOfType(descendant, "FunctionDeclaration") ||
-          isNodeOfType(descendant, "FunctionExpression") ||
-          isNodeOfType(descendant, "ArrowFunctionExpression")
-        ) {
-          return false;
-        }
+        if (isFunctionLike(descendant)) return false;
         if (isNodeOfType(descendant, "BlockStatement")) {
           inspectStatements(descendant.body ?? []);
         } else if (isNodeOfType(descendant, "SwitchCase")) {
@@ -184,13 +229,7 @@ export const asyncDeferAwait = defineRule<Rule>({
     };
 
     const enterFunction = (node: EsTreeNode): void => {
-      if (
-        !isNodeOfType(node, "FunctionDeclaration") &&
-        !isNodeOfType(node, "FunctionExpression") &&
-        !isNodeOfType(node, "ArrowFunctionExpression")
-      ) {
-        return;
-      }
+      if (!isFunctionLike(node)) return;
       if (!node.async) return;
       if (!isNodeOfType(node.body, "BlockStatement")) return;
       inspectAllStatementBlocks(node.body);

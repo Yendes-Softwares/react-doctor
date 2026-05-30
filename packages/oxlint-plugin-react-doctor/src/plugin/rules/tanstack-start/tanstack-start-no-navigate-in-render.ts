@@ -1,6 +1,7 @@
 import { EFFECT_HOOK_NAMES, UPPERCASE_PATTERN } from "../../constants/react.js";
 import { TANSTACK_ROUTE_FILE_PATTERN } from "../../constants/tanstack.js";
 import { defineRule } from "../../utils/define-rule.js";
+import { normalizeFilename } from "../../utils/normalize-filename.js";
 import { isHookCall } from "../../utils/is-hook-call.js";
 import type { EsTreeNode } from "../../utils/es-tree-node.js";
 import type { Rule } from "../../utils/rule.js";
@@ -10,6 +11,7 @@ import type { EsTreeNodeOfType } from "../../utils/es-tree-node-of-type.js";
 
 export const tanstackStartNoNavigateInRender = defineRule<Rule>({
   id: "tanstack-start-no-navigate-in-render",
+  tags: ["test-noise"],
   requires: ["tanstack-start"],
   severity: "warn",
   recommendation:
@@ -40,7 +42,7 @@ export const tanstackStartNoNavigateInRender = defineRule<Rule>({
 
     return {
       CallExpression(node: EsTreeNodeOfType<"CallExpression">) {
-        const filename = context.getFilename?.() ?? "";
+        const filename = normalizeFilename(context.filename ?? "");
         if (!TANSTACK_ROUTE_FILE_PATTERN.test(filename)) return;
 
         if (isDeferredHookCall(node)) deferredCallbackDepth++;
@@ -60,19 +62,19 @@ export const tanstackStartNoNavigateInRender = defineRule<Rule>({
         }
       },
       "CallExpression:exit"(node: EsTreeNode) {
-        const filename = context.getFilename?.() ?? "";
+        const filename = normalizeFilename(context.filename ?? "");
         if (!TANSTACK_ROUTE_FILE_PATTERN.test(filename)) return;
         if (isDeferredHookCall(node)) {
           deferredCallbackDepth = Math.max(0, deferredCallbackDepth - 1);
         }
       },
       JSXAttribute(node: EsTreeNodeOfType<"JSXAttribute">) {
-        const filename = context.getFilename?.() ?? "";
+        const filename = normalizeFilename(context.filename ?? "");
         if (!TANSTACK_ROUTE_FILE_PATTERN.test(filename)) return;
         if (isEventHandlerAttribute(node)) eventHandlerDepth++;
       },
       "JSXAttribute:exit"(node: EsTreeNode) {
-        const filename = context.getFilename?.() ?? "";
+        const filename = normalizeFilename(context.filename ?? "");
         if (!TANSTACK_ROUTE_FILE_PATTERN.test(filename)) return;
         if (isEventHandlerAttribute(node)) {
           eventHandlerDepth = Math.max(0, eventHandlerDepth - 1);

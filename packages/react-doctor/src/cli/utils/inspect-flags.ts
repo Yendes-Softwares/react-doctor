@@ -4,19 +4,20 @@
 // nothing" from "user passed a value" without consulting `program`.
 export interface InspectFlags {
   lint?: boolean;
+  deadCode?: boolean;
   verbose?: boolean;
   score?: boolean;
   json?: boolean;
   jsonCompact?: boolean;
   yes?: boolean;
   full?: boolean;
-  offline?: boolean;
   annotations?: boolean;
   staged?: boolean;
   prComment?: boolean;
   respectInlineDisables?: boolean;
   project?: string;
   diff?: boolean | string;
+  changedFilesFrom?: string;
   explain?: string;
   why?: string;
   failOn?: string;

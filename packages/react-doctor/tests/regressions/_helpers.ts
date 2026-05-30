@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import { runOxlint } from "@react-doctor/core";
-import type { Diagnostic, ProjectInfo } from "@react-doctor/types";
+import type { Diagnostic, ProjectInfo } from "@react-doctor/core";
 
 export const writeFile = (filePath: string, contents: string): void => {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
@@ -110,13 +110,21 @@ export interface BuildTestProjectOptions {
   framework?: ProjectInfo["framework"];
   hasReactCompiler?: boolean;
   hasTanStackQuery?: boolean;
+  hasReanimated?: boolean;
   reactMajorVersion?: number | null;
   hasTypeScript?: boolean;
   tailwindVersion?: string | null;
 }
 
 export const buildTestProject = (options: BuildTestProjectOptions): ProjectInfo => {
-  const reactMajorVersion = options.reactMajorVersion ?? 19;
+  // HACK: distinguish "caller didn't pass `reactMajorVersion`" (omit
+  // → default 19) from "caller explicitly passed `null`" (testing the
+  // unresolvable-version code path). A naive
+  // `options.reactMajorVersion ?? 19` collapses both into 19 and
+  // silently changes what null-version tests are testing.
+  const reactMajorVersion = Object.hasOwn(options, "reactMajorVersion")
+    ? (options.reactMajorVersion ?? null)
+    : 19;
   const framework = options.framework ?? "unknown";
   return {
     rootDirectory: options.rootDirectory,
@@ -124,11 +132,16 @@ export const buildTestProject = (options: BuildTestProjectOptions): ProjectInfo 
     reactVersion: reactMajorVersion !== null ? `^${reactMajorVersion}.0.0` : null,
     reactMajorVersion,
     tailwindVersion: options.tailwindVersion ?? null,
+    zodVersion: null,
+    zodMajorVersion: null,
     framework,
     hasTypeScript: options.hasTypeScript ?? true,
     hasReactCompiler: options.hasReactCompiler ?? false,
     hasTanStackQuery: options.hasTanStackQuery ?? false,
     hasReactNativeWorkspace: framework === "expo" || framework === "react-native",
+    hasReanimated: options.hasReanimated ?? false,
+    preactVersion: null,
+    preactMajorVersion: null,
     sourceFileCount: 0,
   };
 };
@@ -141,35 +154,15 @@ export interface RuleHit {
 // Replaces the five near-identical `collectRuleHits` helpers that each
 // regression suite previously declared at the top of the file. Defaults
 // match the most common shape (React 19, framework="unknown"); pass an
-// options bag to override per-test.
-//
-// HACK: distinguish "caller didn't pass `reactMajorVersion`" (omit → 19,
-// the synthetic project's actual React version) from "caller explicitly
-// passed `null`" (testing the unresolvable-version code path). A naive
-// `options.reactMajorVersion ?? 19` collapses both into 19 and silently
-// changes what null-version tests are testing.
+// options bag to override per-test. `reactMajorVersion: null` selects
+// the unresolvable-version code path (see `buildTestProject` for the
+// omitted-vs-null distinction).
 export const collectRuleHits = async (
   projectDir: string,
   ruleId: string,
   options: CollectRuleHitsOptions = {},
 ): Promise<RuleHit[]> => {
-  const reactMajorVersion = Object.hasOwn(options, "reactMajorVersion")
-    ? (options.reactMajorVersion ?? null)
-    : 19;
-  const framework = options.framework ?? "unknown";
-  const project: ProjectInfo = {
-    rootDirectory: projectDir,
-    projectName: path.basename(projectDir),
-    reactVersion: reactMajorVersion !== null ? `^${reactMajorVersion}.0.0` : null,
-    reactMajorVersion,
-    tailwindVersion: options.tailwindVersion ?? null,
-    framework,
-    hasTypeScript: true,
-    hasReactCompiler: options.hasReactCompiler ?? false,
-    hasTanStackQuery: options.hasTanStackQuery ?? false,
-    hasReactNativeWorkspace: framework === "react-native" || framework === "expo",
-    sourceFileCount: 0,
-  };
+  const project = buildTestProject({ rootDirectory: projectDir, ...options });
   const diagnostics = await runOxlint({
     rootDirectory: projectDir,
     project,

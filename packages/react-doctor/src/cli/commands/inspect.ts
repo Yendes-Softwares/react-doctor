@@ -1,25 +1,29 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { performance } from "node:perf_hooks";
+import * as Effect from "effect/Effect";
 import {
   buildJsonReport,
   filterDiagnosticsForSurface,
-  filterSourceFiles,
   getDiffInfo,
   highlighter,
-  loadConfigWithSource,
-  logger,
-  resolveConfigRootDir,
+  resolveScanTarget,
   toRelativePath,
 } from "@react-doctor/core";
 import { inspect } from "../../inspect.js";
-import type { Diagnostic, InspectResult } from "@react-doctor/types";
+import type {
+  Diagnostic,
+  DiffInfo,
+  InspectResult,
+  JsonReportMode,
+  ReactDoctorConfig,
+} from "@react-doctor/core";
+import { cliLogger as logger } from "../utils/cli-logger.js";
 import { STAGED_FILES_TEMP_DIR_PREFIX } from "../utils/constants.js";
 import { getStagedSourceFiles, materializeStagedFiles } from "../utils/get-staged-files.js";
 import type { InspectFlags } from "../utils/inspect-flags.js";
 import { handleError } from "../utils/handle-error.js";
-import { isCiEnvironment } from "../utils/is-ci-environment.js";
 import {
   enableJsonMode,
   setJsonReportDirectory,
@@ -29,16 +33,92 @@ import {
 } from "../utils/json-mode.js";
 import { printAnnotations } from "../utils/print-annotations.js";
 import { printBrandedHeader } from "../utils/print-branded-header.js";
+import { promptCopyIssues } from "../utils/copy-issues-to-clipboard.js";
+import { readChangedFilesFrom } from "../utils/read-changed-files-from.js";
+import { printMultiProjectSummary } from "../utils/render-multi-project-summary.js";
+import {
+  printAgentInstallHint,
+  promptInstallSetup,
+  resolveInstallSetupProjectRoot,
+  shouldShowAgentInstallHint,
+} from "../utils/prompt-install-setup.js";
 import { resolveCliInspectOptions } from "../utils/resolve-cli-inspect-options.js";
 import { resolveDiffMode } from "../utils/resolve-diff-mode.js";
 import { resolveEffectiveDiff } from "../utils/resolve-effective-diff.js";
 import { resolveFailOnLevel } from "../utils/resolve-fail-on-level.js";
+import { resolveProjectDiffIncludePaths } from "../utils/resolve-project-diff-include-paths.js";
 import { runExplain } from "../utils/run-explain.js";
 import { selectProjects } from "../utils/select-projects.js";
 import { shouldFailForDiagnostics } from "../utils/should-fail-for-diagnostics.js";
 import { shouldSkipPrompts } from "../utils/should-skip-prompts.js";
 import { validateModeFlags } from "../utils/validate-mode-flags.js";
 import { VERSION } from "../utils/version.js";
+
+interface CompletedScan {
+  directory: string;
+  result: InspectResult;
+}
+
+interface FinalizeScansInput {
+  readonly diagnostics: Diagnostic[];
+  readonly completedScans: CompletedScan[];
+  readonly mode: JsonReportMode;
+  readonly diff: DiffInfo | null;
+  readonly isJsonMode: boolean;
+  readonly isScoreOnly: boolean;
+  readonly flags: InspectFlags;
+  readonly userConfig: ReactDoctorConfig | null;
+  readonly resolvedDirectory: string;
+  readonly startTime: number;
+}
+
+/**
+ * Post-scan finalization shared by the staged-arm and project-loop
+ * paths of `inspectAction`: emit the JSON report (when in JSON mode),
+ * print PR annotations (when `--annotations`), and set
+ * `process.exitCode = 1` when the configured fail-on threshold is
+ * crossed. Both arms previously inlined the same four-step shape.
+ */
+const finalizeScans = (input: FinalizeScansInput): void => {
+  if (input.isJsonMode) {
+    writeJsonReport(
+      buildJsonReport({
+        version: VERSION,
+        directory: input.resolvedDirectory,
+        mode: input.mode,
+        diff: input.diff,
+        scans: input.completedScans,
+        totalElapsedMilliseconds: performance.now() - input.startTime,
+      }),
+    );
+  }
+
+  if (input.flags.annotations) {
+    printAnnotations(input.diagnostics, input.isJsonMode);
+  }
+
+  const ciFailureDiagnostics = filterDiagnosticsForSurface(
+    input.diagnostics,
+    "ciFailure",
+    input.userConfig,
+  );
+  if (
+    !input.isScoreOnly &&
+    shouldFailForDiagnostics(
+      ciFailureDiagnostics,
+      resolveFailOnLevel(input.flags, input.userConfig),
+    )
+  ) {
+    process.exitCode = 1;
+  }
+};
+
+const buildChangedFilesDiffInfo = (changedFiles: string[]): DiffInfo => ({
+  currentBranch: process.env.GITHUB_HEAD_REF?.trim() || null,
+  baseBranch: process.env.GITHUB_BASE_REF?.trim() || "pull request target",
+  changedFiles,
+  isCurrentChanges: false,
+});
 
 export const inspectAction = async (directory: string, flags: InspectFlags): Promise<void> => {
   const isScoreOnly = Boolean(flags.score);
@@ -54,15 +134,11 @@ export const inspectAction = async (directory: string, flags: InspectFlags): Pro
   try {
     validateModeFlags(flags);
 
-    const loadedConfig = loadConfigWithSource(requestedDirectory);
-    const userConfig = loadedConfig?.config ?? null;
-    const redirectedDirectory = resolveConfigRootDir(
-      loadedConfig?.config ?? null,
-      loadedConfig?.sourceDirectory ?? null,
-    );
-    const resolvedDirectory = redirectedDirectory ?? requestedDirectory;
+    const scanTarget = resolveScanTarget(requestedDirectory);
+    const userConfig = scanTarget.userConfig;
+    const resolvedDirectory = scanTarget.resolvedDirectory;
     setJsonReportDirectory(resolvedDirectory);
-    if (redirectedDirectory && !isQuiet) {
+    if (scanTarget.didRedirectViaRootDir && !isQuiet) {
       logger.dim(
         `Redirected to ${highlighter.info(toRelativePath(resolvedDirectory, requestedDirectory))} via react-doctor config "rootDir".`,
       );
@@ -81,20 +157,15 @@ export const inspectAction = async (directory: string, flags: InspectFlags): Pro
     }
 
     if (!isQuiet) {
-      printBrandedHeader();
+      Effect.runSync(printBrandedHeader);
     }
 
     const scanOptions = resolveCliInspectOptions(flags, userConfig);
     const skipPrompts = shouldSkipPrompts({ yes: flags.yes, full: flags.full, json: flags.json });
 
-    if (!flags.offline && isCiEnvironment() && !isQuiet) {
-      logger.dim("CI detected — scoring locally.");
-      logger.break();
-    }
-
     if (flags.staged) {
       setJsonReportMode("staged");
-      const stagedFiles = getStagedSourceFiles(resolvedDirectory);
+      const stagedFiles = await getStagedSourceFiles(resolvedDirectory);
       if (stagedFiles.length === 0) {
         if (isJsonMode) {
           writeJsonReport(
@@ -119,7 +190,16 @@ export const inspectAction = async (directory: string, flags: InspectFlags): Pro
       }
 
       const tempDirectory = mkdtempSync(path.join(tmpdir(), STAGED_FILES_TEMP_DIR_PREFIX));
-      const snapshot = materializeStagedFiles(resolvedDirectory, stagedFiles, tempDirectory);
+      // If materialization throws before `snapshot.cleanup` is wired up,
+      // remove the temp dir we just created so it can't leak.
+      const snapshot = await materializeStagedFiles(
+        resolvedDirectory,
+        stagedFiles,
+        tempDirectory,
+      ).catch((error: unknown) => {
+        rmSync(tempDirectory, { recursive: true, force: true });
+        throw error;
+      });
       try {
         const scanResult = await inspect(snapshot.tempDirectory, {
           ...scanOptions,
@@ -130,43 +210,27 @@ export const inspectAction = async (directory: string, flags: InspectFlags): Pro
         const remappedDiagnostics = scanResult.diagnostics.map((diagnostic) => ({
           ...diagnostic,
           filePath: path.isAbsolute(diagnostic.filePath)
-            ? diagnostic.filePath.replaceAll(snapshot.tempDirectory, resolvedDirectory)
+            ? diagnostic.filePath.replaceAll(snapshot.tempDirectory, () => resolvedDirectory)
             : diagnostic.filePath,
         }));
+        const remappedInspectResult: InspectResult = {
+          ...scanResult,
+          diagnostics: remappedDiagnostics,
+          project: { ...scanResult.project, rootDirectory: resolvedDirectory },
+        };
 
-        if (isJsonMode) {
-          const remappedInspectResult: InspectResult = {
-            ...scanResult,
-            diagnostics: remappedDiagnostics,
-            project: { ...scanResult.project, rootDirectory: resolvedDirectory },
-          };
-          writeJsonReport(
-            buildJsonReport({
-              version: VERSION,
-              directory: resolvedDirectory,
-              mode: "staged",
-              diff: null,
-              scans: [{ directory: resolvedDirectory, result: remappedInspectResult }],
-              totalElapsedMilliseconds: performance.now() - startTime,
-            }),
-          );
-        }
-
-        if (flags.annotations) {
-          printAnnotations(remappedDiagnostics, isJsonMode);
-        }
-
-        const ciFailureDiagnostics = filterDiagnosticsForSurface(
-          remappedDiagnostics,
-          "ciFailure",
+        finalizeScans({
+          diagnostics: remappedDiagnostics,
+          completedScans: [{ directory: resolvedDirectory, result: remappedInspectResult }],
+          mode: "staged",
+          diff: null,
+          isJsonMode,
+          isScoreOnly,
+          flags,
           userConfig,
-        );
-        if (
-          !isScoreOnly &&
-          shouldFailForDiagnostics(ciFailureDiagnostics, resolveFailOnLevel(flags, userConfig))
-        ) {
-          process.exitCode = 1;
-        }
+          resolvedDirectory,
+          startTime,
+        });
       } finally {
         snapshot.cleanup();
       }
@@ -175,6 +239,10 @@ export const inspectAction = async (directory: string, flags: InspectFlags): Pro
 
     const projectDirectories = await selectProjects(resolvedDirectory, flags.project, skipPrompts);
 
+    const changedFilesDiffInfo =
+      flags.changedFilesFrom && !flags.full
+        ? buildChangedFilesDiffInfo(readChangedFilesFrom(path.resolve(flags.changedFilesFrom)))
+        : null;
     const effectiveDiff = resolveEffectiveDiff(flags, userConfig);
     const explicitBaseBranch = typeof effectiveDiff === "string" ? effectiveDiff : undefined;
     const wantsDiffMode = effectiveDiff !== undefined && effectiveDiff !== false;
@@ -182,9 +250,14 @@ export const inspectAction = async (directory: string, flags: InspectFlags): Pro
     // it, resolveDiffMode short-circuits at !diffInfo and the
     // "Only scan changed files?" prompt never appears for users on a
     // feature branch who didn't explicitly pass --diff.
-    const shouldDetectDiff = wantsDiffMode || (!skipPrompts && !isQuiet);
-    const diffInfo = shouldDetectDiff ? getDiffInfo(resolvedDirectory, explicitBaseBranch) : null;
-    const isDiffMode = await resolveDiffMode(diffInfo, effectiveDiff, skipPrompts, isQuiet);
+    const shouldDetectDiff =
+      changedFilesDiffInfo === null && (wantsDiffMode || (!skipPrompts && !isQuiet));
+    const diffInfo =
+      changedFilesDiffInfo ??
+      (shouldDetectDiff ? await getDiffInfo(resolvedDirectory, explicitBaseBranch) : null);
+    const isDiffMode =
+      changedFilesDiffInfo !== null ||
+      (await resolveDiffMode(diffInfo, effectiveDiff, skipPrompts, isQuiet));
 
     // HACK: set the report-mode marker BEFORE the scan loop runs — if the
     // user hits Ctrl-C mid-scan, the SIGINT handler reads it for the JSON
@@ -206,75 +279,105 @@ export const inspectAction = async (directory: string, flags: InspectFlags): Pro
 
     const allDiagnostics: Diagnostic[] = [];
     const completedScans: Array<{ directory: string; result: InspectResult }> = [];
+    const isMultiProject = projectDirectories.length > 1;
 
     for (const projectDirectory of projectDirectories) {
       let includePaths: string[] | undefined;
       if (isDiffMode) {
-        const projectDiffInfo =
-          projectDirectory === resolvedDirectory
-            ? diffInfo
-            : getDiffInfo(projectDirectory, explicitBaseBranch);
-        if (projectDiffInfo) {
-          const changedSourceFiles = filterSourceFiles(projectDiffInfo.changedFiles);
-          if (changedSourceFiles.length === 0) {
-            if (!isQuiet) {
-              logger.dim(`No changed source files in ${projectDirectory}, skipping.`);
-              logger.break();
-            }
-            continue;
+        const changedSourceFiles =
+          diffInfo === null
+            ? []
+            : resolveProjectDiffIncludePaths(resolvedDirectory, projectDirectory, diffInfo);
+        if (changedSourceFiles.length === 0) {
+          if (!isQuiet) {
+            logger.dim(`No changed source files in ${projectDirectory}, skipping.`);
+            logger.break();
           }
-          includePaths = changedSourceFiles;
-        } else if (!isQuiet) {
-          logger.dim(
-            `Cannot detect diff for ${projectDirectory} (not a git repository?) — scanning all files.`,
-          );
-          logger.break();
+          continue;
         }
+        includePaths = changedSourceFiles;
       }
 
-      if (!isQuiet) {
-        logger.dim(`Scanning ${projectDirectory}...`);
-        logger.break();
+      if (!isQuiet && !isMultiProject) {
+        logger.dim("  ");
       }
       const scanResult = await inspect(projectDirectory, {
         ...scanOptions,
         includePaths,
         configOverride: userConfig,
+        suppressRendering: isMultiProject,
       });
       allDiagnostics.push(...scanResult.diagnostics);
       completedScans.push({ directory: projectDirectory, result: scanResult });
-      if (!isQuiet) {
+      if (!isQuiet && !isMultiProject) {
         logger.break();
       }
     }
 
-    if (isJsonMode) {
-      writeJsonReport(
-        buildJsonReport({
-          version: VERSION,
-          directory: resolvedDirectory,
-          mode: isDiffMode ? "diff" : "full",
-          diff: isDiffMode ? diffInfo : null,
-          scans: completedScans,
-          totalElapsedMilliseconds: performance.now() - startTime,
+    if (!isQuiet && isMultiProject && completedScans.length > 0) {
+      await Effect.runPromise(
+        printMultiProjectSummary({
+          completedScans,
+          userConfig,
+          verbose: Boolean(flags.verbose),
         }),
       );
     }
 
-    if (flags.annotations) {
-      printAnnotations(allDiagnostics, isJsonMode);
+    finalizeScans({
+      diagnostics: allDiagnostics,
+      completedScans,
+      mode: isDiffMode ? "diff" : "full",
+      diff: isDiffMode ? diffInfo : null,
+      isJsonMode,
+      isScoreOnly,
+      flags,
+      userConfig,
+      resolvedDirectory,
+      startTime,
+    });
+
+    const setupProjectRoot = resolveInstallSetupProjectRoot({
+      scanRoot: resolvedDirectory,
+      scanDirectories: projectDirectories,
+    });
+    if (setupProjectRoot !== null) {
+      const hasCompletedScan = completedScans.length > 0;
+
+      await promptInstallSetup({
+        projectRoot: setupProjectRoot,
+        hasCompletedScan,
+        issueCount: filterDiagnosticsForSurface(
+          allDiagnostics,
+          scanOptions.outputSurface ?? "cli",
+          userConfig,
+        ).length,
+        isJsonMode,
+        isScoreOnly,
+        isStaged: Boolean(flags.staged),
+        skipPrompts,
+      });
+
+      if (
+        shouldShowAgentInstallHint({
+          projectRoot: setupProjectRoot,
+          hasCompletedScan,
+          isJsonMode,
+          isScoreOnly,
+          isStaged: Boolean(flags.staged),
+        })
+      ) {
+        printAgentInstallHint();
+      }
     }
 
-    const ciFailureDiagnostics = filterDiagnosticsForSurface(
-      allDiagnostics,
-      "ciFailure",
-      userConfig,
-    );
-    if (
-      !isScoreOnly &&
-      shouldFailForDiagnostics(ciFailureDiagnostics, resolveFailOnLevel(flags, userConfig))
-    ) {
-      process.exitCode = 1;
+    if (!skipPrompts && !isQuiet && allDiagnostics.length > 0) {
+      const lastScan = completedScans[completedScans.length - 1];
+      await promptCopyIssues({
+        diagnostics: allDiagnostics,
+        score: lastScan?.result.score ?? null,
+        projectName: lastScan?.result.project.projectName ?? path.basename(resolvedDirectory),
+      });
     }
   } catch (error) {
     if (isJsonMode) {

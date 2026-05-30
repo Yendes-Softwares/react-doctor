@@ -1,49 +1,13 @@
-import type { ProjectInfo, ReactDoctorConfig } from "@react-doctor/types";
-import { formatFrameworkName } from "@react-doctor/project-info";
-import { highlighter, logger } from "@react-doctor/core";
-import { spinner } from "./spinner.js";
+import * as Effect from "effect/Effect";
+import type { ProjectInfo, ReactDoctorConfig } from "@react-doctor/core";
 
-export const printProjectDetection = (
-  projectInfo: ProjectInfo,
-  userConfig: ReactDoctorConfig | null,
-  isDiffMode: boolean,
-  includePaths: string[],
-  lintSourceFileCount?: number,
-): void => {
-  const frameworkLabel = formatFrameworkName(projectInfo.framework);
-  const languageLabel = projectInfo.hasTypeScript ? "TypeScript" : "JavaScript";
+export interface PrintProjectDetectionInput {
+  readonly projectInfo: ProjectInfo;
+  readonly userConfig: ReactDoctorConfig | null;
+  readonly isDiffMode: boolean;
+  readonly includePaths: ReadonlyArray<string>;
+  readonly lintSourceFileCount: number | undefined;
+}
 
-  const completeStep = (message: string) => {
-    spinner(message).start().succeed(message);
-  };
-
-  completeStep(`Detecting framework. Found ${highlighter.info(frameworkLabel)}.`);
-  completeStep(
-    `Detecting React version. Found ${highlighter.info(`React ${projectInfo.reactVersion}`)}.`,
-  );
-  completeStep(
-    `Detecting Tailwind. ${
-      projectInfo.tailwindVersion
-        ? `Found ${highlighter.info(`Tailwind ${projectInfo.tailwindVersion}`)}.`
-        : "Not found."
-    }`,
-  );
-  completeStep(`Detecting language. Found ${highlighter.info(languageLabel)}.`);
-  completeStep(
-    `Detecting React Compiler. ${projectInfo.hasReactCompiler ? highlighter.info("Found React Compiler.") : "Not found."}`,
-  );
-
-  if (isDiffMode) {
-    completeStep(`Scanning ${highlighter.info(`${includePaths.length}`)} changed source files.`);
-  } else {
-    completeStep(
-      `Found ${highlighter.info(`${lintSourceFileCount ?? projectInfo.sourceFileCount}`)} source files.`,
-    );
-  }
-
-  if (userConfig) {
-    completeStep(`Loaded ${highlighter.info("react-doctor config")}.`);
-  }
-
-  logger.break();
-};
+export const printProjectDetection = (_input: PrintProjectDetectionInput): Effect.Effect<void> =>
+  Effect.void;

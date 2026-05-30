@@ -19,16 +19,21 @@ import path from "node:path";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 
 import { inspect } from "../../src/inspect.js";
-import type { InspectResult, ReactDoctorConfig } from "@react-doctor/types";
+import type { InspectResult, ReactDoctorConfig } from "@react-doctor/core";
 import {
   encodeAnnotationProperty,
   encodeAnnotationMessage,
 } from "../../src/cli/utils/annotation-encoding.js";
+import { NON_INTERACTIVE_ENVIRONMENT_VARIABLES } from "../../src/cli/utils/is-non-interactive-environment.js";
 import { setupReactProject, writeFile, writeJson } from "./_helpers.js";
 
 const PACKAGE_ROOT = path.resolve(import.meta.dirname, "..", "..");
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rd-cli-and-output-"));
 const ANSI_ESCAPE_PATTERN = new RegExp(String.raw`\u001B\[[0-?]*[ -/]*[@-~]`, "g");
+
+interface EnvironmentVariableValues {
+  [environmentVariableName: string]: string | undefined;
+}
 
 afterAll(() => {
   fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -40,6 +45,37 @@ const setupMinimalReactProject = (caseId: string): string =>
   });
 
 const stripAnsi = (text: string): string => text.replace(ANSI_ESCAPE_PATTERN, "");
+
+const withAutomatedEnvironmentVariables = async <Value>(
+  overrides: EnvironmentVariableValues,
+  callback: () => Promise<Value>,
+): Promise<Value> => {
+  const savedEnvironment: EnvironmentVariableValues = {};
+  for (const environmentVariableName of NON_INTERACTIVE_ENVIRONMENT_VARIABLES) {
+    savedEnvironment[environmentVariableName] = process.env[environmentVariableName];
+    delete process.env[environmentVariableName];
+  }
+  for (const [environmentVariableName, value] of Object.entries(overrides)) {
+    if (value === undefined) {
+      delete process.env[environmentVariableName];
+    } else {
+      process.env[environmentVariableName] = value;
+    }
+  }
+
+  try {
+    return await callback();
+  } finally {
+    for (const environmentVariableName of NON_INTERACTIVE_ENVIRONMENT_VARIABLES) {
+      const previousValue = savedEnvironment[environmentVariableName];
+      if (previousValue === undefined) {
+        delete process.env[environmentVariableName];
+      } else {
+        process.env[environmentVariableName] = previousValue;
+      }
+    }
+  }
+};
 
 // Capture every line `inspect()` writes to console while it runs. We use
 // real I/O (logger / spinner / console.log) rather than scrub source
@@ -60,7 +96,7 @@ const captureScanOutput = async (
   console.error = (...args: unknown[]) => stderr.push(args.join(" "));
   console.warn = (...args: unknown[]) => stderr.push(args.join(" "));
   try {
-    const result = await inspect(projectDir, options);
+    const result = await inspect(projectDir, { deadCode: false, ...options });
     return { result, stdout: stdout.join("\n"), stderr: stderr.join("\n") };
   } finally {
     console.log = originalLog;
@@ -80,7 +116,7 @@ describe("issue #50: CLI flags can re-enable lint that config disabled", () => {
     // even though the config said false.
     const { result } = await captureScanOutput(projectDir, {
       lint: true,
-      offline: true,
+      noScore: true,
       silent: true,
     });
     // If lint had stayed false we'd see it in skippedChecks (or no lint
@@ -94,7 +130,7 @@ describe("issue #50: CLI flags can re-enable lint that config disabled", () => {
     writeJson(path.join(projectDir, "react-doctor.config.json"), { lint: true });
     const { result } = await captureScanOutput(projectDir, {
       lint: false,
-      offline: true,
+      noScore: true,
       silent: true,
     });
     expect(result.diagnostics.filter((d) => d.plugin === "react-doctor")).toHaveLength(0);
@@ -146,8 +182,8 @@ export const App = ({ name }: { name: string }) => {
 };
 `,
     );
-    const defaultRun = await captureScanOutput(projectDir, { offline: false });
-    expect(defaultRun.stdout).toContain("Share your results");
+    const defaultRun = await captureScanOutput(projectDir, { noScore: false });
+    expect(defaultRun.stdout).toContain("Share:");
 
     const projectDir2 = setupMinimalReactProject("issue-92-disabled");
     writeFile(
@@ -161,7 +197,7 @@ export const App = ({ name }: { name: string }) => {
 `,
     );
     writeJson(path.join(projectDir2, "react-doctor.config.json"), { share: false });
-    const disabledRun = await captureScanOutput(projectDir2, { offline: false });
+    const disabledRun = await captureScanOutput(projectDir2, { noScore: false });
     expect(disabledRun.stdout).not.toContain("Share your results");
   });
 });
@@ -187,19 +223,99 @@ export const Cart = () => {
       },
     });
 
-    const { stdout } = await captureScanOutput(projectDir, {
-      lint: true,
-      offline: true,
-    });
-    const normalizedStdout = stripAnsi(stdout);
+    const localRun = await withAutomatedEnvironmentVariables({}, () =>
+      captureScanOutput(projectDir, {
+        lint: true,
+        noScore: true,
+      }),
+    );
+    const normalizedStdout = stripAnsi(localRun.stdout);
 
-    expect(normalizedStdout).toMatch(/State & Effects \d+ issues/);
-    expect(normalizedStdout).toContain("  ⚠ Direct state mutation ×2");
-    expect(normalizedStdout).toContain("    src/Cart.tsx:");
-    expect(normalizedStdout.indexOf("Direct state mutation")).toBeLessThan(
+    expect(normalizedStdout).toContain("State & Effects");
+    expect(normalizedStdout).toMatch(/\d+ warnings?/);
+    expect(normalizedStdout).toContain("--verbose");
+    expect(normalizedStdout).not.toContain("Agent guidance");
+  });
+
+  it("prints agent guidance in automated environments", async () => {
+    const projectDir = setupReactProject(tempRoot, "automated-output-agent-guidance", {
+      files: {
+        "src/Cart.tsx": `import { useState } from "react";
+
+export const Cart = () => {
+  const [items, setItems] = useState<string[]>([]);
+  void setItems;
+
+  const onAdd = (nextItem: string) => {
+    items.push(nextItem);
+  };
+
+  return <button onClick={() => onAdd("x")}>{items.length}</button>;
+};
+`,
+      },
+    });
+
+    const automatedRun = await withAutomatedEnvironmentVariables({ CURSOR_AGENT: "1" }, () =>
+      captureScanOutput(projectDir, {
+        lint: true,
+        noScore: true,
+      }),
+    );
+    const normalizedStdout = stripAnsi(automatedRun.stdout);
+
+    expect(normalizedStdout).toContain("Agent guidance");
+    expect(normalizedStdout).toContain(
+      "  - Treat React Doctor diagnostics as starting hypotheses.",
+    );
+    expect(normalizedStdout).toContain("Confidence requires code context.");
+    expect(normalizedStdout).toContain(
+      "Fix the underlying code instead of changing react-doctor config",
+    );
+    expect(normalizedStdout).toContain("race conditions, security-sensitive flows");
+    expect(normalizedStdout).toContain("theoretical issues without real impact");
+    expect(normalizedStdout).toContain("npx react-doctor@latest --verbose --diff");
+    expect(normalizedStdout).toContain(
+      "  - Split unrelated, broad, or behavior-changing work into separate PRs/branches",
+    );
+    expect(normalizedStdout).toContain("  - When available, spawn subagents or isolated worktrees");
+    expect(normalizedStdout).toContain(
+      "  - For confirmed issues that cannot be fixed now, create GitHub issues",
+    );
+    expect(normalizedStdout).toContain("  - If a fix needs an API, UX, or architecture decision");
+    expect(normalizedStdout.indexOf("Agent guidance")).toBeLessThan(
       normalizedStdout.indexOf("React Doctor"),
     );
-    expect(normalizedStdout).not.toContain("  By category");
+  });
+
+  it("does not print agent guidance in PR comment output", async () => {
+    const projectDir = setupReactProject(tempRoot, "pr-comment-output-agent-guidance", {
+      files: {
+        "src/Cart.tsx": `import { useState } from "react";
+
+export const Cart = () => {
+  const [items, setItems] = useState<string[]>([]);
+  void setItems;
+
+  const onAdd = (nextItem: string) => {
+    items.push(nextItem);
+  };
+
+  return <button onClick={() => onAdd("x")}>{items.length}</button>;
+};
+`,
+      },
+    });
+
+    const automatedRun = await withAutomatedEnvironmentVariables({ GITHUB_ACTIONS: "true" }, () =>
+      captureScanOutput(projectDir, {
+        lint: true,
+        noScore: true,
+        outputSurface: "prComment",
+      }),
+    );
+
+    expect(stripAnsi(automatedRun.stdout)).not.toContain("Agent guidance");
   });
 });
 
@@ -208,7 +324,7 @@ describe("issue #135: lint failures surface in skippedChecks", () => {
     const projectDir = setupMinimalReactProject("issue-135");
     const { result } = await captureScanOutput(projectDir, {
       lint: false,
-      offline: true,
+      noScore: true,
       silent: true,
     });
     // Type contract: skippedChecks always exists as an array.

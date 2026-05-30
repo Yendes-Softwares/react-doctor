@@ -1,27 +1,12 @@
-import path from "node:path";
 import {
   buildJsonReport,
   buildJsonReportError,
-  calculateScore,
   clearAutoSuppressionCaches,
   clearConfigCache,
   clearIgnorePatternsCache,
-  combineDiagnostics,
-  computeJsxIncludePaths,
-  createNodeReadFileLinesSync,
-  loadConfigWithSource,
-  resolveConfigRootDir,
-  resolveDiagnoseTarget,
-  resolveLintIncludePaths,
-  runOxlint,
-} from "@react-doctor/core";
-import {
   clearPackageJsonCache,
   clearProjectCache,
-  discoverProject,
-  NoReactDependencyError,
-  ProjectNotFoundError,
-} from "@react-doctor/project-info";
+} from "@react-doctor/core";
 import type {
   Diagnostic,
   DiagnoseOptions,
@@ -36,7 +21,7 @@ import type {
   ProjectInfo,
   ReactDoctorConfig,
   ScoreResult,
-} from "@react-doctor/types";
+} from "@react-doctor/core";
 
 export type {
   Diagnostic,
@@ -55,14 +40,24 @@ export type {
 };
 export { getDiffInfo, filterSourceFiles, summarizeDiagnostics } from "@react-doctor/core";
 export { buildJsonReport, buildJsonReportError };
+// `ReactDoctorError` is the tagged Schema class from
+// `@react-doctor/core`, used by the new Effect pipeline.
+// `isReactDoctorError` narrows to that tagged class.
+// The four narrow errors below are still plain JS Error subclasses —
+// they're thrown synchronously by `discoverProject` /
+// `resolveDiagnoseTarget` / `readPackageJson` BEFORE the Effect
+// runtime takes over, so callers can `try/catch` them without
+// Effect-aware machinery.
 export {
   ReactDoctorError,
   ProjectNotFoundError,
   NoReactDependencyError,
   PackageJsonNotFoundError,
+  NotADirectoryError,
   AmbiguousProjectError,
   isReactDoctorError,
-} from "@react-doctor/project-info";
+  isProjectDiscoveryError,
+} from "@react-doctor/core";
 
 // HACK: programmatic API consumers (watch-mode tools, test runners,
 // agentic CLI flows) call diagnose() repeatedly on the same directory.
@@ -95,7 +90,10 @@ export const toJsonReport = (result: DiagnoseResult, options: ToJsonReportOption
         result: {
           diagnostics: result.diagnostics,
           score: result.score,
-          skippedChecks: [],
+          skippedChecks: result.skippedChecks,
+          ...(result.skippedCheckReasons
+            ? { skippedCheckReasons: result.skippedCheckReasons }
+            : {}),
           project: result.project,
           elapsedMilliseconds: result.elapsedMilliseconds,
         },
@@ -104,78 +102,4 @@ export const toJsonReport = (result: DiagnoseResult, options: ToJsonReportOption
     totalElapsedMilliseconds: result.elapsedMilliseconds,
   });
 
-const EMPTY_DIAGNOSTICS: Diagnostic[] = [];
-
-export const diagnose = async (
-  directory: string,
-  options: DiagnoseOptions = {},
-): Promise<DiagnoseResult> => {
-  const startTime = globalThis.performance.now();
-  const requestedDirectory = path.resolve(directory);
-
-  // Load config first against the requested directory so a `rootDir`
-  // redirect applies BEFORE we hunt for nested React subprojects. This
-  // is the documented escape hatch for monorepos that hold the only
-  // react-doctor config at the repo root but want scans to target a
-  // subproject like `apps/web`.
-  const initialLoadedConfig = loadConfigWithSource(requestedDirectory);
-  const redirectedDirectory = resolveConfigRootDir(
-    initialLoadedConfig?.config ?? null,
-    initialLoadedConfig?.sourceDirectory ?? null,
-  );
-  const directoryAfterRedirect = redirectedDirectory ?? requestedDirectory;
-
-  const resolvedDirectory = resolveDiagnoseTarget(directoryAfterRedirect);
-  if (!resolvedDirectory) {
-    throw new ProjectNotFoundError(directoryAfterRedirect);
-  }
-
-  const userConfig =
-    initialLoadedConfig?.config ?? loadConfigWithSource(resolvedDirectory)?.config ?? null;
-  const includePaths = options.includePaths ?? [];
-  const isDiffMode = includePaths.length > 0;
-  const projectInfo = discoverProject(resolvedDirectory);
-
-  if (!projectInfo.reactVersion) {
-    throw new NoReactDependencyError(resolvedDirectory);
-  }
-
-  const lintIncludePaths =
-    computeJsxIncludePaths(includePaths) ?? resolveLintIncludePaths(resolvedDirectory, userConfig);
-  const readFileLinesSync = createNodeReadFileLinesSync(resolvedDirectory);
-
-  const effectiveLint = options.lint ?? userConfig?.lint ?? true;
-  const effectiveRespectInlineDisables =
-    options.respectInlineDisables ?? userConfig?.respectInlineDisables ?? true;
-
-  const ignoredTags = new Set<string>(userConfig?.ignore?.tags ?? []);
-
-  const lintDiagnostics = effectiveLint
-    ? await runOxlint({
-        rootDirectory: resolvedDirectory,
-        project: projectInfo,
-        includePaths: lintIncludePaths,
-        customRulesOnly: userConfig?.customRulesOnly ?? false,
-        respectInlineDisables: effectiveRespectInlineDisables,
-        adoptExistingLintConfig: userConfig?.adoptExistingLintConfig ?? true,
-        ignoredTags,
-        userConfig,
-      }).catch((error: unknown) => {
-        console.error("Lint failed:", error);
-        return EMPTY_DIAGNOSTICS;
-      })
-    : EMPTY_DIAGNOSTICS;
-
-  const diagnostics = combineDiagnostics({
-    lintDiagnostics,
-    directory: resolvedDirectory,
-    isDiffMode,
-    userConfig,
-    readFileLinesSync,
-    respectInlineDisables: effectiveRespectInlineDisables,
-  });
-  const elapsedMilliseconds = globalThis.performance.now() - startTime;
-  const score = await calculateScore(diagnostics);
-
-  return { diagnostics, score, project: projectInfo, elapsedMilliseconds };
-};
+export { diagnose } from "@react-doctor/api";

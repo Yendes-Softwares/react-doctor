@@ -12,14 +12,15 @@ export type RuleFramework =
   | "nextjs"
   | "react-native"
   | "tanstack-start"
-  | "tanstack-query";
+  | "tanstack-query"
+  | "preact";
 
 export interface Rule {
   // Public-facing rule identifier — what users put in their oxlint config
   // (`react-doctor/<id>`) and what shows up in diagnostic output. Owned by
   // the rule itself (not its filename or export-variable name) because
   // some rule-ids carry historical prefixes the file path doesn't —
-  // e.g. `react-ui/no-bold-heading.ts` registers as `design-no-bold-heading`.
+  // e.g. `react-ui/no-em-dash-in-jsx-text.ts` registers as `design-no-em-dash-in-jsx-text`.
   id: string;
   severity: RuleSeverity;
   // Category override — when present, takes precedence over the bucket
@@ -38,10 +39,23 @@ export interface Rule {
   // for the rule to be enabled. Omit for rules that always apply once
   // their framework gate is met.
   requires?: ReadonlyArray<string>;
+  // Inverse of `requires`: list of capability tokens whose presence
+  // DISABLES the rule. Used for rules that become irrelevant when a
+  // project ships with React Compiler (auto-memoization makes the four
+  // `jsx-no-new-*-as-prop` perf rules unnecessary, for example). If
+  // ANY listed capability is present the rule is skipped.
+  disabledBy?: ReadonlyArray<string>;
   // Behavioral tags (e.g. `"test-noise"`, `"design"`) consumed by
   // `--ignore-tag` / `shouldEnableRule` to opt families of rules in
   // or out of a scan independently of the framework gate.
   tags?: ReadonlyArray<string>;
+  // When `false`, the rule is registered in the plugin (importable,
+  // configurable, testable) but NOT enabled by default — users must
+  // opt in via `severityControls.rules["react-doctor/<id>"]`. Used for
+  // ports of upstream rules whose defaults produce massive noise on
+  // modern React codebases (`react-in-jsx-scope` post-React-17,
+  // `forbid-component-props` flagging `className`, etc.).
+  defaultEnabled?: boolean;
   recommendation?: string;
   create: (context: RuleContext) => RuleVisitors;
 }

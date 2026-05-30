@@ -1,10 +1,17 @@
 import path from "node:path";
 import { describe, expect, it } from "vite-plus/test";
-import type { Diagnostic } from "@react-doctor/types";
+import type { Diagnostic } from "@react-doctor/core";
 import { runOxlint } from "@react-doctor/core";
 import { buildTestProject } from "./regressions/_helpers.js";
 
-const FIXTURES_DIRECTORY = path.resolve(import.meta.dirname, "fixtures");
+const FIXTURES_DIRECTORY = path.resolve(
+  import.meta.dirname,
+  "..",
+  "..",
+  "core",
+  "tests",
+  "fixtures",
+);
 const BASIC_REACT_DIRECTORY = path.join(FIXTURES_DIRECTORY, "basic-react");
 
 const findDiagnosticsInFile = (
@@ -56,7 +63,10 @@ describe("namespace hook detection (React.useEffect, React.useState, etc.)", () 
   it("detects no-derived-useState with React.useState", () => {
     const issues = findDiagnosticsInFile(diagnostics, "no-derived-useState", "namespace-hooks");
     expect(issues.length).toBeGreaterThan(0);
-    expect(issues[0].message).toContain("initialName");
+    // NOTE: prop name is `currentName` (NOT `initialName`) — the
+    // initial-only prop-name skip in `no-derived-useState` would
+    // suppress `initialName` as a controlled-init pattern.
+    expect(issues[0].message).toContain("currentName");
   });
 
   it("detects rerender-lazy-state-init with React.useState", () => {

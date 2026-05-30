@@ -7,7 +7,15 @@ import { resolveJsxElementName } from "./utils/resolve-jsx-element-name.js";
 import { isNodeOfType } from "../../utils/is-node-of-type.js";
 import type { EsTreeNodeOfType } from "../../utils/es-tree-node-of-type.js";
 
-const PRESS_HANDLER_PROP_NAMES = new Set(["onPressIn", "onPressOut"]);
+const PRESS_HANDLER_PROP_NAMES = new Set(["onPress", "onPressIn", "onPressOut", "onLongPress"]);
+
+const PRESSABLE_ELEMENT_NAMES = new Set([
+  "Pressable",
+  "TouchableOpacity",
+  "TouchableHighlight",
+  "TouchableWithoutFeedback",
+  "TouchableNativeFeedback",
+]);
 
 const handlerMutatesIdentifier = (
   handler: EsTreeNode,
@@ -56,6 +64,7 @@ const handlerMutatesIdentifier = (
 // false-positives on `Map.prototype.set` / `ref.current.value =` etc.
 export const rnPressableSharedValueMutation = defineRule<Rule>({
   id: "rn-pressable-shared-value-mutation",
+  tags: ["test-noise"],
   requires: ["react-native"],
   severity: "warn",
   recommendation:
@@ -94,7 +103,7 @@ export const rnPressableSharedValueMutation = defineRule<Rule>({
       },
       JSXOpeningElement(node: EsTreeNodeOfType<"JSXOpeningElement">) {
         const name = resolveJsxElementName(node);
-        if (name !== "Pressable") return;
+        if (!name || !PRESSABLE_ELEMENT_NAMES.has(name)) return;
         if (sharedValueBindingsByComponent.length === 0) return;
         const activeBindings = new Set<string>();
         for (const frame of sharedValueBindingsByComponent) {
@@ -113,7 +122,7 @@ export const rnPressableSharedValueMutation = defineRule<Rule>({
 
           context.report({
             node: attr,
-            message: `<Pressable> ${attr.name.name} mutates a Reanimated shared value — use a Gesture.Tap() inside <GestureDetector> for press animations that stay on the UI thread`,
+            message: `<${name}> ${attr.name.name} mutates a Reanimated shared value — use a Gesture.Tap() inside <GestureDetector> for press animations that stay on the UI thread`,
           });
         }
       },

@@ -16,8 +16,8 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vite-plus/test";
 
-import type { Diagnostic } from "@react-doctor/types";
-import { createNodeReadFileLinesSync, filterInlineSuppressions } from "@react-doctor/core";
+import type { Diagnostic } from "@react-doctor/core";
+import { createNodeReadFileLinesSync, mergeAndFilterDiagnostics } from "@react-doctor/core";
 import { buildDiagnostic, writeFile } from "./_helpers.js";
 
 const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), "rd-inline-suppression-"));
@@ -38,7 +38,12 @@ const runFilter = (
 ): Diagnostic[] => {
   const projectDir = path.join(tempRoot, caseId);
   writeFile(path.join(projectDir, "src", "app.tsx"), fileContents);
-  return filterInlineSuppressions(diagnostics, projectDir, createNodeReadFileLinesSync(projectDir));
+  return mergeAndFilterDiagnostics(
+    diagnostics,
+    projectDir,
+    null,
+    createNodeReadFileLinesSync(projectDir),
+  );
 };
 
 const baseDiagnostic = (overrides: Partial<Diagnostic> = {}): Diagnostic =>
@@ -147,6 +152,15 @@ describe("issue #144: inline suppressions — block comment forms", () => {
       "jsx-block-disable-next-line",
       `{/* react-doctor-disable-next-line react/no-danger */}\n<div dangerouslySetInnerHTML={{ __html }} />\n`,
       [baseDiagnostic({ plugin: "react", rule: "no-danger", line: 2 })],
+    );
+    expect(filtered).toHaveLength(0);
+  });
+
+  it("legacy react/* suppressions match native react-doctor ports", () => {
+    const filtered = runFilter(
+      "jsx-block-disable-next-line-legacy-native",
+      `{/* react-doctor-disable-next-line react/no-danger */}\n<div dangerouslySetInnerHTML={{ __html }} />\n`,
+      [baseDiagnostic({ plugin: "react-doctor", rule: "no-danger", line: 2 })],
     );
     expect(filtered).toHaveLength(0);
   });

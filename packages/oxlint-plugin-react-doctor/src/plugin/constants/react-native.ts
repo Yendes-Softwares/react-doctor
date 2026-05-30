@@ -27,6 +27,22 @@ export const REACT_NATIVE_TEXT_COMPONENT_KEYWORDS = new Set([
   "Body",
 ]);
 
+// Compile-time translation wrappers — fbtee's <fbt> / <fbs> and their
+// namespaced children (<fbt:param>, <fbt:plural>, <fbt:name>, …) — are NOT
+// React Native layout components. A Babel/SWC transform erases them at build
+// time, so their text really renders inside the surrounding <Text>. The
+// rn-no-raw-text rule treats them as *transparent*: raw text inside them is
+// safe only when an enclosing element is a real text component (so a bare
+// <fbt> outside <Text> is still reported).
+//
+// To extend the same behavior to another compile-time / i18n wrapper, add its
+// tag name here — namespaced children are matched by their namespace, so a
+// single entry (e.g. "fbt") covers every "<fbt:*>" child.
+//
+// Ref: https://github.com/millionco/react-doctor/issues/581
+//      https://facebook.github.io/fbt/docs/api_intro
+export const REACT_NATIVE_TEXT_TRANSPARENT_COMPONENTS = new Set(["fbt", "fbs"]);
+
 // HACK: Maps (not plain objects) so that an unusual `import { constructor }
 // from "react-native"` (or any other Object.prototype name) doesn't fall
 // through to `Object.prototype.constructor` and falsely report. Symmetric
@@ -56,6 +72,12 @@ export const LEGACY_EXPO_PACKAGE_REPLACEMENTS = new Map<string, string>([
     "expo-permissions",
     "the permissions API in each module (e.g. Camera.requestPermissionsAsync())",
   ],
+  ["expo-app-loading", "expo-splash-screen"],
+  [
+    "expo-linear-gradient",
+    "the `backgroundImage` CSS gradient style prop (New Architecture) or expo-linear-gradient's successor",
+  ],
+  ["react-native-fast-image", "expo-image (drop-in with caching, placeholders, and crossfades)"],
 ]);
 
 export const REACT_NATIVE_LIST_COMPONENTS = new Set([
@@ -63,6 +85,13 @@ export const REACT_NATIVE_LIST_COMPONENTS = new Set([
   "SectionList",
   "VirtualizedList",
   "FlashList",
+  "LegendList",
+]);
+
+export const RENDER_ITEM_PROP_NAMES = new Set([
+  "renderItem",
+  "renderSectionHeader",
+  "renderSectionFooter",
 ]);
 
 export const LEGACY_SHADOW_STYLE_PROPERTIES = new Set([
