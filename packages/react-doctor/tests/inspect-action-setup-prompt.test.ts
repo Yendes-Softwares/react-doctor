@@ -2,9 +2,9 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
+import { resolveScanTarget } from "@react-doctor/core";
 import type { InspectResult } from "@react-doctor/core";
 import { inspectAction } from "../src/cli/commands/inspect.js";
-import { promptInstallSetup } from "../src/cli/utils/prompt-install-setup.js";
 import { inspect } from "../src/inspect.js";
 
 const mockState = vi.hoisted(() => ({
@@ -30,7 +30,7 @@ vi.mock("@react-doctor/core", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@react-doctor/core")>();
   return {
     ...actual,
-    resolveScanTarget: vi.fn(() => ({
+    resolveScanTarget: vi.fn(async () => ({
       resolvedDirectory: mockState.rootDirectory,
       requestedDirectory: mockState.rootDirectory,
       userConfig: null,
@@ -66,6 +66,9 @@ vi.mock("../src/inspect.js", () => ({
         hasReactCompiler: false,
         hasTanStackQuery: false,
         hasReactNativeWorkspace: false,
+        expoVersion: null,
+        shopifyFlashListVersion: null,
+        shopifyFlashListMajorVersion: null,
         hasReanimated: false,
         preactVersion: null,
         preactMajorVersion: null,
@@ -91,15 +94,10 @@ vi.mock("../src/cli/utils/render-multi-project-summary.js", async () => {
   };
 });
 
-vi.mock("../src/cli/utils/copy-issues-to-clipboard.js", () => ({
-  promptCopyIssues: vi.fn(async () => {}),
-}));
-
 vi.mock("../src/cli/utils/prompt-install-setup.js", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../src/cli/utils/prompt-install-setup.js")>();
   return {
     ...actual,
-    promptInstallSetup: vi.fn(async () => {}),
     shouldShowAgentInstallHint: vi.fn(() => false),
   };
 });
@@ -139,18 +137,12 @@ describe("inspectAction setup prompt", () => {
 
     await inspectAction(rootDirectory, { diff: true, lint: false });
 
+    expect(resolveScanTarget).toHaveBeenCalledWith(rootDirectory, { allowAmbiguous: true });
     expect(inspect).toHaveBeenCalledTimes(1);
     expect(inspect).toHaveBeenCalledWith(
       webDirectory,
       expect.objectContaining({
         includePaths: ["src/App.tsx"],
-      }),
-    );
-    expect(promptInstallSetup).toHaveBeenCalledWith(
-      expect.objectContaining({
-        projectRoot: rootDirectory,
-        hasCompletedScan: true,
-        skipPrompts: false,
       }),
     );
   });

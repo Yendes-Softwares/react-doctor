@@ -2,6 +2,7 @@
 // Generates `src/plugin/rule-registry.ts` by scanning every per-rule file
 // under `src/plugin/rules/<bucket>/<rule>.ts` for its
 //   export const <identifier> = defineRule<Rule>({ id: "<rule-id>", ... })
+//   export const <identifier> = defineRetiredRule({ id: "<rule-id>", ... })
 // declaration. The bucket directory determines the rule's `framework` and
 // its default `category`; the rule file may override the category with an
 // explicit field. `framework` is never on the rule itself.
@@ -84,6 +85,33 @@ const RULE_IDS_TO_SKIP_REGISTRATION = new Set([
   "react-compiler-destructure-method",
 ]);
 
+// Fine-grained category → the clear, user-facing bucket the scan output
+// groups & labels by. Rules (and the buckets below) declare a detailed
+// category for intent; the reporter only ever shows these five outcome
+// buckets, so "is this a bug, a slowdown, a vulnerability, an a11y gap,
+// or a maintainability smell?" is obvious at a glance. Collapsing happens
+// here at codegen so every consumer (renderer, JSON, severity overrides,
+// explain) reads the same bucket off `rule.category`.
+const CATEGORY_BUCKET = {
+  Security: "Security",
+  Performance: "Performance",
+  "Bundle Size": "Performance",
+  Accessibility: "Accessibility",
+  Correctness: "Bugs",
+  "State & Effects": "Bugs",
+  "React Compiler": "Performance",
+  "Next.js": "Bugs",
+  "React Native": "Bugs",
+  Server: "Bugs",
+  "TanStack Query": "Bugs",
+  "TanStack Start": "Bugs",
+  Preact: "Bugs",
+  Architecture: "Maintainability",
+  Design: "Maintainability",
+  Other: "Bugs",
+};
+const toBucket = (category) => CATEGORY_BUCKET[category] ?? "Bugs";
+
 // Bucket directory → default category. A rule MAY override its category
 // with an explicit `category: "..."` field in its `defineRule({...})` call
 // (e.g. some `tanstack-start/` and `nextjs/` rules override to "Security").
@@ -127,10 +155,28 @@ for (const bucket of fs.readdirSync(PLUGIN_RULES_ROOT, { withFileTypes: true }))
     if (!entry.isFile() || !entry.name.endsWith(".ts")) continue;
     const filePath = path.join(bucketDir, entry.name);
     const source = fs.readFileSync(filePath, "utf8");
+    // `[^(]*` tolerates an optional type argument with arbitrary nesting
+    // (e.g. `defineRule<Foo<Bar>>(`) and the no-generic `defineRule({` form,
+    // where the original `<[^>]+>` matcher silently failed and dropped the rule.
+    // `defineRetiredRule` follows the same metadata shape but intentionally
+    // emits a no-op rule for legacy config compatibility.
     const exportMatch = source.match(
-      /export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*defineRule\s*<[^>]+>\s*\(\s*\{/,
+      /export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:defineRule|defineRetiredRule)\b[^(]*\(\s*\{/,
     );
-    if (!exportMatch) continue;
+    if (!exportMatch) {
+      // Fail loudly if a file clearly declares a rule export but the scanner
+      // can't parse it — a silent `continue` would ship a registry missing
+      // the rule with no error.
+      if (
+        /export\s+const\s+[A-Za-z_$][\w$]*\s*=\s*(?:defineRule|defineRetiredRule)\b/.test(source)
+      ) {
+        console.error(
+          `Rule export present but unparseable by the registry scanner: ${path.relative(PACKAGE_ROOT, filePath)}`,
+        );
+        process.exit(1);
+      }
+      continue;
+    }
     const identifier = exportMatch[1];
     const idMatch = source.match(/^\s*id:\s*"([^"]+)",?\s*$/m);
     if (!idMatch) {
@@ -149,7 +195,7 @@ for (const bucket of fs.readdirSync(PLUGIN_RULES_ROOT, { withFileTypes: true }))
     }
     const ruleId = idMatch[1];
     if (RULE_IDS_TO_SKIP_REGISTRATION.has(ruleId)) continue;
-    const category = categoryMatch ? categoryMatch[1] : defaultCategory;
+    const category = toBucket(categoryMatch ? categoryMatch[1] : defaultCategory);
     const severity = severityMatch[1];
     // Force POSIX separators — `path.relative()` returns backslashes on
     // Windows, which TypeScript module resolution rejects.

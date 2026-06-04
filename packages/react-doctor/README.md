@@ -1,7 +1,7 @@
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="./assets/react-doctor-readme-logo-dark.svg">
   <source media="(prefers-color-scheme: light)" srcset="./assets/react-doctor-readme-logo-light.svg">
-  <img alt="React Doctor" src="./assets/react-doctor-readme-logo-light.svg" width="239" height="40">
+  <img alt="React Doctor" src="./assets/react-doctor-readme-logo-light.svg" width="134" height="36">
 </picture>
 
 [![version](https://img.shields.io/npm/v/react-doctor?style=flat&colorA=000000&colorB=000000)](https://npmjs.com/package/react-doctor)
@@ -64,12 +64,55 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
-      - uses: millionco/react-doctor@main
+      - uses: millionco/react-doctor@v1
 ```
 
-React Doctor scans the files changed in the pull request, emits inline annotations, blocks on error-level findings, and updates one sticky PR comment with the score and issue summary. The built-in GitHub token is used automatically; no secret or PAT is required. On forked PRs where GitHub withholds write permissions, the scan and annotations still run, but the sticky comment may be skipped.
+`@v1` always resolves to the latest `v1.x` release of the Action. For hardened CI — recommended whenever the workflow is granted `pull-requests: write` — pin to a full commit SHA instead and let Dependabot or Renovate keep it current:
+
+```yaml
+- uses: millionco/react-doctor@b612664043a9be414166e3c6a69b355e39a8dcf4 # v1.1.1
+```
 
 [Add GitHub Action →](https://github.com/marketplace/actions/react-doctor)
+
+### 4. Configure rules in `doctor.config.ts`
+
+Configure with a `doctor.config.ts` (or `.js`, `.mjs`, `.cjs`, `.json`, `.jsonc`) in your project root.
+
+```ts
+// doctor.config.ts
+import type { ReactDoctorConfig } from "react-doctor/api";
+
+export default {
+  lint: true,
+  rules: {
+    "react-doctor/no-array-index-as-key": "off",
+  },
+} satisfies ReactDoctorConfig;
+```
+
+Prefer JSON? Use `doctor.config.json`:
+
+```jsonc
+{
+  "$schema": "https://react.doctor/schema/config.json",
+  "lint": true,
+}
+```
+
+## Telemetry
+
+The CLI reports crashes, basic run traces, and anonymous usage counters to [Sentry](https://sentry.io/) to help us fix bugs and prioritize work.
+
+We collect:
+
+- Environment: CLI version, platform, Node version
+- Invocation: which command, package manager, and run context (whether it's local vs. CI vs. coding agent)
+- Project shape: framework, React version, TypeScript, project size NO file contents)
+- Rules fired: rule names and counts only (e.g. `react-doctor/no-array-index-as-key`) (NO code or specific findings)
+- De-minified React Doctor CLI stack traces
+
+To opt out, run: `npx react-doctor@latest --no-telemetry`
 
 ## Contributing
 

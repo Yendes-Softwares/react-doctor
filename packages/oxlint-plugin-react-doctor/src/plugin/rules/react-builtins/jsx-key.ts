@@ -7,12 +7,11 @@ import { isNodeOfType } from "../../utils/is-node-of-type.js";
 import type { Rule } from "../../utils/rule.js";
 
 const ITERATOR_METHOD_NAMES = new Set(["map", "flatMap", "from"]);
-const MISSING_KEY_ARRAY = "Missing `key` prop for element in array.";
-const MISSING_KEY_ITERATOR = "Missing `key` prop for element in iterator.";
-const KEY_BEFORE_SPREAD =
-  "`key` prop must be placed before any `{...spread}` for the new JSX transform.";
+const MISSING_KEY_ARRAY = "Your users can see the wrong data when this array reorders.";
+const MISSING_KEY_ITERATOR = "Your users can see the wrong data when this list reorders.";
+const KEY_BEFORE_SPREAD = "The `{...spread}` can overwrite this `key` & break React's tracking.";
 const DUPLICATE_KEY = (keyValue: string): string =>
-  `Duplicate key "${keyValue}" found in JSX elements.`;
+  `Your users can see the wrong data because two elements share the key "${keyValue}".`;
 
 interface JsxKeySettings {
   checkKeyMustBeforeSpread?: boolean;
@@ -111,6 +110,47 @@ const findEnclosingIteratorContext = (jsxNode: EsTreeNode): IteratorContext | nu
     current = parent;
   }
   return null;
+};
+
+// Resolves the name of an iterator callback's first parameter — the "item"
+// each element is built from. `xs.map((item) => ...)` → `"item"`. Only plain
+// identifier params resolve; destructured params (`({ id }) => ...`) return
+// null since there's no single binding to match a spread against.
+const resolveIterationItemName = (callExpression: EsTreeNode): string | null => {
+  if (!isNodeOfType(callExpression, "CallExpression")) return null;
+  const callee = callExpression.callee;
+  if (!isNodeOfType(callee, "MemberExpression")) return null;
+  if (!isNodeOfType(callee.property, "Identifier")) return null;
+  const targetArgIndex = callee.property.name === "from" ? 1 : 0;
+  const callback = callExpression.arguments[targetArgIndex];
+  if (
+    !callback ||
+    (!isNodeOfType(callback, "ArrowFunctionExpression") &&
+      !isNodeOfType(callback, "FunctionExpression"))
+  ) {
+    return null;
+  }
+  const firstParam = callback.params[0];
+  return firstParam && isNodeOfType(firstParam, "Identifier") ? firstParam.name : null;
+};
+
+// React never forwards `key` through `{...spread}`, so `xs.map(x => <X {...x} />)`
+// is technically keyless. But spreading the *whole iteration item* is the
+// canonical "the data row carries its own identity" shape — flagging it is the
+// dominant source of jsx-key noise on real lists (every row spread fires) while
+// rarely catching a genuine reorder bug. We treat that one shape as borderline
+// and stay silent; genuine keyless lists (`<X name={x.name} />`, index keys,
+// array literals) still report.
+const spreadsIterationItem = (
+  openingElement: EsTreeNodeOfType<"JSXOpeningElement">,
+  iterationItemName: string,
+): boolean => {
+  for (const attribute of openingElement.attributes) {
+    if (!isNodeOfType(attribute, "JSXSpreadAttribute")) continue;
+    const argument = attribute.argument;
+    if (isNodeOfType(argument, "Identifier") && argument.name === iterationItemName) return true;
+  }
+  return false;
 };
 
 const isWithinChildrenToArray = (jsxNode: EsTreeNode): boolean => {
@@ -223,6 +263,7 @@ const getKeyAttributeValueString = (
 // assigns synthetic keys for those.
 export const jsxKey = defineRule<Rule>({
   id: "jsx-key",
+  title: "Missing key in list",
   severity: "error",
   recommendation: "Add a `key={...}` prop to each element produced inside `.map` / array literal.",
   create: (context) => {
@@ -252,6 +293,10 @@ export const jsxKey = defineRule<Rule>({
         if (!enclosingContext) return;
         if (isWithinChildrenToArray(node)) return;
         if (hasJsxKeyAttribute(openingElement)) return;
+        if (enclosingContext.kind === "iterator") {
+          const iterationItemName = resolveIterationItemName(enclosingContext.callExpression);
+          if (iterationItemName && spreadsIterationItem(openingElement, iterationItemName)) return;
+        }
         context.report({
           node: openingElement,
           message: enclosingContext.kind === "array" ? MISSING_KEY_ARRAY : MISSING_KEY_ITERATOR,

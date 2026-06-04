@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -11,6 +11,8 @@ import {
 import { highlighter, SKILL_NAME } from "@react-doctor/core";
 import { cliLogger as logger } from "./cli-logger.js";
 import { detectAvailableAgents } from "./detect-agents.js";
+import { METRIC } from "./constants.js";
+import { recordCount } from "./record-metric.js";
 import {
   DOCTOR_PACKAGE_NAME,
   findNearestPackageDirectory,
@@ -58,7 +60,8 @@ interface InstallReactDoctorDependencyResult {
   readonly dependencyReason?:
     | "missing-or-invalid-package-json"
     | "invalid-dev-dependencies"
-    | "install-command-failed";
+    | "install-command-failed"
+    | "trust-policy-blocked";
   readonly installCommand?: string;
 }
 
@@ -147,12 +150,31 @@ const buildInstallCommand = (projectRoot: string): InstallReactDoctorDependencyR
 };
 
 const defaultInstallDependencyRunner = (input: InstallReactDoctorDependencyRunnerInput): void => {
+  // Capture (don't inherit) so a failure doesn't dump the package
+  // manager's raw output. pnpm in particular prints an alarming
+  // "ERR_PNPM_TRUST_DOWNGRADE … possible package takeover / supply chain
+  // incident" block when its trust policy rejects a beta dependency
+  // (e.g. `effect`), which looks like a security breach but isn't. On
+  // failure the caller surfaces a calm, tailored message and the exact
+  // manual command instead.
   execFileSync(input.command, [...input.args], {
     cwd: input.cwd,
-    stdio: "inherit",
+    stdio: ["ignore", "pipe", "pipe"],
     env: { ...process.env, REACT_DOCTOR_INSTALL: "1" },
     shell: process.platform === "win32",
   });
+};
+
+// pnpm's supply-chain trust guard (`ERR_PNPM_TRUST_DOWNGRADE`) rejects a
+// dependency whose newest version has weaker trust evidence than an
+// earlier one. It reads as a compromise but is routinely tripped by
+// pre-release deps; detect it so we can reassure instead of alarm.
+const isSupplyChainTrustError = (error: unknown): boolean => {
+  const candidate = error as { stderr?: unknown; stdout?: unknown; message?: unknown } | null;
+  const haystack = [candidate?.stderr, candidate?.stdout, candidate?.message]
+    .map((part) => String(part ?? ""))
+    .join("\n");
+  return /ERR_PNPM_TRUST_DOWNGRADE|trust downgrade/i.test(haystack);
 };
 
 const formatInstallCommand = (input: InstallReactDoctorDependencyRunnerInput): string =>
@@ -179,10 +201,12 @@ const installReactDoctorDependency = async (
   const runnerInput = buildInstallCommand(options.projectRoot);
   try {
     await (options.runner ?? defaultInstallDependencyRunner)(runnerInput);
-  } catch {
+  } catch (error) {
     return {
       dependencyStatus: "skipped",
-      dependencyReason: "install-command-failed",
+      dependencyReason: isSupplyChainTrustError(error)
+        ? "trust-policy-blocked"
+        : "install-command-failed",
       installCommand: formatInstallCommand(runnerInput),
     };
   }
@@ -236,6 +260,11 @@ const formatDependencyInstallMessage = (result: InstallReactDoctorDependencyResu
   if (result.dependencyReason === "invalid-dev-dependencies") {
     return "Skipped dev dependency install: devDependencies field is not an object.";
   }
+  if (result.dependencyReason === "trust-policy-blocked") {
+    const installCommand =
+      result.installCommand ?? `npm install --save-dev ${DOCTOR_PACKAGE_NAME}@latest`;
+    return `Skipped local install: your package manager's supply-chain trust policy blocked a dependency (not a compromise — beta packages trip this). React Doctor still works via \`npx react-doctor\`. To add it locally: ${installCommand}`;
+  }
   if (result.dependencyReason === "install-command-failed") {
     const installCommand =
       result.installCommand ?? `npm install --save-dev ${DOCTOR_PACKAGE_NAME}@latest`;
@@ -247,7 +276,7 @@ const formatDependencyInstallMessage = (result: InstallReactDoctorDependencyResu
 const installReactDoctorPackageSetup = async (
   projectRoot: string,
   dependencyRunner?: (input: InstallReactDoctorDependencyRunnerInput) => void | Promise<void>,
-): Promise<void> => {
+): Promise<InstallReactDoctorDependencyResult> => {
   const scriptSpinner = spinner("Installing React Doctor package script...").start();
   try {
     const scriptResult = installDoctorScript({ projectRoot });
@@ -263,11 +292,19 @@ const installReactDoctorPackageSetup = async (
       projectRoot,
       runner: dependencyRunner,
     });
+    // Conversion + supply-chain-trust friction: did the local dev-dep install
+    // land, already exist, or get skipped (and why)?
+    recordCount(METRIC.installDependency, 1, {
+      status: dependencyResult.dependencyStatus,
+      reason: dependencyResult.dependencyReason ?? null,
+      packageManager: detectPackageManager(projectRoot),
+    });
     if (dependencyResult.dependencyStatus === "skipped") {
       dependencySpinner.fail(formatDependencyInstallMessage(dependencyResult));
-      return;
+      return dependencyResult;
     }
     dependencySpinner.succeed(formatDependencyInstallMessage(dependencyResult));
+    return dependencyResult;
   } catch (error) {
     dependencySpinner.fail("Failed to install React Doctor package.");
     throw error;
@@ -290,9 +327,58 @@ interface InstallReactDoctorOptions {
   prompt?: typeof prompts;
 }
 
-const getSkillSourceDirectory = (): string => {
+export const getSkillSourceDirectory = (): string => {
   const distDirectory = path.dirname(fileURLToPath(import.meta.url));
   return path.join(distDirectory, "skills", SKILL_NAME);
+};
+
+interface BundledSiblingSkill {
+  readonly name: string;
+  readonly source: string;
+}
+
+// Discovers skills that ship alongside the primary `react-doctor` skill
+// (currently `doctor-explain`). The parent of the resolved primary skill
+// dir is `dist/skills/`, which holds every bundled skill. Tests override
+// `sourceDir` to a lone temp skill dir, so this returns [] there — only
+// the real bundled layout produces siblings.
+const findBundledSiblingSkills = (primarySkillDir: string): BundledSiblingSkill[] => {
+  const skillsParent = path.dirname(primarySkillDir);
+  if (!existsSync(skillsParent)) return [];
+  const resolvedPrimary = path.resolve(primarySkillDir);
+  return readdirSync(skillsParent, { withFileTypes: true })
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => ({ name: entry.name, source: path.join(skillsParent, entry.name) }))
+    .filter(
+      (sibling) =>
+        path.resolve(sibling.source) !== resolvedPrimary &&
+        existsSync(path.join(sibling.source, SKILL_MANIFEST_FILE)),
+    );
+};
+
+const installBundledSiblingSkills = async (
+  primarySkillDir: string,
+  agents: readonly SkillAgentType[],
+  projectRoot: string,
+): Promise<string[]> => {
+  const installedSkillNames: string[] = [];
+  for (const sibling of findBundledSiblingSkills(primarySkillDir)) {
+    const result = await installSkillsFromSource({
+      source: sibling.source,
+      agents: [...agents],
+      cwd: projectRoot,
+      mode: "copy",
+    });
+    if (result.failed.length > 0) {
+      throw new Error(
+        result.failed
+          .map((failure) => `${getSkillAgentConfig(failure.agent).displayName}: ${failure.error}`)
+          .join("\n"),
+      );
+    }
+    if (result.skills.length > 0) installedSkillNames.push(sibling.name);
+  }
+  return installedSkillNames;
 };
 
 const canInstallNativeAgentHooks = (agents: readonly SkillAgentType[]): boolean =>
@@ -452,8 +538,7 @@ export const runInstallReactDoctor = async (
     selectedSetupActions.length === 0 && selectedSetupOptions.includes(SETUP_OPTION_SKIP);
 
   const shouldInstallGitHook =
-    gitHookPath !== null &&
-    gitHookPath !== undefined &&
+    gitHookPath != null &&
     (Boolean(options.yes) ||
       (!didSkipOptionalSetup && selectedSetupActions.includes(SETUP_OPTION_GIT_HOOK)));
 
@@ -472,6 +557,9 @@ export const runInstallReactDoctor = async (
       logger.dim(`  - ${getSkillAgentConfig(agent).displayName}`);
     }
     logger.dim(`  Source: ${sourceDir}`);
+    for (const sibling of findBundledSiblingSkills(sourceDir)) {
+      logger.dim(`  Also installs skill: ${sibling.name}`);
+    }
     logger.dim("  Package script: doctor (or react-doctor if doctor exists)");
     logger.dim("  Dev dependency: react-doctor");
     if (shouldInstallGitHook) {
@@ -516,7 +604,25 @@ export const runInstallReactDoctor = async (
     throw error;
   }
 
-  await installReactDoctorPackageSetup(projectRoot, options.installDependencyRunner);
+  // Best-effort: the bundled `doctor-explain` skill installs alongside the
+  // primary one. A failure here shouldn't abort the rest of the setup.
+  try {
+    const installedSiblingSkills = await installBundledSiblingSkills(
+      sourceDir,
+      selectedAgents,
+      projectRoot,
+    );
+    if (installedSiblingSkills.length > 0) {
+      logger.dim(`  Also installed the ${installedSiblingSkills.join(", ")} skill.`);
+    }
+  } catch {
+    logger.dim("  Skipped bundled sibling skills (install error).");
+  }
+
+  const dependencyResult = await installReactDoctorPackageSetup(
+    projectRoot,
+    options.installDependencyRunner,
+  );
 
   if (shouldInstallGitHook && gitHookTarget !== null && gitHookTarget !== undefined) {
     const hookSpinner = spinner("Installing React Doctor pre-commit hook...").start();
@@ -528,6 +634,7 @@ export const runInstallReactDoctor = async (
         hooksPathConfig: gitHookTarget.hooksPathConfig,
       });
       hookSpinner.succeed(formatGitHookInstallMessage(hookResult));
+      recordCount(METRIC.installGitHook, 1, { kind: hookResult.kind });
     } catch (error) {
       hookSpinner.fail("Failed to install React Doctor pre-commit hook.");
       throw error;
@@ -547,6 +654,9 @@ export const runInstallReactDoctor = async (
         hookSpinner.succeed(
           `React Doctor agent hooks installed for ${hookResult.installedAgents.map((agent) => getSkillAgentConfig(agent).displayName).join(", ")}.`,
         );
+        recordCount(METRIC.installAgentHooks, 1, {
+          agentsCount: hookResult.installedAgents.length,
+        });
       }
     } catch (error) {
       hookSpinner.fail("Failed to install React Doctor agent hooks.");
@@ -564,9 +674,25 @@ export const runInstallReactDoctor = async (
       workflowSpinner.succeed(
         `GitHub Actions workflow added at ${path.relative(projectRoot, workflowTargetPath)}.`,
       );
+      recordCount(METRIC.installWorkflow, 1);
     } catch (error) {
       workflowSpinner.fail("Failed to add GitHub Actions workflow.");
       throw error;
     }
+  }
+
+  // Activation summary for a real (non-dry-run) install: how many agents, which
+  // optional integrations, and the dependency outcome. `install.agent` breaks
+  // the agent set down so per-agent adoption is queryable.
+  recordCount(METRIC.installCompleted, 1, {
+    agentsCount: selectedAgents.length,
+    gitHook: shouldInstallGitHook,
+    agentHooks: shouldInstallAgentHooks,
+    workflow: shouldInstallWorkflow,
+    dependencyStatus: dependencyResult.dependencyStatus,
+    packageManager: detectPackageManager(projectRoot),
+  });
+  for (const agent of selectedAgents) {
+    recordCount(METRIC.installAgent, 1, { agent });
   }
 };

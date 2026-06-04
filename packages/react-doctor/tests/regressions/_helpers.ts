@@ -29,6 +29,15 @@ export const initGitRepo = (directory: string, options: { commit?: boolean } = {
   }
 };
 
+/** Stages everything and commits it, returning the new HEAD commit SHA. */
+export const commitAll = (directory: string, message: string): string => {
+  spawnSync("git", ["add", "."], { cwd: directory });
+  spawnSync("git", ["commit", "-q", "-m", message], { cwd: directory });
+  return spawnSync("git", ["rev-parse", "HEAD"], { cwd: directory, encoding: "utf-8" })
+    .stdout.toString()
+    .trim();
+};
+
 export const buildDiagnostic = (overrides: Partial<Diagnostic> = {}): Diagnostic => ({
   filePath: "src/app.tsx",
   plugin: "react-doctor",
@@ -114,6 +123,8 @@ export interface BuildTestProjectOptions {
   reactMajorVersion?: number | null;
   hasTypeScript?: boolean;
   tailwindVersion?: string | null;
+  shopifyFlashListVersion?: string | null;
+  shopifyFlashListMajorVersion?: number | null;
 }
 
 export const buildTestProject = (options: BuildTestProjectOptions): ProjectInfo => {
@@ -139,6 +150,9 @@ export const buildTestProject = (options: BuildTestProjectOptions): ProjectInfo 
     hasReactCompiler: options.hasReactCompiler ?? false,
     hasTanStackQuery: options.hasTanStackQuery ?? false,
     hasReactNativeWorkspace: framework === "expo" || framework === "react-native",
+    expoVersion: framework === "expo" ? "~51.0.0" : null,
+    shopifyFlashListVersion: options.shopifyFlashListVersion ?? null,
+    shopifyFlashListMajorVersion: options.shopifyFlashListMajorVersion ?? null,
     hasReanimated: options.hasReanimated ?? false,
     preactVersion: null,
     preactMajorVersion: null,

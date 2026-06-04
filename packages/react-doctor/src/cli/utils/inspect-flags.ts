@@ -9,15 +9,20 @@ export interface InspectFlags {
   score?: boolean;
   json?: boolean;
   jsonCompact?: boolean;
+  telemetry?: boolean;
   yes?: boolean;
   full?: boolean;
   annotations?: boolean;
   staged?: boolean;
   prComment?: boolean;
   respectInlineDisables?: boolean;
+  warnings?: boolean;
   project?: string;
   diff?: boolean | string;
   changedFilesFrom?: string;
+  // Commander's `--no-parallel` negatable option: defaults to `true`
+  // (parallel) and flips to `false` only when the user passes the flag.
+  parallel?: boolean;
   explain?: string;
   why?: string;
   failOn?: string;

@@ -3,6 +3,7 @@ import type { EsTreeNode } from "../../utils/es-tree-node.js";
 import type { Rule } from "../../utils/rule.js";
 import type { RuleContext } from "../../utils/rule-context.js";
 import { resolveJsxElementName } from "./utils/resolve-jsx-element-name.js";
+import { isExpoUiComponentElement } from "./utils/is-expo-ui-component-element.js";
 import { isNodeOfType } from "../../utils/is-node-of-type.js";
 import type { EsTreeNodeOfType } from "../../utils/es-tree-node-of-type.js";
 
@@ -35,15 +36,22 @@ const isArrayIterationExpression = (node: EsTreeNode): boolean => {
 // recycle row components and only mount the visible window.
 export const rnNoScrollviewMappedList = defineRule<Rule>({
   id: "rn-no-scrollview-mapped-list",
+  title: "Non-virtualized mapped list in ScrollView",
   tags: ["test-noise"],
   requires: ["react-native"],
   severity: "warn",
   recommendation:
-    "Use FlashList, LegendList, or FlatList — `<ScrollView>{items.map(...)}</ScrollView>` mounts every row in memory",
+    "`<ScrollView>{items.map(...)}</ScrollView>` builds every row at once, which slows scrolling. Use FlashList, LegendList, or FlatList instead.",
   create: (context: RuleContext) => ({
     JSXElement(node: EsTreeNodeOfType<"JSXElement">) {
       const elementName = resolveJsxElementName(node.openingElement);
       if (!elementName || !NON_VIRTUALIZED_SCROLL_CONTAINERS.has(elementName)) return;
+
+      // Universal UI's `<ScrollView>` is a native scroll container — RN's
+      // virtualized lists can't compose inside its `<Host>` tree, so the
+      // FlashList/FlatList advice doesn't apply. `@expo/ui` ships its own
+      // `<List>` for long content instead.
+      if (isExpoUiComponentElement(node.openingElement, node, "ScrollView")) return;
 
       for (const child of node.children ?? []) {
         if (!isNodeOfType(child, "JSXExpressionContainer")) continue;
@@ -51,7 +59,7 @@ export const rnNoScrollviewMappedList = defineRule<Rule>({
         if (isArrayIterationExpression(expression)) {
           context.report({
             node: child,
-            message: `<${elementName}> rendering items.map(...) — use FlashList, LegendList, or FlatList so only visible rows mount`,
+            message: `Your users get slow scrolling when <${elementName}> with items.map(...) builds every row at once.`,
           });
           return;
         }

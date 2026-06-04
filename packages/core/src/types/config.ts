@@ -1,14 +1,36 @@
 export type FailOnLevel = "error" | "warning" | "none";
 
 export interface ReactDoctorIgnoreOverride {
+  /** Glob patterns the override applies to (e.g. `["src/legacy/**"]`). */
   files: string[];
+  /**
+   * Rule keys to suppress for the matched files. Omit (or leave empty) to
+   * suppress every rule for those files.
+   */
   rules?: string[];
 }
 
 interface ReactDoctorIgnoreConfig {
+  /**
+   * Fully-qualified rule keys (`"<plugin>/<rule>"`) whose diagnostics are
+   * dropped AFTER linting. The rule still runs; its findings are filtered
+   * out. To stop a rule from running at all, set it to `"off"` in the
+   * top-level `rules` map instead. Prefer `react-doctor rules disable
+   * <rule>` to edit this safely.
+   */
   rules?: string[];
+  /**
+   * Glob patterns whose files are excluded from scanning entirely (matched
+   * against paths relative to the scanned directory).
+   */
   files?: string[];
+  /** Per-path rule suppressions — narrower than the top-level `rules`/`files`. */
   overrides?: ReactDoctorIgnoreOverride[];
+  /**
+   * Behavioral tags whose rules are disabled BEFORE linting, skipping a
+   * whole family at once (e.g. `["design", "test-noise", "migration-hint"]`).
+   * Prefer `react-doctor rules ignore-tag <tag>` to edit this safely.
+   */
   tags?: string[];
 }
 
@@ -18,9 +40,9 @@ interface ReactDoctorIgnoreConfig {
  * locally but excluded from PR comments, the score, or the CI gate:
  *
  * - `cli` — local terminal output from `react-doctor` (`printDiagnostics`).
- * - `prComment` — output captured by the GitHub Action for the sticky
- *   PR comment. Enabled when the CLI is run with `--pr-comment` (the
- *   action sets this automatically when `github-token` is provided).
+ * - `prComment` — diagnostics destined for a sticky pull-request
+ *   summary comment. Selected by running the CLI with `--pr-comment`
+ *   (sets `outputSurface: "prComment"`).
  * - `score` — diagnostics shipped to the React Doctor score API
  *   (or counted toward local score calculations).
  * - `ciFailure` — diagnostics that count toward the `--fail-on` exit
@@ -56,6 +78,23 @@ export type RuleSeverityOverride = "error" | "warn" | "off";
 export interface RuleSeverityControls {
   rules?: Record<string, RuleSeverityOverride>;
   categories?: Record<string, RuleSeverityOverride>;
+  /**
+   * Severity overrides keyed by a named rule *bucket* — a curated family of
+   * rules that share a gating story rather than a category. The only bucket
+   * today is `"compiler-cleanup"` (the redundant-memoization rule that ships
+   * as a warning once React Compiler is detected); setting it to `"error"`
+   * re-enables strictness. A per-rule override still wins over a bucket.
+   */
+  buckets?: SeverityBuckets;
+}
+
+/**
+ * Closed set of severity buckets. Spelled out (rather than
+ * `Record<string, …>`) so an unknown/typo'd bucket key is a type error
+ * instead of a silent no-op.
+ */
+export interface SeverityBuckets {
+  "compiler-cleanup"?: RuleSeverityOverride;
 }
 
 export interface SurfaceControls {
@@ -71,9 +110,9 @@ export interface SurfaceControls {
    * `["test-noise"]`) for a single channel without touching others.
    */
   excludeTags?: string[];
-  /** Category names (e.g. `"Architecture"`) to force-include. */
+  /** Category names (e.g. `"Maintainability"`) to force-include. */
   includeCategories?: string[];
-  /** Category names (e.g. `"Architecture"`) to exclude. */
+  /** Category names (e.g. `"Maintainability"`) to exclude. */
   excludeCategories?: string[];
   /**
    * Fully-qualified rule keys (`"<plugin>/<rule>"`, e.g.
@@ -91,12 +130,23 @@ export interface ReactDoctorConfig {
   /**
    * Whether to run dead-code analysis (via `deslop-js`) alongside lint.
    * Reports unused files, unused exports, unused dependencies, and
-   * circular imports under the "Dead Code" category. Default: `true`.
+   * circular imports under the "Maintainability" category. Default: `true`.
    * Always skipped in `--diff` / `--staged` modes because reachability
    * is a whole-project property.
    */
   deadCode?: boolean;
   verbose?: boolean;
+  /**
+   * Whether to surface `"warning"`-severity diagnostics. Default: `true`
+   * — every warning reaches every surface (CLI, PR comment, score,
+   * `--fail-on`).
+   *
+   * Set to `false` to surface only `"error"`-severity findings. This is the
+   * master toggle and runs after per-rule / per-category severity
+   * overrides: a rule the user explicitly restamps to `"warn"` (via
+   * `rules` / `categories`) still shows even when `warnings` is `false`.
+   */
+  warnings?: boolean;
   diff?: boolean | string;
   failOn?: FailOnLevel;
   customRulesOnly?: boolean;
@@ -109,7 +159,7 @@ export interface ReactDoctorConfig {
    * the redirect is stable no matter where the CLI / `diagnose()` is
    * run from. Absolute paths are used as-is.
    *
-   * Typical use: a monorepo root holds the only `react-doctor.config.json`
+   * Typical use: a monorepo root holds the only `doctor.config.*`
    * (so editor tooling and child commands all find it), but the React
    * app lives in `apps/web`. Setting `"rootDir": "apps/web"` makes
    * every invocation that loads this config scan that subproject
@@ -235,15 +285,12 @@ export interface ReactDoctorConfig {
   rules?: Record<string, RuleSeverityOverride>;
   /**
    * Per-category severity map. Mirrors oxlint's top-level
-   * `categories` field, but keyed by React Doctor's display
-   * categories (`"Server"`, `"React Native"`, `"Architecture"`,
-   * `"Bundle Size"`, `"State & Effects"`, `"Security"`,
-   * `"Accessibility"`, `"Performance"`, `"Correctness"`,
-   * `"Next.js"`, `"Preact"`, `"TanStack Query"`,
-   * `"TanStack Start"`, …).
+   * `categories` field, but keyed by React Doctor's five user-facing
+   * buckets: `"Security"`, `"Bugs"`, `"Performance"`,
+   * `"Accessibility"`, `"Maintainability"`.
    *
    * ```json
-   * { "categories": { "React Native": "warn", "Server": "off" } }
+   * { "categories": { "Maintainability": "off", "Performance": "warn" } }
    * ```
    *
    * To silence a whole tag-defined rule family (e.g. `"design"`,
@@ -251,6 +298,20 @@ export interface ReactDoctorConfig {
    * single category, use `ignore.tags` instead.
    */
   categories?: Record<string, RuleSeverityOverride>;
+  /**
+   * Per-bucket severity map. Buckets are curated rule families with a
+   * shared gating story (not categories). Today the only bucket is
+   * `"compiler-cleanup"`: the redundant-memoization rule
+   * (`react-compiler-no-manual-memoization`) that ships as a warning once
+   * React Compiler is detected. Set it to `"error"` to re-enable strictness.
+   *
+   * ```json
+   * { "buckets": { "compiler-cleanup": "error" } }
+   * ```
+   *
+   * A per-rule override in `rules` still wins over a bucket entry.
+   */
+  buckets?: SeverityBuckets;
   /**
    * User-defined oxlint plugins to load alongside the built-in
    * `react-doctor` plugin. Each entry is either:

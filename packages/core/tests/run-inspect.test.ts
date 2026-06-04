@@ -36,6 +36,9 @@ const sampleProject: ProjectInfo = {
   hasReactCompiler: false,
   hasTanStackQuery: false,
   hasReactNativeWorkspace: false,
+  expoVersion: null,
+  shopifyFlashListVersion: null,
+  shopifyFlashListMajorVersion: null,
   hasReanimated: false,
   preactVersion: null,
   preactMajorVersion: null,
@@ -63,7 +66,7 @@ const deadCodeDiagnostic: Diagnostic = {
   help: "Delete it.",
   line: 0,
   column: 0,
-  category: "Dead Code",
+  category: "Maintainability",
 };
 
 const baseInput: InspectInput = {
@@ -74,6 +77,7 @@ const baseInput: InspectInput = {
   adoptExistingLintConfig: true,
   ignoredTags: new Set<string>(),
   runDeadCode: true,
+  warnings: true,
   isCi: false,
 };
 

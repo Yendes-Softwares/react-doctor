@@ -72,6 +72,23 @@ describe("GitHub Action contract", () => {
     expect(actionYaml).not.toContain('git checkout "$HEAD_REF"');
   });
 
+  it("falls back to a full-project scan when listing PR files is not permitted", () => {
+    const prFilesStep = normalizeWhitespace(extractStep(readActionYaml(), "- id: pr-files"));
+
+    expect(prFilesStep).toContain("try {");
+    expect(prFilesStep).toContain("} catch (error) {");
+    expect(prFilesStep).toContain("core.warning(");
+    expect(prFilesStep).toContain("pull-requests: read");
+
+    const catchIndex = prFilesStep.indexOf("} catch (error) {");
+    const returnIndex = prFilesStep.indexOf("return;", catchIndex);
+    const setOutputIndex = prFilesStep.indexOf('core.setOutput("path", outputPath)');
+
+    expect(catchIndex).toBeGreaterThan(-1);
+    expect(returnIndex).toBeGreaterThan(catchIndex);
+    expect(returnIndex).toBeLessThan(setOutputIndex);
+  });
+
   it("runs one JSON scan, captures its status, and passes PR files to the CLI", () => {
     const scanStep = normalizeWhitespace(
       extractStep(readActionYaml(), "INPUT_FAIL_ON: ${{ inputs.fail-on }}"),
@@ -108,5 +125,21 @@ describe("GitHub Action contract", () => {
     expect(commentStep).toContain("github.rest.issues.updateComment");
     expect(commentStep).toContain("github.rest.issues.createComment");
     expect(commentStep).toContain("core.warning");
+  });
+
+  it("non-blocking input makes the fail gate always exit 0", () => {
+    const actionYaml = readActionYaml();
+    const inputsBlock = extractBlock(actionYaml, "inputs:", "\noutputs:");
+    const nonBlockingInput = extractBlock(actionYaml, "  non-blocking:", "  comment:");
+    const failStep = normalizeWhitespace(
+      extractStep(actionYaml, "- name: Fail if React Doctor found blocking issues"),
+    );
+
+    expect(inputsBlock).toContain("  non-blocking:");
+    expect(normalizeWhitespace(nonBlockingInput)).toContain('default: "false"');
+    expect(failStep).toContain("INPUT_NON_BLOCKING: ${{ inputs.non-blocking }}");
+    expect(failStep).toContain('if [ "$INPUT_NON_BLOCKING" = "true" ]; then');
+    expect(failStep).toContain("exit 0");
+    expect(failStep).toContain('exit "$SCAN_STATUS"');
   });
 });

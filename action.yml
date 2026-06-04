@@ -14,6 +14,9 @@ inputs:
   fail-on:
     description: "Exit non-zero when diagnostics fire (error, warning, none)."
     default: "error"
+  non-blocking:
+    description: "Advisory mode. Report findings but always exit 0 so neither the fail-on gate nor a scan error fails the workflow."
+    default: "false"
   comment:
     description: "Create or update a sticky pull request summary comment."
     default: "true"
@@ -63,17 +66,25 @@ runs:
           const outputPath = process.env.REACT_DOCTOR_CHANGED_FILES;
           const pullRequest = context.payload.pull_request;
           if (!pullRequest || !outputPath) return;
-
-          const files = await github.paginate(github.rest.pulls.listFiles, {
-            ...context.repo,
-            pull_number: pullRequest.number,
-            per_page: 100,
-          });
+          let files;
+          try {
+            files = await github.paginate(github.rest.pulls.listFiles, {
+              ...context.repo,
+              pull_number: pullRequest.number,
+              per_page: 100,
+            });
+          } catch (error) {
+            core.warning(
+              `React Doctor could not list pull request files (${error.message}). ` +
+                "Scanning the full project instead. Grant the workflow `pull-requests: read` " +
+                "permission to scan only the files changed in the pull request.",
+            );
+            return;
+          }
           const includedStatuses = new Set(["added", "modified", "renamed"]);
           const changedFiles = files
             .filter((file) => includedStatuses.has(file.status))
             .map((file) => file.filename);
-
           fs.writeFileSync(outputPath, changedFiles.join("\n") + (changedFiles.length ? "\n" : ""));
           core.setOutput("path", outputPath);
 
@@ -89,6 +100,16 @@ runs:
         CHANGED_FILES_FROM: ${{ steps.pr-files.outputs.path }}
         RUNNER_TEMP: ${{ runner.temp }}
         GITHUB_RUN_ID: ${{ github.run_id }}
+        # Telemetry: mark runs as launched by the official action and forward the
+        # inputs the CLI can't otherwise see (comment / non-blocking are handled
+        # in later steps, not as flags). These ride along on the scan's Sentry
+        # wide event. Anonymous: no repo, owner, actor, or ref.
+        REACT_DOCTOR_GITHUB_ACTION: ${{ github.action_ref || '1' }}
+        REACT_DOCTOR_ACTION_FAIL_ON: ${{ inputs.fail-on }}
+        REACT_DOCTOR_ACTION_NON_BLOCKING: ${{ inputs.non-blocking }}
+        REACT_DOCTOR_ACTION_COMMENT: ${{ inputs.comment }}
+        REACT_DOCTOR_ACTION_ANNOTATIONS: ${{ inputs.annotations }}
+        REACT_DOCTOR_ACTION_VERSION: ${{ inputs.version }}
       run: |
         REPORT_FILE="${RUNNER_TEMP:-/tmp}/react-doctor-report-${GITHUB_RUN_ID:-$$}.json"
         echo "report-file=$REPORT_FILE" >> "$GITHUB_OUTPUT"
@@ -169,8 +190,13 @@ runs:
       shell: bash
       env:
         SCAN_STATUS: ${{ steps.scan.outputs.exit-code }}
+        INPUT_NON_BLOCKING: ${{ inputs.non-blocking }}
       run: |
-        if [ -z "$SCAN_STATUS" ]; then
-          exit 1
+        SCAN_STATUS="${SCAN_STATUS:-1}"
+        if [ "$INPUT_NON_BLOCKING" = "true" ]; then
+          if [ "$SCAN_STATUS" != "0" ]; then
+            echo "::notice title=React Doctor::Scan exited ${SCAN_STATUS}; non-blocking is enabled, so the job will not fail."
+          fi
+          exit 0
         fi
         exit "$SCAN_STATUS"

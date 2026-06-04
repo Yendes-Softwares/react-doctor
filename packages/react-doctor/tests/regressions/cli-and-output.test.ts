@@ -109,7 +109,7 @@ const captureScanOutput = async (
 describe("issue #50: CLI flags can re-enable lint that config disabled", () => {
   it("inspect(directory, { lint: true }) overrides a `lint: false` config", async () => {
     const projectDir = setupMinimalReactProject("issue-50-lint");
-    writeJson(path.join(projectDir, "react-doctor.config.json"), {
+    writeJson(path.join(projectDir, "doctor.config.json"), {
       lint: false,
     });
     // Pass lint:true explicitly — the resolved options must include lint=true
@@ -127,7 +127,7 @@ describe("issue #50: CLI flags can re-enable lint that config disabled", () => {
 
   it("inspect(directory, { lint: false }) overrides a `lint: true` config", async () => {
     const projectDir = setupMinimalReactProject("issue-50-no-lint");
-    writeJson(path.join(projectDir, "react-doctor.config.json"), { lint: true });
+    writeJson(path.join(projectDir, "doctor.config.json"), { lint: true });
     const { result } = await captureScanOutput(projectDir, {
       lint: false,
       noScore: true,
@@ -182,7 +182,7 @@ export const App = ({ name }: { name: string }) => {
 };
 `,
     );
-    const defaultRun = await captureScanOutput(projectDir, { noScore: false });
+    const defaultRun = await captureScanOutput(projectDir, { noScore: false, warnings: true });
     expect(defaultRun.stdout).toContain("Share:");
 
     const projectDir2 = setupMinimalReactProject("issue-92-disabled");
@@ -196,7 +196,7 @@ export const App = ({ name }: { name: string }) => {
 };
 `,
     );
-    writeJson(path.join(projectDir2, "react-doctor.config.json"), { share: false });
+    writeJson(path.join(projectDir2, "doctor.config.json"), { share: false });
     const disabledRun = await captureScanOutput(projectDir2, { noScore: false });
     expect(disabledRun.stdout).not.toContain("Share your results");
   });
@@ -227,13 +227,15 @@ export const Cart = () => {
       captureScanOutput(projectDir, {
         lint: true,
         noScore: true,
+        warnings: true,
       }),
     );
     const normalizedStdout = stripAnsi(localRun.stdout);
 
-    expect(normalizedStdout).toContain("State & Effects");
+    expect(normalizedStdout).toContain("Bugs");
     expect(normalizedStdout).toMatch(/\d+ warnings?/);
-    expect(normalizedStdout).toContain("--verbose");
+    expect(normalizedStdout).toContain("Docs:");
+    expect(normalizedStdout).toContain("Learn more about fixing issues");
     expect(normalizedStdout).not.toContain("Agent guidance");
   });
 
@@ -260,6 +262,7 @@ export const Cart = () => {
       captureScanOutput(projectDir, {
         lint: true,
         noScore: true,
+        warnings: true,
       }),
     );
     const normalizedStdout = stripAnsi(automatedRun.stdout);
@@ -311,6 +314,7 @@ export const Cart = () => {
       captureScanOutput(projectDir, {
         lint: true,
         noScore: true,
+        warnings: true,
         outputSurface: "prComment",
       }),
     );

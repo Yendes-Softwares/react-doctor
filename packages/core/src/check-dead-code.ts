@@ -2,10 +2,24 @@ import { spawn } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { Diagnostic, ReactDoctorConfig } from "./types/index.js";
-import { collectIgnorePatterns } from "./collect-ignore-patterns.js";
-import { DEAD_CODE_WORKER_TIMEOUT_MS, MILLISECONDS_PER_SECOND } from "./constants.js";
-import { readIgnoreFile } from "./read-ignore-file.js";
+import {
+  collectDeadCodeEntryPatterns,
+  collectDeadCodeIgnorePatterns,
+} from "./dead-code/collect-dead-code-patterns.js";
+import {
+  DEAD_CODE_WORKER_MAX_OLD_SPACE_MB,
+  DEAD_CODE_WORKER_TIMEOUT_MS,
+  MILLISECONDS_PER_SECOND,
+} from "./constants.js";
+import { toCanonicalPath } from "./utils/to-canonical-path.js";
 import { toRelativePath } from "./utils/to-relative-path.js";
+
+// The plugin id and category every dead-code diagnostic carries.
+// Centralized so severity-control checks (e.g. deciding whether to run
+// the analysis at all when warnings are hidden) stay in sync with the
+// diagnostics actually emitted below.
+export const DEAD_CODE_PLUGIN = "deslop";
+export const DEAD_CODE_CATEGORY = "Maintainability";
 
 interface CheckDeadCodeOptions {
   readonly rootDirectory: string;
@@ -18,6 +32,7 @@ interface CheckDeadCodeOptions {
 
 interface DeadCodeWorkerInput {
   readonly rootDirectory: string;
+  readonly entryPatterns: ReadonlyArray<string>;
   readonly tsConfigPath?: string;
   readonly ignorePatterns: ReadonlyArray<string>;
   readonly deslopJsModuleSpecifier: string;
@@ -78,6 +93,9 @@ interface DeadCodeWorkerFailureMessage {
 
 const TSCONFIG_FILENAMES = ["tsconfig.json", "tsconfig.base.json"];
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
 // Runs in a child PROCESS (node -e), not a worker_thread — see
 // `createDeadCodeWorker`. Reads the worker input as JSON on stdin and
 // writes the normalized result (or a serialized error) as JSON on
@@ -122,6 +140,9 @@ process.stdin.on("end", () => {
       const { analyze, defineConfig } = await import(workerInput.deslopJsModuleSpecifier);
       const config = {
         rootDir: workerInput.rootDirectory,
+        ...(workerInput.entryPatterns.length > 0
+          ? { entryPatterns: workerInput.entryPatterns }
+          : {}),
         ...(workerInput.tsConfigPath ? { tsConfigPath: workerInput.tsConfigPath } : {}),
         ...(workerInput.ignorePatterns.length > 0
           ? { ignorePatterns: workerInput.ignorePatterns }
@@ -144,24 +165,6 @@ const resolveTsConfigPath = (rootDirectory: string): string | undefined => {
   return undefined;
 };
 
-// HACK: `collectIgnorePatterns` intentionally omits `.gitignore` because
-// oxlint reads it automatically — deslop does not, so we pull it in.
-const collectDeadCodeIgnorePatterns = (
-  rootDirectory: string,
-  userConfig: ReactDoctorConfig | null | undefined,
-): string[] => {
-  const seen = new Set<string>();
-  const sources = [
-    readIgnoreFile(path.join(rootDirectory, ".gitignore")),
-    collectIgnorePatterns(rootDirectory),
-    userConfig?.ignore?.files ?? [],
-  ];
-  for (const source of sources) {
-    for (const pattern of source) seen.add(pattern);
-  }
-  return [...seen].filter((pattern) => pattern.length > 0);
-};
-
 // HACK: route through `toRelativePath` (which normalizes backslashes to
 // forward slashes) so deslop output matches every other diagnostic on
 // Windows. Downstream picomatch ignore-pattern matching requires POSIX
@@ -170,9 +173,6 @@ const toRelativeFilePath = (rootDirectory: string, filePath: string): string => 
   const relative = toRelativePath(filePath, rootDirectory);
   return relative.length > 0 ? relative : filePath.replace(/\\/g, "/");
 };
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 
 const parseArray = (value: unknown, label: string): unknown[] => {
   if (!Array.isArray(value)) {
@@ -326,10 +326,14 @@ const createDeadCodeWorker: DeadCodeWorkerFactory = (input) => {
   // on success or timeout never takes the parent down with it. Input
   // goes in as JSON on stdin; the normalized result comes back as JSON
   // on stdout.
-  const child = spawn(process.execPath, ["-e", DEAD_CODE_WORKER_SCRIPT], {
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-  });
+  const child = spawn(
+    process.execPath,
+    [`--max-old-space-size=${DEAD_CODE_WORKER_MAX_OLD_SPACE_MB}`, "-e", DEAD_CODE_WORKER_SCRIPT],
+    {
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+    },
+  );
 
   const stdoutChunks: Buffer[] = [];
   const stderrChunks: Buffer[] = [];
@@ -425,12 +429,17 @@ const runDeadCodeWorkerWithTimeout = (
   });
 
 export const checkDeadCode = async (options: CheckDeadCodeOptions): Promise<Diagnostic[]> => {
-  const { rootDirectory, userConfig } = options;
+  const { userConfig } = options;
+  // Canonicalize up front so the deslop graph and its resolver share one
+  // path space (see `toCanonicalPath` for why a symlinked root breaks it).
+  const rootDirectory = toCanonicalPath(options.rootDirectory);
   if (!fs.existsSync(path.join(rootDirectory, "package.json"))) return [];
 
+  const entryPatterns = collectDeadCodeEntryPatterns(rootDirectory);
   const ignorePatterns = collectDeadCodeIgnorePatterns(rootDirectory, userConfig);
   const workerHandle = (options.createWorker ?? createDeadCodeWorker)({
     rootDirectory,
+    entryPatterns,
     tsConfigPath: resolveTsConfigPath(rootDirectory),
     ignorePatterns,
     deslopJsModuleSpecifier: options.deslopJsModuleSpecifier ?? import.meta.resolve("deslop-js"),
@@ -446,14 +455,14 @@ export const checkDeadCode = async (options: CheckDeadCodeOptions): Promise<Diag
   for (const unusedFile of result.unusedFiles) {
     diagnostics.push({
       filePath: toRelative(unusedFile.path),
-      plugin: "deslop",
+      plugin: DEAD_CODE_PLUGIN,
       rule: "unused-file",
       severity: "warning",
       message: "Unused file — not reachable from any entry point",
       help: "Delete the file if it is truly unreachable, or import it from an entry point.",
       line: 0,
       column: 0,
-      category: "Dead Code",
+      category: DEAD_CODE_CATEGORY,
     });
   }
 
@@ -461,14 +470,14 @@ export const checkDeadCode = async (options: CheckDeadCodeOptions): Promise<Diag
     const label = unusedExport.isTypeOnly ? "type export" : "export";
     diagnostics.push({
       filePath: toRelative(unusedExport.path),
-      plugin: "deslop",
+      plugin: DEAD_CODE_PLUGIN,
       rule: unusedExport.isTypeOnly ? "unused-type" : "unused-export",
       severity: "warning",
       message: `Unused ${label}: \`${unusedExport.name}\``,
       help: "Drop the `export` keyword (or remove the declaration) if no other module uses this symbol.",
       line: unusedExport.line,
       column: unusedExport.column,
-      category: "Dead Code",
+      category: DEAD_CODE_CATEGORY,
     });
   }
 
@@ -476,14 +485,14 @@ export const checkDeadCode = async (options: CheckDeadCodeOptions): Promise<Diag
     const label = unusedDependency.isDevDependency ? "devDependency" : "dependency";
     diagnostics.push({
       filePath: "package.json",
-      plugin: "deslop",
+      plugin: DEAD_CODE_PLUGIN,
       rule: unusedDependency.isDevDependency ? "unused-dev-dependency" : "unused-dependency",
       severity: "warning",
       message: `Unused ${label}: \`${unusedDependency.name}\``,
       help: "Remove the dependency from package.json if it is genuinely unused.",
       line: 0,
       column: 0,
-      category: "Dead Code",
+      category: DEAD_CODE_CATEGORY,
     });
   }
 
@@ -491,14 +500,14 @@ export const checkDeadCode = async (options: CheckDeadCodeOptions): Promise<Diag
     if (cycle.files.length === 0) continue;
     diagnostics.push({
       filePath: toRelative(cycle.files[0]),
-      plugin: "deslop",
+      plugin: DEAD_CODE_PLUGIN,
       rule: "circular-dependency",
       severity: "warning",
       message: `Circular import cycle: ${cycle.files.map(toRelative).join(" → ")}`,
       help: "Break the cycle by extracting the shared code into a third module that both files import.",
       line: 0,
       column: 0,
-      category: "Dead Code",
+      category: DEAD_CODE_CATEGORY,
     });
   }
 

@@ -24,6 +24,9 @@ const buildProject = (overrides: Partial<ProjectInfo> = {}): ProjectInfo => ({
   hasReactCompiler: true,
   hasTanStackQuery: false,
   hasReactNativeWorkspace: true,
+  expoVersion: "~51.0.0",
+  shopifyFlashListVersion: null,
+  shopifyFlashListMajorVersion: null,
   hasReanimated: true,
   preactVersion: null,
   preactMajorVersion: null,
@@ -95,8 +98,9 @@ describe("parseOxlintOutput react-hooks-js immutability messaging", () => {
     );
     const [diagnostic] = parseOxlintOutput(stdout, buildProject(), ROOT_DIRECTORY);
 
-    expect(diagnostic.message).toBe("React Compiler can't optimize this code");
-    expect(diagnostic.category).toBe("React Compiler");
+    expect(diagnostic.title).toBe("React Compiler can't optimize this");
+    expect(diagnostic.message).toContain("misses React Compiler's automatic memoization");
+    expect(diagnostic.category).toBe("Performance");
     expect(diagnostic.help).toContain("`.get()` / `.set()`");
     expect(diagnostic.help).toContain(REANIMATED_DOCS_ANCHOR);
   });

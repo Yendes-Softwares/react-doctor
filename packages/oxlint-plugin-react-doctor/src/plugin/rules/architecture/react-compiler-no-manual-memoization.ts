@@ -13,15 +13,15 @@ import type { RuleContext } from "../../utils/rule-context.js";
 const REMOVAL_MESSAGE_BY_REACT_API_NAME = new Map<string, string>([
   [
     "useMemo",
-    "Remove `useMemo` — React Compiler auto-memoizes every value in this component. Manual `useMemo` adds noise without improving performance.",
+    "This `useMemo` is dead weight, since React Compiler already caches every value here. Delete it.",
   ],
   [
     "useCallback",
-    "Remove `useCallback` — React Compiler auto-memoizes every function in this component. Manual `useCallback` adds noise without improving performance.",
+    "This `useCallback` is dead weight, since React Compiler already caches every function here. Delete it.",
   ],
   [
     "memo",
-    "Remove `memo()` — React Compiler memoizes component output automatically. Wrapping with `memo` is redundant and obscures the component tree.",
+    "This `memo()` is dead weight, since React Compiler already caches the component's output. Delete it.",
   ],
 ]);
 
@@ -71,10 +71,16 @@ const resolveRemovalMessageForCallee = (callee: EsTreeNode): string | null => {
 // safely auto-memoize.
 export const reactCompilerNoManualMemoization = defineRule<Rule>({
   id: "react-compiler-no-manual-memoization",
-  severity: "error",
+  title: "Redundant manual memoization",
+  // Redundant-memo cleanup is correctness-neutral: the code already works,
+  // the compiler just makes the `useMemo` / `useCallback` / `memo` redundant.
+  // On a compiler-enabled codebase that's hundreds of low-priority hits, so
+  // it ships as a warning (hidden in the default report). Opt back into
+  // errors with the `compiler-cleanup` severity bucket.
+  severity: "warn",
   requires: ["react-compiler"],
   recommendation:
-    "Delete the `useMemo` / `useCallback` / `memo` call and use the bare expression or component — React Compiler memoizes it for you.",
+    "Delete the `useMemo` / `useCallback` / `memo` call and use the plain value or component. React Compiler caches it for you.",
   create: (context: RuleContext) => ({
     CallExpression(node: EsTreeNodeOfType<"CallExpression">) {
       const removalMessage = resolveRemovalMessageForCallee(node.callee);

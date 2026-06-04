@@ -30,6 +30,9 @@ const buildProject = (overrides: Partial<ProjectInfo> = {}): ProjectInfo => ({
   preactVersion: null,
   preactMajorVersion: null,
   hasReactNativeWorkspace: false,
+  expoVersion: null,
+  shopifyFlashListVersion: null,
+  shopifyFlashListMajorVersion: null,
   hasReanimated: false,
   sourceFileCount: 2,
   ...overrides,
@@ -281,5 +284,28 @@ describe("render-github-action-comment", () => {
     expect(comment).toContain("founders@million.dev");
     expect(outputs).toContain("score=");
     expect(outputs).toContain("total-issues=0");
+  });
+
+  it("skips the comment without throwing when the report path is empty", () => {
+    const tempDirectory = setupTempDirectory();
+    const commentPath = path.join(tempDirectory, "comment.md");
+
+    expect(() =>
+      execFileSync(process.execPath, [RENDER_SCRIPT_PATH, "", commentPath], { stdio: "pipe" }),
+    ).not.toThrow();
+    expect(fs.existsSync(commentPath)).toBe(false);
+  });
+
+  it("skips the comment without throwing when the report file is missing", () => {
+    const tempDirectory = setupTempDirectory();
+    const reportPath = path.join(tempDirectory, "missing-report.json");
+    const commentPath = path.join(tempDirectory, "comment.md");
+
+    expect(() =>
+      execFileSync(process.execPath, [RENDER_SCRIPT_PATH, reportPath, commentPath], {
+        stdio: "pipe",
+      }),
+    ).not.toThrow();
+    expect(fs.existsSync(commentPath)).toBe(false);
   });
 });

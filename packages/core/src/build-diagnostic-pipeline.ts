@@ -1,5 +1,5 @@
 import reactDoctorPlugin from "oxlint-plugin-react-doctor";
-import type { Diagnostic, ReactDoctorConfig } from "./types/index.js";
+import type { Diagnostic, ReactDoctorConfig, RuleSeverityOverride } from "./types/index.js";
 import {
   compileIgnoreOverrides,
   isDiagnosticIgnoredByOverrides,
@@ -12,6 +12,8 @@ import { compileIgnoredFilePatterns, isFileIgnoredByPatterns } from "./is-ignore
 import { isTestFilePath } from "./is-test-file.js";
 import { resolveRuleSeverityOverride } from "./resolve-rule-severity-override.js";
 import { isSameRuleKey } from "./rule-key-aliases.js";
+import { APP_ONLY_RULE_KEYS } from "./constants.js";
+import { classifyPackageRole } from "./utils/classify-package-role.js";
 import { resolveCandidateReadPath } from "./utils/resolve-candidate-read-path.js";
 import {
   isInsideStringOnlyWrapper,
@@ -23,6 +25,15 @@ interface BuildDiagnosticPipelineInput {
   readonly userConfig: ReactDoctorConfig | null;
   readonly readFileLinesSync: (filePath: string) => string[] | null;
   readonly respectInlineDisables: boolean;
+  /**
+   * Whether `"warning"`-severity diagnostics are allowed through. When
+   * `true` (the default), warnings show; when `false`, every warning is
+   * dropped UNLESS the user explicitly opted that specific rule / category
+   * into `"warn"` via the severity-override config (an individual opt-in).
+   * Resolved by the caller from the `--warnings` / `--no-warnings` flag →
+   * `config.warnings` → `true`.
+   */
+  readonly showWarnings: boolean;
 }
 
 export interface DiagnosticPipeline {
@@ -42,10 +53,13 @@ const collectStringSet = (values: unknown): ReadonlySet<string> => {
  *    wins over `test-noise`)
  * 2. severity overrides (top-level `rules` / `categories`, with
  *    `"off"` dropping)
- * 3. ignore filters (rules / file patterns / per-file overrides)
- * 4. `rn-no-raw-text` suppression via configured `textComponents` and
+ * 3. warning suppression (only when `showWarnings` is false: drops every
+ *    `"warning"`-severity diagnostic unless a severity override opts a
+ *    specific rule / category back in)
+ * 4. ignore filters (rules / file patterns / per-file overrides)
+ * 5. `rn-no-raw-text` suppression via configured `textComponents` and
  *    `rawTextWrapperComponents` (config-driven JSX enclosure checks)
- * 5. inline suppressions (`// react-doctor-disable-next-line ...`)
+ * 6. inline suppressions (`// react-doctor-disable-next-line ...`)
  *
  * Returns `null` when the diagnostic is dropped, the (possibly
  * severity-restamped) diagnostic otherwise.
@@ -57,7 +71,8 @@ const collectStringSet = (values: unknown): ReadonlySet<string> => {
 export const buildDiagnosticPipeline = (
   input: BuildDiagnosticPipelineInput,
 ): DiagnosticPipeline => {
-  const { rootDirectory, userConfig, readFileLinesSync, respectInlineDisables } = input;
+  const { rootDirectory, userConfig, readFileLinesSync, respectInlineDisables, showWarnings } =
+    input;
 
   const severityControls = buildRuleSeverityControls(userConfig);
   const ignoredRules = new Set(
@@ -73,6 +88,21 @@ export const buildDiagnosticPipeline = (
   const hasRawTextWrappers = rawTextWrapperComponentNames.size > 0;
   const fileLinesCache = new Map<string, string[] | null>();
   const testFileCache = new Map<string, boolean>();
+  const libraryFileCache = new Map<string, boolean>();
+
+  // App-only rules (`static-components`, `no-render-prop-children`) describe
+  // patterns that are noise in published libraries — silence them on files
+  // confidently classified as `library`. Cached per diagnostic path; the
+  // classifier itself memoizes by package directory.
+  const isLibraryFile = (filePath: string): boolean => {
+    let cached = libraryFileCache.get(filePath);
+    if (cached === undefined) {
+      const absolutePath = resolveCandidateReadPath(rootDirectory, filePath);
+      cached = classifyPackageRole(absolutePath) === "library";
+      libraryFileCache.set(filePath, cached);
+    }
+    return cached;
+  };
 
   const getFileLines = (filePath: string): string[] | null => {
     const cached = fileLinesCache.get(filePath);
@@ -107,6 +137,16 @@ export const buildDiagnosticPipeline = (
     return false;
   };
 
+  // Alias-aware membership for the app-only set (mirrors `isRuleIgnored`): a
+  // future alias of `static-components` / `no-render-prop-children` is still
+  // caught by the library gate, where a raw `Set.has` would miss it.
+  const isAppOnlyRule = (ruleIdentifier: string): boolean => {
+    for (const appOnlyRuleKey of APP_ONLY_RULE_KEYS) {
+      if (isSameRuleKey(appOnlyRuleKey, ruleIdentifier)) return true;
+    }
+    return false;
+  };
+
   const isRnRawTextSuppressedByConfig = (diagnostic: Diagnostic): boolean => {
     if (diagnostic.rule !== "rn-no-raw-text") return false;
     if (diagnostic.line <= 0) return false;
@@ -135,11 +175,41 @@ export const buildDiagnosticPipeline = (
       if (shouldAutoSuppress(diagnostic)) return null;
 
       let current = diagnostic;
+      let explicitSeverityOverride: RuleSeverityOverride | undefined;
+      // A *per-rule* override (vs. a broad `categories` bump) — the only signal
+      // that should re-enable an app-only rule on a library file.
+      let explicitRuleOverride: RuleSeverityOverride | undefined;
       if (severityControls) {
         const { ruleKey, category } = getDiagnosticRuleIdentity(current);
-        const override = resolveRuleSeverityOverride({ ruleKey, category }, severityControls);
-        if (override === "off") return null;
-        if (override !== undefined) current = restampSeverity(current, override);
+        // No `category` → resolves against `rules` (+ aliases) only, ignoring
+        // any matching `categories` entry.
+        explicitRuleOverride = resolveRuleSeverityOverride({ ruleKey }, severityControls);
+        explicitSeverityOverride = resolveRuleSeverityOverride(
+          { ruleKey, category },
+          severityControls,
+        );
+        if (explicitSeverityOverride === "off") return null;
+        if (explicitSeverityOverride !== undefined) {
+          current = restampSeverity(current, explicitSeverityOverride);
+        }
+      }
+
+      // App-only rules stay silent on library files unless the user opted the
+      // rule in explicitly. Only a per-rule override counts: a broad category
+      // bump (e.g. `categories: { Maintainability: "error" }`) is not a
+      // deliberate "I want static-components in my library" and must not leak
+      // these rules back into published packages.
+      if (explicitRuleOverride === undefined) {
+        const ruleKey = `${current.plugin}/${current.rule}`;
+        if (isAppOnlyRule(ruleKey) && isLibraryFile(current.filePath)) return null;
+      }
+
+      // When the user opts out of warnings (`showWarnings` false), an
+      // explicit `"warn"` override (per-rule or per-category) is an
+      // individual opt-in that survives the global hide; everything else
+      // is dropped.
+      if (!showWarnings && current.severity === "warning" && explicitSeverityOverride !== "warn") {
+        return null;
       }
 
       if (userConfig) {

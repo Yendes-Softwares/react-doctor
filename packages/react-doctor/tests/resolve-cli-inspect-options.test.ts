@@ -53,3 +53,39 @@ describe("resolveCliInspectOptions: CI behavior (issue #302)", () => {
     }
   });
 });
+
+describe("resolveCliInspectOptions: warnings vs --fail-on", () => {
+  it("leaves warnings unset by default (shown via the inspect() default)", () => {
+    expect(resolveCliInspectOptions({}, null).warnings).toBeUndefined();
+  });
+
+  it("forces warnings on for --fail-on warning (flag or config) so the gate can fire", () => {
+    expect(resolveCliInspectOptions({ failOn: "warning" }, null).warnings).toBe(true);
+    expect(resolveCliInspectOptions({}, { failOn: "warning" }).warnings).toBe(true);
+  });
+
+  it("does not set warnings when failing on errors", () => {
+    expect(resolveCliInspectOptions({ failOn: "error" }, null).warnings).toBeUndefined();
+  });
+
+  it("respects an explicit --no-warnings even with --fail-on warning", () => {
+    expect(resolveCliInspectOptions({ failOn: "warning", warnings: false }, null).warnings).toBe(
+      false,
+    );
+  });
+
+  it("respects an explicit --warnings", () => {
+    expect(resolveCliInspectOptions({ warnings: true }, null).warnings).toBe(true);
+  });
+});
+
+describe("resolveCliInspectOptions: --no-telemetry alias", () => {
+  it("opts out of scoring via --no-telemetry (flags.telemetry === false), like --no-score", () => {
+    expect(resolveCliInspectOptions({ telemetry: false }, null).noScore).toBe(true);
+    expect(resolveCliInspectOptions({ score: false }, null).noScore).toBe(true);
+  });
+
+  it("keeps scoring on by default", () => {
+    expect(resolveCliInspectOptions({}, null).noScore).toBe(false);
+  });
+});
