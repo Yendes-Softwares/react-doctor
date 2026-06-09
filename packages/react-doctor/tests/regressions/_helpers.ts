@@ -1,6 +1,6 @@
 import { spawnSync } from "node:child_process";
-import fs from "node:fs";
-import path from "node:path";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { runOxlint } from "@react-doctor/core";
 import type { Diagnostic, ProjectInfo } from "@react-doctor/core";
 
@@ -123,6 +123,8 @@ export interface BuildTestProjectOptions {
   reactMajorVersion?: number | null;
   hasTypeScript?: boolean;
   tailwindVersion?: string | null;
+  nextjsVersion?: string | null;
+  nextjsMajorVersion?: number | null;
   shopifyFlashListVersion?: string | null;
   shopifyFlashListMajorVersion?: number | null;
 }
@@ -137,6 +139,16 @@ export const buildTestProject = (options: BuildTestProjectOptions): ProjectInfo 
     ? (options.reactMajorVersion ?? null)
     : 19;
   const framework = options.framework ?? "unknown";
+  const nextjsVersion = Object.hasOwn(options, "nextjsVersion")
+    ? (options.nextjsVersion ?? null)
+    : framework === "nextjs"
+      ? "^15.0.0"
+      : null;
+  const nextjsMajorVersion = Object.hasOwn(options, "nextjsMajorVersion")
+    ? (options.nextjsMajorVersion ?? null)
+    : framework === "nextjs"
+      ? 15
+      : null;
   return {
     rootDirectory: options.rootDirectory,
     projectName: path.basename(options.rootDirectory),
@@ -149,11 +161,14 @@ export const buildTestProject = (options: BuildTestProjectOptions): ProjectInfo 
     hasTypeScript: options.hasTypeScript ?? true,
     hasReactCompiler: options.hasReactCompiler ?? false,
     hasTanStackQuery: options.hasTanStackQuery ?? false,
+    nextjsVersion,
+    nextjsMajorVersion,
     hasReactNativeWorkspace: framework === "expo" || framework === "react-native",
     expoVersion: framework === "expo" ? "~51.0.0" : null,
     shopifyFlashListVersion: options.shopifyFlashListVersion ?? null,
     shopifyFlashListMajorVersion: options.shopifyFlashListMajorVersion ?? null,
     hasReanimated: options.hasReanimated ?? false,
+    isPreES2023Target: false,
     preactVersion: null,
     preactMajorVersion: null,
     sourceFileCount: 0,
@@ -180,6 +195,10 @@ export const collectRuleHits = async (
   const diagnostics = await runOxlint({
     rootDirectory: projectDir,
     project,
+    // Force-enable the rule under test so default-disabled rules
+    // (`defaultEnabled: false`) still produce hits here. Severity is
+    // irrelevant — callers assert on file path and message, not severity.
+    userConfig: { rules: { [`react-doctor/${ruleId}`]: "warn" } },
   });
   return diagnostics
     .filter((diagnostic) => diagnostic.rule === ruleId)

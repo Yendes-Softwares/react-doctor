@@ -361,7 +361,13 @@ export const noArrayIndexKey = defineRule<Rule>({
   id: "no-array-index-key",
   title: "Array index used as a key",
   severity: "warn",
-  recommendation: "Use a stable `key` from your data instead of the array index.",
+  // Default off: duplicate of `no-array-index-as-key`, which is the
+  // canonical rule (Bugs category, friendlier message). Both fire on the
+  // same `key={index}` JSX, so keeping both double-reports. This oxc port
+  // adds `React.cloneElement` coverage — opt in if you need that edge.
+  defaultEnabled: false,
+  recommendation:
+    "Use a stable `key` from your data so reordered items keep the right state and DOM.",
   category: "Performance",
   create: (context) => ({
     JSXOpeningElement(node: EsTreeNodeOfType<"JSXOpeningElement">) {

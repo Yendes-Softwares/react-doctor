@@ -1,4 +1,4 @@
-import path from "node:path";
+import * as path from "node:path";
 import { buildRuleDocsUrl, highlighter, validateConfigTypes } from "@react-doctor/core";
 import type { ReactDoctorConfig, RuleSeverityOverride } from "@react-doctor/core";
 import { cliLogger as logger } from "../utils/cli-logger.js";
@@ -123,7 +123,8 @@ export const rulesListAction = async (options: RulesListOptions): Promise<void> 
   // values are dropped, not shown as active).
   const config = validateConfigTypes(target.config);
 
-  const categoryFilter = options.category?.toLowerCase();
+  const categoryFilter =
+    typeof options.category === "string" ? options.category.toLowerCase() : undefined;
   const frameworkFilter = options.framework?.toLowerCase();
 
   const rows = catalog

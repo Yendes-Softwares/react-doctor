@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync, writeFileSync } from "node:fs";
-import path from "node:path";
+import * as path from "node:path";
+import * as fs from "node:fs";
 
 export const HOOK_FILE_NAME = "pre-commit";
 export const HOOK_RELATIVE_PATH = "hooks/pre-commit";
@@ -12,7 +12,7 @@ export const SIMPLE_GIT_HOOKS_CONFIG_FILE = ".simple-git-hooks.cjs";
 export const LEFTHOOK_CONFIG_FILES = ["lefthook.yml", "lefthook.yaml"];
 export const PRE_COMMIT_CONFIG_FILE = ".pre-commit-config.yaml";
 export const OVERCOMMIT_CONFIG_FILE = ".overcommit.yml";
-export const REACT_DOCTOR_COMMAND = "react-doctor --staged --fail-on warning";
+export const REACT_DOCTOR_COMMAND = "react-doctor --staged --blocking warning";
 export const NON_BLOCKING_REACT_DOCTOR_COMMAND = [
   'react_doctor_output=$(mktemp "${TMPDIR:-/tmp}/react-doctor-hook.XXXXXX");',
   `if ${REACT_DOCTOR_COMMAND} > "$react_doctor_output" 2>&1; then`,
@@ -47,14 +47,14 @@ export const getPackageJsonPath = (projectRoot: string): string =>
 
 export const readPackageJson = (projectRoot: string): unknown => {
   try {
-    return JSON.parse(readFileSync(getPackageJsonPath(projectRoot), "utf8"));
+    return JSON.parse(fs.readFileSync(getPackageJsonPath(projectRoot), "utf8"));
   } catch {
     return null;
   }
 };
 
 export const writeJsonFile = (filePath: string, value: unknown): void => {
-  writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
+  fs.writeFileSync(filePath, `${JSON.stringify(value, null, 2)}\n`);
 };
 
 export const packageHasDependency = (projectRoot: string, dependencyName: string): boolean => {

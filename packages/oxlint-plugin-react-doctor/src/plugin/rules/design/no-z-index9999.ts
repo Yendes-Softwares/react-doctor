@@ -15,6 +15,9 @@ export const noZIndex9999 = defineRule<Rule>({
   title: "Excessively high z-index",
   tags: ["test-noise"],
   severity: "warn",
+  // Default off: subjective design / house-style preference, not a
+  // correctness, performance, or accessibility issue. Opt in to enforce it.
+  defaultEnabled: false,
   recommendation:
     "Pick a small z-index scale, like dropdown 10, modal 20, toast 30. To layer something on top, use `isolation: isolate` instead of bigger numbers.",
   create: (context: RuleContext) => ({
@@ -30,7 +33,7 @@ export const noZIndex9999 = defineRule<Rule>({
         if (zValue !== null && Math.abs(zValue) >= Z_INDEX_ABSURD_THRESHOLD) {
           context.report({
             node: property,
-            message: `z-index ${zValue} is way too high & usually hides a layering bug instead of fixing it, so use a small set scale, like 1 to 50.`,
+            message: `z-index ${zValue} is unusually high and can hide a layering bug instead of fixing it. Use a small set scale, like 1 to 50.`,
           });
         }
       }

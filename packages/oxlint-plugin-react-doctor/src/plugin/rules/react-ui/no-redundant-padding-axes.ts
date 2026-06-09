@@ -16,9 +16,12 @@ export const noRedundantPaddingAxes = defineRule<Rule>({
   title: "Redundant padding axes",
   tags: ["design", "test-noise"],
   severity: "warn",
+  // Default off: subjective design / house-style preference, not a
+  // correctness, performance, or accessibility issue. Opt in to enforce it.
+  defaultEnabled: false,
   category: "Architecture",
   recommendation:
-    "Collapse `px-N py-N` to `p-N` when both sides match. Keep them split only when one side changes at a breakpoint (`py-2 md:py-3`).",
+    "Collapse matching padding axes to `p-N` so duplicated classes do not make spacing harder to scan; keep split axes only when breakpoints differ.",
   create: (context: RuleContext) => ({
     JSXAttribute(jsxAttribute: EsTreeNodeOfType<"JSXAttribute">) {
       if (
@@ -46,7 +49,7 @@ export const noRedundantPaddingAxes = defineRule<Rule>({
       for (const matchedPair of matchedPairs) {
         context.report({
           node: jsxAttribute,
-          message: `px-${matchedPair.value} & py-${matchedPair.value} are the same.`,
+          message: `px-${matchedPair.value} and py-${matchedPair.value} duplicate p-${matchedPair.value}, so the class list is noisier without changing spacing.`,
         });
       }
     },

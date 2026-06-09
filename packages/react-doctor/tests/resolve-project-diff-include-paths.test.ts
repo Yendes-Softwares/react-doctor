@@ -1,4 +1,4 @@
-import path from "node:path";
+import * as path from "node:path";
 import { describe, expect, it } from "vite-plus/test";
 import type { DiffInfo } from "../src/index.js";
 import { resolveProjectDiffIncludePaths } from "../src/cli/utils/resolve-project-diff-include-paths.js";
@@ -17,6 +17,16 @@ describe("resolveProjectDiffIncludePaths", () => {
 
     expect(resolveProjectDiffIncludePaths(rootDirectory, rootDirectory, diffInfo)).toEqual([
       "src/App.tsx",
+    ]);
+  });
+
+  it("keeps supported module source extensions from changed-file lists", () => {
+    const rootDirectory = path.join("/repo");
+    const diffInfo = buildDiffInfo(["proxy.mjs", "src/middleware.mts", "README.md"]);
+
+    expect(resolveProjectDiffIncludePaths(rootDirectory, rootDirectory, diffInfo)).toEqual([
+      "proxy.mjs",
+      "src/middleware.mts",
     ]);
   });
 

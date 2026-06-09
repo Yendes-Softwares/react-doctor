@@ -14,6 +14,10 @@ export const TERMINAL_HANGUP_EXIT_CODE = 129;
 export const NODE_ARGUMENT_COUNT = 2;
 
 export const STAGED_FILES_TEMP_DIR_PREFIX = "react-doctor-staged-";
+export const BASELINE_FILES_TEMP_DIR_PREFIX = "react-doctor-baseline-";
+export const SCAN_RESULT_CACHE_SCHEMA_VERSION = 1;
+export const SCAN_RESULT_CACHE_MAX_ENTRY_COUNT = 20;
+export const CACHE_FILENAME_HASH_LENGTH_CHARS = 16;
 
 export const GIT_HOOK_EXECUTABLE_MODE = 0o755;
 
@@ -23,6 +27,10 @@ export const AGENT_HOOK_TIMEOUT_SECONDS = 120;
 // compact, passable CLI argument.
 export const HANDOFF_MAX_FILES_PER_RULE = 3;
 
+// Social proof for the "Add to CI" pitch (shown in the post-scan handoff
+// prompt and embedded in the agent-handoff prompt).
+export const CI_TRUST_COMPANIES = "PayPal, Rippling, and Alibaba";
+
 export const SCORE_HEADER_ANIMATION_FRAME_COUNT = 40;
 export const SCORE_HEADER_ANIMATION_FRAME_DELAY_MS = 50;
 export const PERFECT_SCORE_RAINBOW_FRAME_COUNT = 16;
@@ -30,10 +38,9 @@ export const PERFECT_SCORE_RAINBOW_FRAME_DELAY_MS = 50;
 
 // First-run onboarding animation cadences: welcome typewriter + holds, the
 // category count-up, and the score projection.
-export const WELCOME_TYPEWRITER_CHAR_DELAY_MS = 32;
-export const WELCOME_INTER_LINE_DELAY_MS = 500;
-export const WELCOME_EXPLANATION_HOLD_MS = 2000;
-export const WELCOME_HOLD_MS = 1000;
+export const WELCOME_TYPEWRITER_CHAR_DELAY_MS = 16;
+export const WELCOME_INTER_LINE_DELAY_MS = 250;
+export const WELCOME_EXPLANATION_HOLD_MS = 1000;
 // The category breakdown reveals one issue at a time (errors then warnings,
 // category by category). Small/medium breakdowns step by a single unit per
 // frame; `MAX_STEPS` caps the frame budget so a huge repo's reveal stays short
@@ -49,6 +56,25 @@ export const SCORE_PROJECTION_FRAME_DELAY_MS = 35;
 // line) up to the score bar, so the projection redraw lands on the bar row:
 // improve line, blank, face-bottom, branding, bar.
 export const SCORE_PROJECTION_BAR_ROWS_ABOVE_CURSOR = 5;
+
+// Floor for the terminal-aware typographic measure (`resolveMeasureWidth`).
+// A terminal narrower than this is pathological; clamp here so prose can't
+// collapse into a one-or-two-character sliver.
+export const MIN_MEASURE_WIDTH_CHARS = 24;
+
+// Floor for the score bar when it's shrunk to fit a narrow terminal (the score
+// header clamps it to the columns left of the doctor face). Below this the bar
+// stops conveying the score proportionally, so we let it sit at this width.
+export const SCORE_BAR_MIN_WIDTH_CHARS = 10;
+
+// Keep one column free at the right edge so a full-width line can't trip the
+// terminal's auto-margin into a soft wrap, which breaks the in-place `\r`
+// redraws (the score-bar animation and the welcome typewriter).
+export const RIGHT_EDGE_SAFETY_COLUMNS = 1;
+
+// Visible columns the box border + padding adds around a code frame
+// (`│ ` … ` │` in box-text.ts). Reserved when fitting a box to the terminal.
+export const BOX_BORDER_WIDTH_CHARS = 4;
 
 // Last-resort fallback when buildJsonReportError itself throws — keeps
 // stdout valid JSON so downstream parsers don't see a half-written report.
@@ -108,6 +134,7 @@ export const METRIC = {
   scanScore: "scan.score",
   scanClean: "scan.clean",
   scanCheckSkipped: "scan.check_skipped",
+  baselineDegraded: "baseline.degraded",
   ruleFired: "rule.fired",
   lintFailed: "lint.failed",
   deadCodeFailed: "deadcode.failed",
@@ -123,4 +150,10 @@ export const METRIC = {
   installDependency: "install.dependency",
   rulesChanged: "rules.changed",
   rulesQueried: "rules.queried",
+  // Editor language server (`react-doctor experimental-lsp`). Each workspace
+  // scan burst is one wide-event span (op `lsp.scan`) plus these metrics.
+  lspSessionStarted: "lsp.session.started",
+  lspScanCompleted: "lsp.scan.completed",
+  lspScanDuration: "lsp.scan.duration",
+  lspScanDiagnostics: "lsp.scan.diagnostics",
 } as const;

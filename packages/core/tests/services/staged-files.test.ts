@@ -1,8 +1,8 @@
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import fs from "node:fs";
+import * as fs from "node:fs";
 import os from "node:os";
-import path from "node:path";
+import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import { Git, GitInvocationFailed, ReactDoctorError, StagedFiles } from "@react-doctor/core";
 
@@ -11,7 +11,7 @@ describe("StagedFiles.layerNode (driven by Git.layerOf)", () => {
     const layer = StagedFiles.layerNode.pipe(
       Layer.provide(
         Git.layerOf({
-          stagedFiles: ["src/a.ts", "README.md", "src/b.tsx", "package.json"],
+          stagedFiles: ["src/a.ts", "README.md", "src/b.tsx", "src/proxy.mjs", "package.json"],
         }),
       ),
     );
@@ -23,7 +23,7 @@ describe("StagedFiles.layerNode (driven by Git.layerOf)", () => {
       }).pipe(Effect.provide(layer)),
     );
 
-    expect(sourceFiles).toEqual(["src/a.ts", "src/b.tsx"]);
+    expect(sourceFiles).toEqual(["src/a.ts", "src/b.tsx", "src/proxy.mjs"]);
   });
 
   it("returns an empty list when no files are staged", async () => {

@@ -17,9 +17,9 @@
  */
 
 import { spawn } from "node:child_process";
-import fs from "node:fs";
+import * as fs from "node:fs";
 import os from "node:os";
-import path from "node:path";
+import * as path from "node:path";
 import { fileURLToPath } from "node:url";
 import * as Effect from "effect/Effect";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
@@ -147,7 +147,7 @@ describe("in-process render across terminal widths and render modes", () => {
         "Bugs",
         "error",
         5,
-        "State adjusted in a useEffect when a prop changes.",
+        "State adjusted in a useEffect when a prop changes, so the UI shows stale state until the second render.",
       ),
       makeDiagnostic(
         "no-nested-component-definition",
@@ -168,7 +168,7 @@ describe("in-process render across terminal widths and render modes", () => {
         "Performance",
         "warning",
         7,
-        "This JSX element is constant and can be hoisted out of the component.",
+        "This JSX element is constant but built inside the component, so it looks new on every render.",
       ),
     ];
     const warningsOnlyDiagnostics = mixedDiagnostics.filter(
@@ -289,6 +289,13 @@ describe("in-process render across terminal widths and render modes", () => {
     expect(rendered.text).toContain("setCount(0)");
   });
 
+  it("keeps the impact message in verbose issue blocks", async () => {
+    const verboseScenario = scenarios.find((scenario) => scenario.name === "verbose-errors-great");
+    expect(verboseScenario).toBeDefined();
+    const rendered = await renderInTerminal(verboseScenario?.bytes ?? "", { cols: 120 });
+    expect(rendered.text).toContain("remounts on");
+  });
+
   it("never leaks the project name into the header in any mode or width", async () => {
     for (const scenario of scenarios) {
       for (const cols of TERMINAL_WIDTHS) {
@@ -357,8 +364,9 @@ describe("non-verbose overflow summary line", () => {
       rule,
       severity,
       title: `${rule} title`,
-      message: "Impact.",
-      help: "Fix.",
+      message:
+        "The component repeats work during render, so large lists can become noticeably slower.",
+      help: "Move the repeated work behind a stable memo or compute it once before rendering the list.",
       line,
       column: 1,
       category: "Bugs",
@@ -371,13 +379,19 @@ describe("non-verbose overflow summary line", () => {
     return (await renderInTerminal(bytes, { cols: 120 })).text;
   };
 
+  // The category breakdown above the CTA carries the +N stats now (totals
+  // per category, error/warning split). The CTA itself just answers "how do
+  // I see each one individually?", so these tests focus on (a) when it
+  // appears at all and (b) that it never echoes the redundant +N numbers
+  // back at the reader.
+
   it("omits the --verbose pointer when every finding is already shown", async () => {
     const text = await renderOverflowText([
       makeDiagnostic("rule-a", "error", 1),
       makeDiagnostic("rule-b", "error", 2),
     ]);
     expect(text).not.toContain("--verbose");
-    expect(text).not.toContain("for details");
+    expect(text).not.toContain("to list every error and warning");
   });
 
   it("points at --verbose when a shown error rule hides extra sites", async () => {
@@ -385,22 +399,19 @@ describe("non-verbose overflow summary line", () => {
       makeDiagnostic("rule-a", "error", 1),
       makeDiagnostic("rule-a", "error", 2),
     ]);
-    expect(text).toContain("Run npx react-doctor@latest --verbose for details");
-    expect(text).not.toContain("optional");
-    expect(text).not.toContain("more rules");
+    expect(text).toContain("Run npx react-doctor@latest --verbose to list every error and warning");
   });
 
-  it("counts optional warnings by individual diagnostics, not rule groups", async () => {
+  it("shows the CTA when warnings are hidden from the top-errors detail", async () => {
     const text = await renderOverflowText([
       makeDiagnostic("hoist", "warning", 1),
       makeDiagnostic("hoist", "warning", 2),
       makeDiagnostic("hoist", "warning", 3),
     ]);
-    expect(text).toContain("+3 optional warnings");
-    expect(text).toContain("--verbose");
+    expect(text).toContain("Run npx react-doctor@latest --verbose to list every error and warning");
   });
 
-  it("merges hidden error rules and optional warnings into one line", async () => {
+  it("never echoes the +N stats already shown in the category breakdown", async () => {
     const text = await renderOverflowText([
       makeDiagnostic("err-1", "error", 1),
       makeDiagnostic("err-2", "error", 2),
@@ -409,8 +420,85 @@ describe("non-verbose overflow summary line", () => {
       makeDiagnostic("warn-1", "warning", 5),
       makeDiagnostic("warn-1", "warning", 6),
     ]);
-    expect(text).toContain("+1 more rule");
-    expect(text).toContain("+2 optional warnings");
+    expect(text).toContain("Run npx react-doctor@latest --verbose to list every error and warning");
+    expect(text).not.toContain("more rule");
+    expect(text).not.toContain("optional warning");
+  });
+});
+
+// Regression for #690: unused deps all report at `package.json:0`, so the
+// shared location used to collapse them and drop every name.
+describe("verbose warning tail names every collapsed-location site", () => {
+  const dependencyDirectory = path.join(tempRoot, "unused-deps");
+
+  const makeDependencyDiagnostic = (name: string, isDevDependency: boolean): Diagnostic =>
+    ({
+      filePath: "package.json",
+      plugin: "deslop",
+      rule: isDevDependency ? "unused-dev-dependency" : "unused-dependency",
+      severity: "warning",
+      message: `Unused ${isDevDependency ? "devDependency" : "dependency"}: \`${name}\``,
+      help: "Remove it from package.json if it is genuinely unused.",
+      line: 0,
+      column: 0,
+      category: "Maintainability",
+    }) as Diagnostic;
+
+  const renderVerboseText = async (diagnostics: Diagnostic[]): Promise<string> => {
+    const bytes = await captureConsoleBytes(() =>
+      Effect.runPromise(printDiagnostics(diagnostics, true, dependencyDirectory)),
+    );
+    return (await renderInTerminal(bytes, { cols: 120 })).text;
+  };
+
+  it("lists every name and drops the redundant package.json location line", async () => {
+    const names = ["left-pad", "moment", "is-odd"];
+    const text = await renderVerboseText([
+      ...names.map((name) => makeDependencyDiagnostic(name, false)),
+      makeDependencyDiagnostic("vitest", true),
+    ]);
+
+    for (const name of [...names, "vitest"]) {
+      expect(text, name).toContain(name);
+    }
+    // `package.json` stays in the help sentence, but the bare location line
+    // that used to dangle below the names is gone (#690).
+    expect(text).not.toMatch(/^\s*package\.json\s*$/m);
+  });
+
+  it("keeps the location line when the path is the finding's subject", async () => {
+    const unusedFile = {
+      filePath: "src/orphan.ts",
+      plugin: "deslop",
+      rule: "unused-file",
+      severity: "warning",
+      message: "Unused file is not reachable from any entry point.",
+      help: "Delete the file if it is truly unreachable, or import it from an entry point.",
+      line: 0,
+      column: 0,
+      category: "Maintainability",
+    } as Diagnostic;
+    const text = await renderVerboseText([unusedFile]);
+    expect(text).toContain("src/orphan.ts");
+  });
+
+  it("does not enumerate per-site messages for distinct navigable locations", async () => {
+    const unusedExport = (name: string, line: number): Diagnostic =>
+      ({
+        filePath: "src/index.ts",
+        plugin: "deslop",
+        rule: "unused-export",
+        severity: "warning",
+        message: `Unused export: \`${name}\``,
+        help: "Drop the `export` keyword if no other module uses this symbol.",
+        line,
+        column: 1,
+        category: "Maintainability",
+      }) as Diagnostic;
+
+    const text = await renderVerboseText([unusedExport("alpha", 10), unusedExport("beta", 40)]);
+    expect(text).toContain("src/index.ts:10");
+    expect(text).toContain("src/index.ts:40");
   });
 });
 
@@ -436,7 +524,7 @@ describe("multi-project code frames resolve against each project root", () => {
       plugin: "react-doctor",
       rule: "no-adjust-state-on-prop-change",
       severity: "error",
-      message: "Issue in project A.",
+      message: "Project A resets state after render, so users can briefly see stale UI.",
       help: "",
       line: 2,
       column: 7,
@@ -445,7 +533,7 @@ describe("multi-project code frames resolve against each project root", () => {
     const diagnosticB = {
       ...diagnosticA,
       rule: "no-nested-component-definition",
-      message: "Issue in project B.",
+      message: "Project B defines a component inside render, so React remounts it and loses state.",
       category: "Maintainability",
     } as Diagnostic;
 

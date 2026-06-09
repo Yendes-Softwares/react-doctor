@@ -1,7 +1,7 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import path from "node:path";
+import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
+import * as fs from "node:fs";
 import {
   rulesCategoryAction,
   rulesDisableAction,
@@ -23,8 +23,8 @@ interface RulesCommandFixture {
 const setupFixture = (
   packageJson: Record<string, unknown> = { name: "fixture" },
 ): RulesCommandFixture => {
-  const projectRoot = mkdtempSync(path.join(tmpdir(), "react-doctor-rules-"));
-  writeFileSync(
+  const projectRoot = fs.mkdtempSync(path.join(tmpdir(), "react-doctor-rules-"));
+  fs.writeFileSync(
     path.join(projectRoot, "package.json"),
     `${JSON.stringify(packageJson, null, 2)}\n`,
   );
@@ -32,12 +32,12 @@ const setupFixture = (
     projectRoot,
     configPath: path.join(projectRoot, "doctor.config.json"),
     packageJsonPath: path.join(projectRoot, "package.json"),
-    cleanup: () => rmSync(projectRoot, { recursive: true, force: true }),
+    cleanup: () => fs.rmSync(projectRoot, { recursive: true, force: true }),
   };
 };
 
 const readJsonFile = (filePath: string): Record<string, unknown> =>
-  JSON.parse(readFileSync(filePath, "utf8"));
+  JSON.parse(fs.readFileSync(filePath, "utf8"));
 
 const captureLog = async (run: () => Promise<void> | void): Promise<string> => {
   const lines: string[] = [];
@@ -74,11 +74,31 @@ describe("rules disable / set / enable", () => {
     fixture = setupFixture();
     await rulesDisableAction("react-doctor/no-danger", { cwd: fixture.projectRoot });
 
-    expect(existsSync(fixture.configPath)).toBe(true);
+    expect(fs.existsSync(fixture.configPath)).toBe(true);
     const config = readJsonFile(fixture.configPath);
     expect(config.$schema).toBe("https://react.doctor/schema/config.json");
     expect(config.rules).toEqual({ "react-doctor/no-danger": "off" });
     expect(process.exitCode).toBe(0);
+  });
+
+  it("migrates a legacy react-doctor.config.json to doctor.config.json on write", async () => {
+    fixture = setupFixture();
+    const legacyPath = path.join(fixture.projectRoot, "react-doctor.config.json");
+    fs.writeFileSync(
+      legacyPath,
+      JSON.stringify({ lint: true, rules: { "react-doctor/no-eval": "warn" } }, null, 2),
+    );
+    await rulesDisableAction("react-doctor/no-danger", { cwd: fixture.projectRoot });
+
+    expect(fs.existsSync(legacyPath)).toBe(false);
+    expect(fs.existsSync(fixture.configPath)).toBe(true);
+    const config = readJsonFile(fixture.configPath);
+    expect(config.$schema).toBe("https://react.doctor/schema/config.json");
+    expect(config.lint).toBe(true);
+    expect(config.rules).toMatchObject({
+      "react-doctor/no-eval": "warn",
+      "react-doctor/no-danger": "off",
+    });
   });
 
   it("accepts the bare rule id and a legacy key", async () => {
@@ -95,7 +115,7 @@ describe("rules disable / set / enable", () => {
 
   it("preserves unrelated config fields", async () => {
     fixture = setupFixture();
-    writeFileSync(
+    fs.writeFileSync(
       fixture.configPath,
       JSON.stringify({ lint: true, rules: { "react-doctor/no-eval": "warn" } }, null, 2),
     );
@@ -122,7 +142,7 @@ describe("rules disable / set / enable", () => {
     fixture = setupFixture();
     await rulesSetAction("react-doctor/no-danger", "loud", { cwd: fixture.projectRoot });
 
-    expect(existsSync(fixture.configPath)).toBe(false);
+    expect(fs.existsSync(fixture.configPath)).toBe(false);
     expect(process.exitCode).toBe(1);
   });
 
@@ -130,7 +150,7 @@ describe("rules disable / set / enable", () => {
     fixture = setupFixture();
     await rulesDisableAction("react-doctor/not-a-real-rule", { cwd: fixture.projectRoot });
 
-    expect(existsSync(fixture.configPath)).toBe(false);
+    expect(fs.existsSync(fixture.configPath)).toBe(false);
     expect(process.exitCode).toBe(1);
   });
 });
@@ -139,63 +159,63 @@ describe("rules config formats", () => {
   it("edits a doctor.config.ts in place, preserving the comment and other options", async () => {
     fixture = setupFixture();
     const tsConfigPath = path.join(fixture.projectRoot, "doctor.config.ts");
-    writeFileSync(tsConfigPath, "export default {\n  // keep this\n  lint: true,\n};\n");
+    fs.writeFileSync(tsConfigPath, "export default {\n  // keep this\n  lint: true,\n};\n");
 
     await rulesDisableAction("react-doctor/no-danger", { cwd: fixture.projectRoot });
 
-    const written = readFileSync(tsConfigPath, "utf8");
+    const written = fs.readFileSync(tsConfigPath, "utf8");
     expect(written).toContain("// keep this");
     expect(written).toContain("lint: true");
     expect(written).toContain('"react-doctor/no-danger": "off"');
     // No JSON config created — the TS config was edited directly.
-    expect(existsSync(fixture.configPath)).toBe(false);
+    expect(fs.existsSync(fixture.configPath)).toBe(false);
   });
 
   it("edits a doctor.config.ts that exports a const via `export default <name>`", async () => {
     fixture = setupFixture();
     const tsConfigPath = path.join(fixture.projectRoot, "doctor.config.ts");
-    writeFileSync(
+    fs.writeFileSync(
       tsConfigPath,
       'import type { ReactDoctorConfig } from "react-doctor/api";\n\nconst config: ReactDoctorConfig = {\n  // keep this\n  lint: true,\n};\n\nexport default config;\n',
     );
 
     await rulesDisableAction("react-doctor/no-danger", { cwd: fixture.projectRoot });
 
-    const written = readFileSync(tsConfigPath, "utf8");
+    const written = fs.readFileSync(tsConfigPath, "utf8");
     // The const indirection, its type annotation, the comment, and the other
     // option all survive — only the managed `rules` section was spliced in.
     expect(written).toContain("const config: ReactDoctorConfig");
     expect(written).toContain("// keep this");
     expect(written).toContain("lint: true");
     expect(written).toContain('"react-doctor/no-danger": "off"');
-    expect(existsSync(fixture.configPath)).toBe(false);
+    expect(fs.existsSync(fixture.configPath)).toBe(false);
   });
 
   it("edits an inline `export default {…} satisfies` config (the migration output shape)", async () => {
     fixture = setupFixture();
     const tsConfigPath = path.join(fixture.projectRoot, "doctor.config.ts");
     // Byte-identical to what migrateLegacyConfig emits.
-    writeFileSync(
+    fs.writeFileSync(
       tsConfigPath,
       'import type { ReactDoctorConfig } from "react-doctor/api";\n\nexport default {\n  lint: true\n} satisfies ReactDoctorConfig;\n',
     );
 
     await rulesDisableAction("react-doctor/no-danger", { cwd: fixture.projectRoot });
 
-    const written = readFileSync(tsConfigPath, "utf8");
+    const written = fs.readFileSync(tsConfigPath, "utf8");
     // magicast unwraps the inline `satisfies` so the object is edited directly —
     // the `satisfies` wrapper and the other option survive, no fallback file.
     expect(written).toContain("satisfies ReactDoctorConfig");
     expect(written).toContain("lint: true");
     expect(written).toContain('"react-doctor/no-danger": "off"');
-    expect(existsSync(fixture.configPath)).toBe(false);
+    expect(fs.existsSync(fixture.configPath)).toBe(false);
   });
 
   it("updates the package.json reactDoctor block instead of creating a file", async () => {
     fixture = setupFixture({ name: "fixture", reactDoctor: { lint: true } });
     await rulesDisableAction("react-doctor/no-danger", { cwd: fixture.projectRoot });
 
-    expect(existsSync(fixture.configPath)).toBe(false);
+    expect(fs.existsSync(fixture.configPath)).toBe(false);
     const packageJson = readJsonFile(fixture.packageJsonPath);
     expect(packageJson.reactDoctor).toMatchObject({
       lint: true,
@@ -206,13 +226,13 @@ describe("rules config formats", () => {
   it("writes package.json#reactDoctor and leaves an unparseable config file untouched", async () => {
     fixture = setupFixture({ name: "fixture", reactDoctor: { lint: true } });
     const brokenConfig = "{ not valid json";
-    writeFileSync(fixture.configPath, brokenConfig);
+    fs.writeFileSync(fixture.configPath, brokenConfig);
 
     await rulesDisableAction("react-doctor/no-danger", { cwd: fixture.projectRoot });
 
     // The broken file is left as-is — the scanner reads package.json#reactDoctor
     // when the config file fails to parse, so the mutation must not shadow it.
-    expect(readFileSync(fixture.configPath, "utf8")).toBe(brokenConfig);
+    expect(fs.readFileSync(fixture.configPath, "utf8")).toBe(brokenConfig);
     const packageJson = readJsonFile(fixture.packageJsonPath);
     expect(packageJson.reactDoctor).toMatchObject({
       lint: true,
@@ -234,7 +254,7 @@ describe("rules category", () => {
     fixture = setupFixture();
     await rulesCategoryAction("Nonsense", "off", { cwd: fixture.projectRoot });
 
-    expect(existsSync(fixture.configPath)).toBe(false);
+    expect(fs.existsSync(fixture.configPath)).toBe(false);
     expect(process.exitCode).toBe(1);
   });
 });
@@ -253,7 +273,7 @@ describe("rules ignore-tag / unignore-tag", () => {
     fixture = setupFixture();
     await rulesUnignoreTagAction("design", { cwd: fixture.projectRoot });
 
-    expect(existsSync(fixture.configPath)).toBe(false);
+    expect(fs.existsSync(fixture.configPath)).toBe(false);
     expect(process.exitCode).toBe(0);
   });
 
@@ -261,7 +281,7 @@ describe("rules ignore-tag / unignore-tag", () => {
     fixture = setupFixture();
     await rulesIgnoreTagAction("not-a-tag", { cwd: fixture.projectRoot });
 
-    expect(existsSync(fixture.configPath)).toBe(false);
+    expect(fs.existsSync(fixture.configPath)).toBe(false);
     expect(process.exitCode).toBe(1);
   });
 });
@@ -279,9 +299,24 @@ describe("rules list / explain JSON output", () => {
     expect(entry).toMatchObject({ severity: "off", source: "rule" });
   });
 
+  it("ignores an inherited repeatable root category option", async () => {
+    fixture = setupFixture();
+    const output = await captureLog(() =>
+      rulesListAction({
+        json: true,
+        cwd: fixture.projectRoot,
+        category: ["Security"] as unknown as string,
+      }),
+    );
+
+    const payload = JSON.parse(output) as Array<{ key: string }>;
+    expect(payload.length).toBeGreaterThan(0);
+    expect(process.exitCode).toBe(0);
+  });
+
   it("ignores invalid config severities the scanner would drop", async () => {
     fixture = setupFixture();
-    writeFileSync(
+    fs.writeFileSync(
       fixture.configPath,
       JSON.stringify({ rules: { "react-doctor/no-danger": "warning" } }, null, 2),
     );

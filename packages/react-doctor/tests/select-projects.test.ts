@@ -1,6 +1,6 @@
-import fs from "node:fs";
+import * as fs from "node:fs";
 import os from "node:os";
-import path from "node:path";
+import * as path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vite-plus/test";
 import { selectProjects } from "../src/cli/utils/select-projects.js";
 import { cliLogger } from "../src/cli/utils/cli-logger.js";
@@ -105,6 +105,20 @@ describe("selectProjects", () => {
         name: "selectedDirectories",
         message: "Select projects",
       }),
+    );
+  });
+
+  it("rejects a --project flag that names no project (e.g. just commas)", async () => {
+    const tempDirectory = createTempDirectory();
+    writeJson(path.join(tempDirectory, "package.json"), {
+      name: "workspace",
+      workspaces: ["apps/*"],
+    });
+    setupReactProject(path.join(tempDirectory, "apps"), "web");
+    setupReactProject(path.join(tempDirectory, "apps"), "docs");
+
+    await expect(selectProjects(tempDirectory, ",", true)).rejects.toThrow(
+      /did not name any project/,
     );
   });
 

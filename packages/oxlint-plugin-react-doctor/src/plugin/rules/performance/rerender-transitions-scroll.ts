@@ -1,4 +1,5 @@
 import { defineRule } from "../../utils/define-rule.js";
+import { isUseStateSetterInScope } from "../../utils/is-use-state-setter-in-scope.js";
 import { walkAst } from "../../utils/walk-ast.js";
 import type { EsTreeNode } from "../../utils/es-tree-node.js";
 import type { Rule } from "../../utils/rule.js";
@@ -36,7 +37,8 @@ const handlerCallsSetState = (handler: EsTreeNode): EsTreeNode | null => {
     if (
       isNodeOfType(child, "CallExpression") &&
       isNodeOfType(child.callee, "Identifier") &&
-      /^set[A-Z]/.test(child.callee.name)
+      /^set[A-Z]/.test(child.callee.name) &&
+      isUseStateSetterInScope(child, child.callee.name)
     ) {
       setStateCall = child;
     }
@@ -89,7 +91,7 @@ export const rerenderTransitionsScroll = defineRule<Rule>({
 
       context.report({
         node: setStateCall,
-        message: `This causes jank because setState in a "${eventName}" handler redraws the screen many times a second, so wrap it in startTransition, use useDeferredValue, or keep the value in a ref & throttle with requestAnimationFrame`,
+        message: `This can make scrolling stutter because setState in a "${eventName}" handler redraws on every event. Wrap it in startTransition, use useDeferredValue, or keep the value in a ref and throttle with requestAnimationFrame.`,
       });
     },
   }),

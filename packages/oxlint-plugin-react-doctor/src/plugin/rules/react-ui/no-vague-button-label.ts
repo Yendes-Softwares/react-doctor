@@ -61,6 +61,9 @@ export const noVagueButtonLabel = defineRule<Rule>({
   title: "Vague button label",
   tags: ["design", "test-noise"],
   severity: "warn",
+  // Default off: subjective design / house-style preference, not a
+  // correctness, performance, or accessibility issue. Opt in to enforce it.
+  defaultEnabled: false,
   recommendation:
     'Name the action: "Save changes" instead of "Continue", "Send invite" instead of "Submit". The label is the button\'s accessible name.',
   create: (context: RuleContext) => ({
@@ -76,7 +79,7 @@ export const noVagueButtonLabel = defineRule<Rule>({
       if (!VAGUE_BUTTON_LABELS.has(normalizedLabel)) return;
       context.report({
         node: jsxElementNode.openingElement ?? jsxElementNode,
-        message: `Screen reader & unsure users can't tell what "${labelText}" does.`,
+        message: `Screen reader users may not know what "${labelText}" does. Use a specific action label.`,
       });
     },
   }),

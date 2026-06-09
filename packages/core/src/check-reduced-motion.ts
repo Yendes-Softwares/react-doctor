@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import path from "node:path";
+import * as path from "node:path";
 import { MOTION_LIBRARY_PACKAGES } from "oxlint-plugin-react-doctor";
 import type { Diagnostic } from "./types/index.js";
 import { isFile, readPackageJson } from "./project-info/index.js";
@@ -39,7 +39,15 @@ export const checkReducedMotion = (rootDirectory: string): Diagnostic[] => {
 
   const result = spawnSync(
     "git",
-    ["grep", "-ql", "-E", REDUCED_MOTION_GREP_PATTERN, "--", ...REDUCED_MOTION_FILE_GLOBS],
+    [
+      "grep",
+      "--untracked",
+      "-ql",
+      "-E",
+      REDUCED_MOTION_GREP_PATTERN,
+      "--",
+      ...REDUCED_MOTION_FILE_GLOBS,
+    ],
     { cwd: rootDirectory, stdio: ["ignore", "pipe", "pipe"] },
   );
   if (result.error) return [MISSING_REDUCED_MOTION_DIAGNOSTIC];
