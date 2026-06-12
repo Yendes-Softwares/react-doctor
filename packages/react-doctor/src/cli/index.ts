@@ -110,6 +110,7 @@ const program = new Command()
     "skip dead-code analysis (unused files / exports / dependencies, circular imports)",
   )
   .option("--verbose", "show every rule and per-file details (default shows top 3 rules)")
+  .option("--output-dir <dir>", "directory for the full diagnostics dump (default: a temp folder)")
   .option("--score", "output only the score")
   .option("--json", "output a single structured JSON report (suppresses other output)")
   .option("--json-compact", "with --json, emit compact JSON (no indentation)")
@@ -120,8 +121,19 @@ const program = new Command()
   )
   .option("--project <name>", "select workspace project (comma-separated for multiple)")
   .option(
-    "--diff [base]",
-    "scan only files changed vs base branch (pass `false` to force a full scan, overriding config)",
+    "--scope <value>",
+    "how much to scan/report: full (default), files, changed (only new issues vs base), or lines (only changed lines)",
+  )
+  .option("--base <ref>", "base git ref for files/changed/lines scope (auto-detected when omitted)")
+  .addOption(
+    // Deprecated alias for `--scope` (warns at runtime). `--diff <base>` →
+    // `--scope changed --base <base>`, `--diff false` → `--scope full`. Hidden
+    // from --help but kept functional; takes an optional value, so removing it
+    // would turn `--diff main` into a stray positional. Remove in a future major.
+    new Option(
+      "--diff [base]",
+      "[deprecated] alias for --scope changed (pass `false` to force a full scan)",
+    ).hideHelp(),
   )
   .addOption(
     // Internal: the GitHub Action passes the PR's changed-file list here.

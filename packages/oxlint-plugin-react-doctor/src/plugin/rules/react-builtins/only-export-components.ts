@@ -1,4 +1,5 @@
 import { defineRule } from "../../utils/define-rule.js";
+import { isFrameworkRouteOrSpecialFilename } from "../../utils/is-framework-route-or-special-filename.js";
 import { normalizeFilename } from "../../utils/normalize-filename.js";
 import type { EsTreeNode } from "../../utils/es-tree-node.js";
 import type { EsTreeNodeOfType } from "../../utils/es-tree-node-of-type.js";
@@ -10,6 +11,8 @@ import {
   ENTRY_POINT_BASENAMES,
   NON_FAST_REFRESH_PATH_SEGMENTS,
   NOT_REACT_COMPONENT_EXPRESSION_TYPES,
+  ROUTE_FACTORY_CALLEE_NAMES,
+  ROUTE_MODULE_ALLOWED_EXPORT_NAMES,
   UTILITY_FILE_BASENAMES,
 } from "./only-export-components-tables.js";
 
@@ -110,6 +113,26 @@ const isReactCreateContext = (initializer: EsTreeNode | null | undefined): boole
   return false;
 };
 
+const isRouteFactoryName = (name: string): boolean => ROUTE_FACTORY_CALLEE_NAMES.has(name);
+
+const isRouteFactoryCall = (expression: EsTreeNode): boolean => {
+  let currentCall: EsTreeNode = expression;
+  while (isNodeOfType(currentCall, "CallExpression")) {
+    const callee = currentCall.callee as EsTreeNode;
+    if (isNodeOfType(callee, "Identifier") && isRouteFactoryName(callee.name)) return true;
+    if (
+      isNodeOfType(callee, "MemberExpression") &&
+      isNodeOfType(callee.property, "Identifier") &&
+      isRouteFactoryName(callee.property.name)
+    ) {
+      return true;
+    }
+    if (!isNodeOfType(callee, "CallExpression")) return false;
+    currentCall = callee;
+  }
+  return false;
+};
+
 interface AnalyzerState {
   customHocs: ReadonlySet<string>;
   allowExportNames: ReadonlySet<string>;
@@ -191,6 +214,13 @@ const classifyExport = (
   // HoC-wrapped: `export const Foo = memo(...)` — treat as component.
   if (initializer) {
     const expression = skipTsExpression(initializer);
+    // File-based-router route objects (`export const Route =
+    // createFileRoute("/profile")({ component: ProfilePage })`) — the
+    // router's bundler plugin owns HMR for these modules, so the route
+    // export and any local components it references are conventional.
+    if (isRouteFactoryCall(expression)) {
+      return { kind: "react-component" };
+    }
     if (
       isNodeOfType(expression, "CallExpression") &&
       isHocCallee(expression.callee as EsTreeNode, state) &&
@@ -210,6 +240,12 @@ const classifyExport = (
     }
   }
   if (state.allowExportNames.has(name)) return { kind: "allowed" };
+  // Framework route-module contract exports (`loader`, `meta`,
+  // `getStaticProps`, `metadata`, …) — Remix / React Router / Next.js /
+  // Expo Router bundler plugins special-case these during Fast Refresh,
+  // so co-exporting them with the route component is the documented
+  // shape, not a hazard.
+  if (ROUTE_MODULE_ALLOWED_EXPORT_NAMES.has(name)) return { kind: "allowed" };
   // Custom hook exports — `useFoo`, `useBar`. Modern Vite Fast
   // Refresh (>= 4.x via @vitejs/plugin-react-swc + react-refresh)
   // already handles `use[A-Z]*` exports alongside components: the
@@ -350,6 +386,14 @@ const isFileNameAllowed = (filename: string | undefined, checkJS: boolean): bool
   // in HMR — they get full reloaded when changed. Local-component and
   // mixed-export warnings are unactionable here.
   if (isEntryPointFile(filename)) return false;
+  // Framework route / special files (Next.js App + Pages Router and
+  // metadata image routes, Expo Router layouts, TanStack Router root /
+  // lazy routes, Remix / React Router root + entry modules). Their
+  // bundler plugins own HMR for these modules, and by framework contract
+  // they co-export route segment config / `metadata` / `alt` / `size` /
+  // loaders / actions alongside the default component — the documented
+  // shape, not a Fast Refresh hazard.
+  if (isFrameworkRouteOrSpecialFilename(filename)) return false;
   // Icon / asset / utility collection files (`icons.tsx`, `*Icon.tsx`,
   // `*Logo.tsx`, `sprite.tsx`, `assets.tsx`, `utils.tsx`, `tokens.tsx`,
   // `theme.tsx`, `constants.tsx`, etc.) hold non-state-bearing exports
@@ -446,6 +490,10 @@ export const onlyExportComponents = defineRule<Rule>({
               continue;
             }
             if (isNodeOfType(stripped, "CallExpression")) {
+              if (isRouteFactoryCall(stripped)) {
+                hasReactExport = true;
+                continue;
+              }
               // is_hoc_call_expression: callee must be HoC AND first
               // arg must be a named/identifier-like value (else
               // anonymous).

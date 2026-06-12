@@ -28,6 +28,7 @@ import { recordCount } from "./cli/utils/record-metric.js";
 import { recordScanMetrics } from "./cli/utils/record-scan-metrics.js";
 import { recordRunEvent } from "./cli/utils/build-run-event.js";
 import type {
+  ChangedFileLineRanges,
   Diagnostic,
   DiagnosticSurface,
   InspectOptions,
@@ -36,6 +37,7 @@ import type {
   ReactDoctorConfig,
   ScoreResult,
 } from "@react-doctor/core";
+import { toForwardSlashes } from "./cli/utils/path-format.js";
 import { makeNoopConsole } from "./cli/utils/noop-console.js";
 import { materializeBaselineFiles } from "./cli/utils/materialize-baseline-files.js";
 import { createSourceLineReader } from "./cli/utils/read-source-line.js";
@@ -63,7 +65,7 @@ import {
   printNoScoreHeader,
   printScoreHeader,
 } from "./cli/utils/render-score-header.js";
-import { printFooter, printSummary } from "./cli/utils/render-summary.js";
+import { printDiagnosticsDump, printFooter, printSummary } from "./cli/utils/render-summary.js";
 import { resolveOxlintNode } from "./cli/utils/resolve-oxlint-node.js";
 import { resolveCliCategories } from "./cli/utils/resolve-cli-categories.js";
 import { getRunId } from "./cli/utils/run-id.js";
@@ -106,6 +108,30 @@ const recordOnboardingCompletion = (options: ResolvedInspectOptions): void => {
 const formatCategorySelection = (categoryFilters: ReadonlySet<string>): string =>
   [...categoryFilters].join(", ");
 
+// Builds the `--scope lines` predicate: a diagnostic survives when its line
+// falls in a changed range of its file. `changedLineRanges` is keyed by paths
+// relative to `directory`; diagnostic paths are normalized the same way so
+// absolute and relative forms both match.
+const buildChangedLineMatcher = (
+  directory: string,
+  changedLineRanges: ReadonlyArray<ChangedFileLineRanges>,
+): ((diagnostic: Diagnostic) => boolean) => {
+  const rangesByFile = new Map<string, ReadonlyArray<readonly [number, number]>>();
+  for (const entry of changedLineRanges) {
+    rangesByFile.set(toForwardSlashes(entry.file), entry.ranges);
+  }
+  return (diagnostic) => {
+    const relativePath = toForwardSlashes(
+      path.isAbsolute(diagnostic.filePath)
+        ? path.relative(directory, diagnostic.filePath)
+        : diagnostic.filePath,
+    );
+    const ranges = rangesByFile.get(relativePath);
+    if (ranges === undefined) return false;
+    return ranges.some(([start, end]) => diagnostic.line >= start && diagnostic.line <= end);
+  };
+};
+
 export interface ReactDoctorInspectOptions extends InspectOptions {
   categoryFilters?: string[];
 }
@@ -114,6 +140,8 @@ export interface ResolvedInspectOptions {
   lint: boolean;
   deadCode: boolean;
   verbose: boolean;
+  /** See `InspectOptions.outputDirectory`. `null` keeps the temp-dir default. */
+  outputDirectory: string | null;
   scoreOnly: boolean;
   noScore: boolean;
   isCi: boolean;
@@ -134,6 +162,12 @@ export interface ResolvedInspectOptions {
   concurrency: number | undefined;
   /** Baseline ref to subtract (new-only mode), or `null` for a plain scan. */
   baseline: { ref: string } | null;
+  /**
+   * `--scope lines`: changed line ranges to restrict reported diagnostics to,
+   * or `null` for any other scope. An empty array still filters (a `lines`
+   * scope whose files added no lines reports nothing).
+   */
+  changedLineRanges: ReadonlyArray<ChangedFileLineRanges> | null;
   /** See `InspectOptions.supplyChainManifestChanged`. */
   supplyChainManifestChanged: boolean;
 }
@@ -153,6 +187,7 @@ const mergeInspectOptions = (
   lint: inputOptions.lint ?? userConfig?.lint ?? true,
   deadCode: inputOptions.deadCode ?? userConfig?.deadCode ?? true,
   verbose: inputOptions.verbose ?? userConfig?.verbose ?? false,
+  outputDirectory: inputOptions.outputDirectory || null,
   scoreOnly: inputOptions.scoreOnly ?? false,
   noScore: inputOptions.noScore ?? userConfig?.noScore ?? false,
   isCi: inputOptions.isCi ?? false,
@@ -172,6 +207,7 @@ const mergeInspectOptions = (
   suppressRendering: inputOptions.suppressRendering ?? false,
   concurrency: inputOptions.concurrency,
   baseline: inputOptions.baseline ?? null,
+  changedLineRanges: inputOptions.changedLineRanges ?? null,
   supplyChainManifestChanged: inputOptions.supplyChainManifestChanged ?? false,
 });
 
@@ -179,11 +215,23 @@ const mergeInspectOptions = (
 // emit paths (the failure path has no `result`, so it can only supply config).
 // The return type is inferred and checked at the call sites, which spread it
 // into the full `RunEventInput` — a missing field surfaces there.
+// Reconstruct the resolved scope from the engine inputs (the CLI resolved it
+// from `--scope`, but `inspect()` only sees its effects): a baseline ref means
+// `changed`, line ranges mean `lines`, any other diff means `files`, else `full`.
+// A degraded `lines` / `changed` run carries neither, so it reads as `files` —
+// matching what actually ran.
+const deriveScope = (options: ResolvedInspectOptions): string => {
+  if (options.baseline) return "changed";
+  if (options.changedLineRanges !== null) return "lines";
+  return options.includePaths.length > 0 ? "files" : "full";
+};
+
 const buildRunEventConfig = (
   options: ResolvedInspectOptions,
   userConfig: ReactDoctorConfig | null,
   hasCustomConfig: boolean,
 ) => ({
+  scope: deriveScope(options),
   parallel: options.concurrency !== undefined,
   workerCount: options.concurrency,
   lint: options.lint,
@@ -192,6 +240,7 @@ const buildRunEventConfig = (
   noScore: options.noScore,
   respectInlineDisables: options.respectInlineDisables,
   showWarnings: options.warnings,
+  usedOutputDir: options.outputDirectory !== null,
   ignoredTagCount: options.ignoredTags.size,
   hasCustomConfig,
   userConfig,
@@ -585,6 +634,13 @@ const runInspectWithRuntime = async (
       inspectDiagnostics = comparison.displayDiagnostics;
       baselineDelta = comparison.baselineDelta;
     }
+  } else if (options.changedLineRanges !== null && isDiffMode) {
+    // `--scope lines`: keep only diagnostics on the lines the change touched.
+    // Runs at the same post-lint seam as baseline (the score is already
+    // computed on the full head set), so the gate, summary, and inline
+    // comments all narrow together.
+    const isOnChangedLine = buildChangedLineMatcher(directory, options.changedLineRanges);
+    inspectDiagnostics = output.diagnostics.filter(isOnChangedLine);
   }
   // Baseline was requested but no delta was produced (head/base lint failed) —
   // the run degrades to a plain diff and must not gate on the full head set.
@@ -791,7 +847,21 @@ const finalizeAndRender = (input: FinalizeInput): Effect.Effect<InspectResult> =
       return buildResult();
     }
 
+    const surfaceDiagnostics = filterDiagnosticsForSurface(
+      [...diagnostics],
+      options.outputSurface,
+      userConfig,
+    );
+    const printedDiagnostics = filterDiagnosticsByCategories(
+      surfaceDiagnostics,
+      options.categoryFilters,
+    );
+
     if (options.scoreOnly) {
+      // The path line goes to stderr so `--score` stdout stays machine-clean.
+      if (options.outputDirectory !== null) {
+        yield* printDiagnosticsDump(printedDiagnostics, options.outputDirectory, false, "stderr");
+      }
       if (score) {
         yield* Console.log(`${score.score}`);
       } else {
@@ -807,16 +877,6 @@ const finalizeAndRender = (input: FinalizeInput): Effect.Effect<InspectResult> =
     const animateRender =
       !options.silent && !options.verbose && canAnimateOnboarding(process.stdout);
     const pause = onboardingSectionPause(animateRender);
-
-    const surfaceDiagnostics = filterDiagnosticsForSurface(
-      [...diagnostics],
-      options.outputSurface,
-      userConfig,
-    );
-    const printedDiagnostics = filterDiagnosticsByCategories(
-      surfaceDiagnostics,
-      options.categoryFilters,
-    );
     const demotedDiagnosticCount = diagnostics.length - surfaceDiagnostics.length;
     const isDiffMode = options.includePaths.length > 0;
     const lintSourceFileCount = isDiffMode ? options.includePaths.length : project.sourceFileCount;
@@ -854,6 +914,11 @@ const finalizeAndRender = (input: FinalizeInput): Effect.Effect<InspectResult> =
         yield* printScoreHeader(score);
       } else {
         yield* printNoScoreHeader(noScoreMessage);
+      }
+      // `--output-dir` still gets its dump (and stale-file cleanup) when
+      // nothing printed — e.g. every issue was fixed since the last run.
+      if (options.outputDirectory !== null) {
+        yield* printDiagnosticsDump(printedDiagnostics, options.outputDirectory);
       }
       return buildResult();
     }
@@ -899,6 +964,7 @@ const finalizeAndRender = (input: FinalizeInput): Effect.Effect<InspectResult> =
       totalSourceFileCount: lintSourceFileCount,
       noScoreMessage,
       verbose: options.verbose,
+      outputDirectory: options.outputDirectory,
       animateProjection: animateRender,
     });
 

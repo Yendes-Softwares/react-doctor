@@ -66,6 +66,7 @@ const buildResult = (overrides: Partial<InspectResult> = {}): InspectResult => (
 
 const baseInput = (overrides: Partial<RunEventInput> = {}): RunEventInput => ({
   mode: "full",
+  scope: "full",
   parallel: true,
   workerCount: 4,
   lint: true,
@@ -74,6 +75,7 @@ const baseInput = (overrides: Partial<RunEventInput> = {}): RunEventInput => ({
   noScore: false,
   respectInlineDisables: true,
   showWarnings: true,
+  usedOutputDir: false,
   ignoredTagCount: 0,
   hasCustomConfig: false,
   userConfig: null,

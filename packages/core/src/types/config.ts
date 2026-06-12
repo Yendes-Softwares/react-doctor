@@ -9,6 +9,21 @@
  */
 export type BlockingLevel = "error" | "warning" | "none";
 
+/**
+ * How much of the project a scan looks at and reports on — the single knob the
+ * CLI `--scope` flag, the GitHub Action `scope` input, and this config field
+ * all share. Ordered widest to narrowest:
+ *
+ * - `"full"` — whole project, every issue (the default). Whole-project checks
+ *   (dead-code, environment, supply-chain) run only at this scope.
+ * - `"files"` — only the files changed vs the base, with ALL issues in them
+ *   (no compare-to-main). What `--staged` and an uncommitted `--diff` do today.
+ * - `"changed"` — only issues the change INTRODUCED vs the base (the baseline
+ *   delta). What `--diff <base>` and the action's `scope: changed` do today.
+ * - `"lines"` — only issues on the lines the change actually touched.
+ */
+export type ScopeValue = "full" | "files" | "changed" | "lines";
+
 export interface ReactDoctorIgnoreOverride {
   /** Glob patterns the override applies to (e.g. `["src/legacy/**"]`). */
   files: string[];
@@ -141,11 +156,11 @@ export interface SurfaceControls {
  *
  * Mirrors how Socket Firewall's free tier (`sfw`) works: each direct
  * dependency's PURL is looked up against Socket's keyless
- * `firewall-api.socket.dev/purl/<purl>` endpoint, which returns a
- * supply-chain score (0–100 once normalized). A dependency scoring below
- * `minScore` produces a diagnostic; at the default `severity: "error"` it
- * fails the scan (non-zero CI exit), the same way an error-severity lint
- * finding does.
+ * `firewall-api.socket.dev/purl/<purl>` endpoint, which returns per-axis
+ * scores (0–100 once normalized). A dependency whose worst security axis
+ * (supply chain or vulnerability) scores below `minScore` produces a
+ * diagnostic; at the default `severity: "error"` it fails the scan
+ * (non-zero CI exit), the same way an error-severity lint finding does.
  */
 export interface SupplyChainConfig {
   /**
@@ -157,8 +172,9 @@ export interface SupplyChainConfig {
   enabled?: boolean;
   /**
    * Minimum acceptable Socket score on a 0–100 scale. A direct dependency
-   * whose Socket `overall` score is below this is flagged. Default: `50`.
-   * Values outside `0..100` are clamped.
+   * whose worst Socket *security* axis — supply chain or vulnerability — is
+   * below this is flagged; the quality / maintenance / license axes never
+   * gate. Default: `50`. Values outside `0..100` are clamped.
    */
   minScore?: number;
   /**
@@ -206,6 +222,23 @@ export interface ReactDoctorConfig {
    * `rules` / `categories`) still shows even when `warnings` is `false`.
    */
   warnings?: boolean;
+  /**
+   * Scan scope. Defaults to `"full"`. See `ScopeValue` for the four values.
+   * The CLI `--scope` flag and the GitHub Action `scope` input set the same
+   * thing; flags win over config.
+   */
+  scope?: ScopeValue;
+  /**
+   * Base git ref the `"files"` / `"changed"` / `"lines"` scopes compare
+   * against. Auto-detected from the default branch / merge-base when unset.
+   */
+  base?: string;
+  /**
+   * @deprecated Use `scope` instead. Still honored as an alias when `scope`
+   * is unset: `diff: "<base>"` / `diff: true` → `scope: "changed"`,
+   * `diff: false` → `scope: "full"`. Using it emits a one-time deprecation
+   * warning. Prefer `scope` (+ `base`).
+   */
   diff?: boolean | string;
   /**
    * Severity threshold at which the scan blocks CI (exits non-zero).

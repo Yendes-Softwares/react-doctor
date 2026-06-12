@@ -28,6 +28,8 @@ export interface RunEventInput {
   readonly result?: InspectResult;
   /** `"diff"` / `"full"` / `"staged"`. */
   readonly mode: string;
+  /** Resolved scan scope: full | files | changed | lines. */
+  readonly scope: string;
   readonly parallel: boolean;
   readonly workerCount: number | undefined;
   readonly lint: boolean;
@@ -36,6 +38,8 @@ export interface RunEventInput {
   readonly noScore: boolean;
   readonly respectInlineDisables: boolean;
   readonly showWarnings: boolean;
+  /** A custom `--output-dir` was passed for the full diagnostics dump. */
+  readonly usedOutputDir: boolean;
   readonly ignoredTagCount: number;
   readonly hasCustomConfig: boolean;
   readonly userConfig: ReactDoctorConfig | null;
@@ -199,6 +203,7 @@ const buildConfigAttributes = (input: RunEventInput): RunEventAttributes => {
   const ruleKeys = Object.keys(ruleOverrides);
   return {
     mode: input.mode,
+    scope: input.scope,
     parallel: input.parallel,
     workerCount: input.workerCount ?? null,
     lint: input.lint,
@@ -207,6 +212,7 @@ const buildConfigAttributes = (input: RunEventInput): RunEventAttributes => {
     noScore: input.noScore,
     respectInlineDisables: input.respectInlineDisables,
     showWarnings: input.showWarnings,
+    usedOutputDir: input.usedOutputDir,
     ignoredTagCount: input.ignoredTagCount,
     hasCustomConfig: input.hasCustomConfig,
     rulesConfigured: ruleKeys.length,
