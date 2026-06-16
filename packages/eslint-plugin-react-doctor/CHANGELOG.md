@@ -1,5 +1,19 @@
 # eslint-plugin-react-doctor
 
+## 0.5.6
+
+### Patch Changes
+
+- Updated dependencies [[`ea3b827`](https://github.com/millionco/react-doctor/commit/ea3b8278996613114c9c671afe292193388741c0), [`5fc0e27`](https://github.com/millionco/react-doctor/commit/5fc0e270c9a15d25be96ef982755cea81065d141), [`ea3b827`](https://github.com/millionco/react-doctor/commit/ea3b8278996613114c9c671afe292193388741c0)]:
+  - oxlint-plugin-react-doctor@0.5.6
+
+## 0.5.5
+
+### Patch Changes
+
+- Updated dependencies [[`e90eb7a`](https://github.com/millionco/react-doctor/commit/e90eb7acbfc4e06de68de2cb6a96d3242f72963e)]:
+  - oxlint-plugin-react-doctor@0.5.5
+
 ## 0.5.4
 
 ### Patch Changes
