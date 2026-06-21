@@ -1,5 +1,15 @@
 # react-doctor
 
+## 0.5.9
+
+### Patch Changes
+
+- [#917](https://github.com/millionco/react-doctor/pull/917) [`7a673d2`](https://github.com/millionco/react-doctor/commit/7a673d20238903b4ef2d2b525379bec96cec2642) Thanks [@rayhanadev](https://github.com/rayhanadev)! - Remember the post-scan "What would you like to do next?" pick. The interactive handoff prompt now pre-selects whatever the user chose last (an agent, "copy to clipboard", or "skip"), so the common "always hand off to the same agent" path is a single Enter. The choice is remembered per user in the existing CLI state file via a new `Preference` lifecycle primitive; a remembered agent that's since been uninstalled falls back to highlighting the first option, and pressing Esc leaves the prior preference untouched.
+
+- Updated dependencies [[`7f9e7f4`](https://github.com/millionco/react-doctor/commit/7f9e7f42832f40a32d7583126c096067f948856f)]:
+  - deslop-js@0.5.9
+  - oxlint-plugin-react-doctor@0.5.9
+
 ## 0.5.8
 
 ### Patch Changes
