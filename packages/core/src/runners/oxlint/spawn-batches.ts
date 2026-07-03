@@ -10,6 +10,7 @@ import type { Diagnostic, ProjectInfo } from "../../types/index.js";
 import { isSplittableReactDoctorError, ReactDoctorError } from "../../errors.js";
 import { dedupeDiagnostics } from "../../utils/dedupe-diagnostics.js";
 import { mapWithConcurrency } from "../../utils/map-with-concurrency.js";
+import { remainingDeadlineBudgetMs } from "../../utils/remaining-deadline-budget-ms.js";
 import { resolveScanConcurrency } from "../../utils/resolve-scan-concurrency.js";
 import { parseOxlintOutput } from "./parse-output.js";
 import { spawnOxlint } from "./spawn-oxlint.js";
@@ -67,6 +68,15 @@ export interface SpawnLintBatchesInput {
    */
   readonly signal?: AbortSignal;
   /**
+   * Absolute epoch-millisecond deadline for the whole lint pass (from the
+   * caller's `--max-duration` budget). Once it passes, batches that haven't
+   * started yet are skipped — recorded and surfaced via `onPartialFailure` —
+   * instead of spawned, so the scan degrades to partial results rather than
+   * running past the budget. In-flight batches finish normally, but their
+   * binary-split retries re-check the deadline before re-spawning.
+   */
+  readonly deadlineEpochMs?: number;
+  /**
    * Number of batches to lint in parallel (from `OxlintConcurrency`).
    * Defaults to `1` (serial) when omitted. Each batch is its own oxlint
    * subprocess, so `N` here means up to `N` concurrent oxlint processes —
@@ -113,6 +123,7 @@ export const spawnLintBatches = async (input: SpawnLintBatchesInput): Promise<Di
     splitTotalBudgetMs = OXLINT_SPLIT_TOTAL_BUDGET_MS,
     splitMaxDepth = OXLINT_SPLIT_MAX_DEPTH,
     signal,
+    deadlineEpochMs,
   } = input;
   // Clamp at the spawn boundary so any caller — including programmatic
   // `inspect({ concurrency })` that skips the CLI's resolver — is bounded by
@@ -136,6 +147,11 @@ export const spawnLintBatches = async (input: SpawnLintBatchesInput): Promise<Di
     // ones (e.g. one file × one quadratic JS-plugin rule, originally
     // hit on supabase/studio's `apps/studio/pages/...` bucket).
     const droppedFiles: string[] = [];
+    // Batches that never spawned because `deadlineEpochMs` passed — reported
+    // apart from `droppedFiles` (budget exhaustion, not pathological files).
+    const deadlineSkippedFiles: string[] = [];
+    const isPastDeadline = (): boolean =>
+      deadlineEpochMs !== undefined && remainingDeadlineBudgetMs(deadlineEpochMs) === 0;
     // HACK: keep the first splittable error message we saw so
     // `onPartialFailure` can report WHY each batch failed instead of
     // misleadingly always blaming the per-batch budget. Same root cause
@@ -144,12 +160,28 @@ export const spawnLintBatches = async (input: SpawnLintBatchesInput): Promise<Di
     // is enough to diagnose.
     let firstDropReason: string | null = null;
 
-    // Cumulative deadline shared across every binary-split retry of this
-    // pass, so one pathological file can't re-wait a full `spawnTimeoutMs`
-    // at each of ~log2(batch) levels before landing in `droppedFiles`.
-    const splitDeadlineMs = Date.now() + splitTotalBudgetMs;
-
-    const spawnLintBatch = async (batch: string[], depth: number): Promise<Diagnostic[]> => {
+    // Per-top-level-batch state threaded through the binary-split recursion
+    // (which awaits its two halves sequentially, so this is race-free even
+    // under concurrent top-level batches). `deadlineMs` is the split budget,
+    // anchored lazily at the batch's FIRST splittable failure — anchoring at
+    // pass start would let healthy lint time consume it — and scoped per batch
+    // so one bad batch can't starve a later one. `deadlineSkippedFileCount`
+    // tallies files THIS batch skipped for `--max-duration`, counted here
+    // rather than off the shared `deadlineSkippedFiles` (which concurrent
+    // workers append to, so a length-diff would count another worker's skips).
+    const spawnLintBatch = async (
+      batch: string[],
+      depth: number,
+      batchState: { deadlineMs: number | null; deadlineSkippedFileCount: number },
+    ): Promise<Diagnostic[]> => {
+      // Past the --max-duration budget: skip instead of spawning, even inside a
+      // binary-split retry, so a batch that started just before the deadline
+      // can't keep splitting past it.
+      if (isPastDeadline()) {
+        deadlineSkippedFiles.push(...batch);
+        batchState.deadlineSkippedFileCount += batch.length;
+        return [];
+      }
       const batchArgs = [...baseArgs, ...batch];
       try {
         const stdout = await spawnOxlint(
@@ -163,24 +195,36 @@ export const spawnLintBatches = async (input: SpawnLintBatchesInput): Promise<Di
         return parseOxlintOutput(stdout, project, rootDirectory);
       } catch (error) {
         if (!isSplittableReactDoctorError(error)) throw error;
-        const splitBudgetExhausted = Date.now() >= splitDeadlineMs || depth >= splitMaxDepth;
-        if (batch.length <= 1 || splitBudgetExhausted) {
+        // A splittable failure that surfaced only after the deadline passed is
+        // a budget skip, not a pathological drop — attribute it accordingly.
+        if (isPastDeadline()) {
+          deadlineSkippedFiles.push(...batch);
+          batchState.deadlineSkippedFileCount += batch.length;
+          return [];
+        }
+        batchState.deadlineMs ??= Date.now() + splitTotalBudgetMs;
+        const isBudgetElapsed = Date.now() >= batchState.deadlineMs;
+        const isDepthCapReached = depth >= splitMaxDepth;
+        if (batch.length <= 1 || isBudgetElapsed || isDepthCapReached) {
           // Either the smallest splittable batch (a single file) still failed,
           // or the cumulative split budget / depth cap is exhausted — drop the
           // remaining files, record why, and let the scan continue.
           droppedFiles.push(...batch);
           if (firstDropReason === null) {
-            firstDropReason =
-              splitBudgetExhausted && batch.length > 1
-                ? `${error.message} (split budget exhausted after ${splitMaxDepth} levels / ${splitTotalBudgetMs / MILLISECONDS_PER_SECOND}s)`
-                : error.message;
+            let limitHint = "";
+            if (isDepthCapReached) {
+              limitHint = ` (split depth cap of ${splitMaxDepth} levels reached)`;
+            } else if (isBudgetElapsed) {
+              limitHint = ` (split budget of ${splitTotalBudgetMs / MILLISECONDS_PER_SECOND}s exhausted at depth ${depth})`;
+            }
+            firstDropReason = batch.length > 1 ? `${error.message}${limitHint}` : error.message;
           }
           return [];
         }
         const splitIndex = Math.ceil(batch.length / 2);
         return [
-          ...(await spawnLintBatch(batch.slice(0, splitIndex), depth + 1)),
-          ...(await spawnLintBatch(batch.slice(splitIndex), depth + 1)),
+          ...(await spawnLintBatch(batch.slice(0, splitIndex), depth + 1, batchState)),
+          ...(await spawnLintBatch(batch.slice(splitIndex), depth + 1, batchState)),
         ];
       }
     };
@@ -207,9 +251,19 @@ export const spawnLintBatches = async (input: SpawnLintBatchesInput): Promise<Di
 
     try {
       const batchResults = await mapWithConcurrency(fileBatches, concurrency, async (batch) => {
+        if (isPastDeadline()) {
+          deadlineSkippedFiles.push(...batch);
+          return [];
+        }
         startedFileCount += batch.length;
-        const batchDiagnostics = await spawnLintBatch(batch, 0);
-        scannedFileCount += batch.length;
+        const batchState: { deadlineMs: number | null; deadlineSkippedFileCount: number } = {
+          deadlineMs: null,
+          deadlineSkippedFileCount: 0,
+        };
+        const batchDiagnostics = await spawnLintBatch(batch, 0, batchState);
+        // A split retry can deadline-skip part of the batch, so count only the
+        // files actually linted — not the whole batch — as scanned.
+        scannedFileCount += batch.length - batchState.deadlineSkippedFileCount;
         if (onFileProgress) {
           displayedFileCount = Math.min(
             Math.max(displayedFileCount, scannedFileCount),
@@ -224,20 +278,32 @@ export const spawnLintBatches = async (input: SpawnLintBatchesInput): Promise<Di
       if (progressTimer !== null) clearInterval(progressTimer);
     }
 
-    // Report dropped files once per completed pass. A pass that throws (e.g.
+    // Report skipped files once per completed pass. A pass that throws (e.g.
     // the parallel attempt below hitting EAGAIN) exits before this point, so
     // only the winning pass surfaces its skips.
-    if (droppedFiles.length > 0 && onPartialFailure) {
-      const previewFiles = droppedFiles.slice(0, OXLINT_PARTIAL_FAILURE_PREVIEW_COUNT).join(", ");
+    const reportSkippedFiles = (
+      skippedFiles: string[],
+      buildMessage: (fileListPreview: string) => string,
+    ): void => {
+      if (skippedFiles.length === 0 || !onPartialFailure) return;
+      const previewFiles = skippedFiles.slice(0, OXLINT_PARTIAL_FAILURE_PREVIEW_COUNT).join(", ");
       const remainderHint =
-        droppedFiles.length > OXLINT_PARTIAL_FAILURE_PREVIEW_COUNT
-          ? `, +${droppedFiles.length - OXLINT_PARTIAL_FAILURE_PREVIEW_COUNT} more`
+        skippedFiles.length > OXLINT_PARTIAL_FAILURE_PREVIEW_COUNT
+          ? `, +${skippedFiles.length - OXLINT_PARTIAL_FAILURE_PREVIEW_COUNT} more`
           : "";
-      const reasonHint = firstDropReason ? ` — first failure: ${firstDropReason}` : "";
-      onPartialFailure(
-        `${droppedFiles.length} file(s) failed to lint and were skipped (${previewFiles}${remainderHint})${reasonHint}`,
-      );
-    }
+      onPartialFailure(buildMessage(`${previewFiles}${remainderHint}`));
+    };
+    const reasonHint = firstDropReason ? ` — first failure: ${firstDropReason}` : "";
+    reportSkippedFiles(
+      droppedFiles,
+      (fileListPreview) =>
+        `${droppedFiles.length} file(s) failed to lint and were skipped (${fileListPreview})${reasonHint}`,
+    );
+    reportSkippedFiles(
+      deadlineSkippedFiles,
+      (fileListPreview) =>
+        `${deadlineSkippedFiles.length} file(s) skipped — max scan duration reached before they were linted (${fileListPreview})`,
+    );
     return allDiagnostics;
   };
 

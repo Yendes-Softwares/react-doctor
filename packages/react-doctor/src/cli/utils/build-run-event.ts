@@ -4,7 +4,12 @@ import {
   resolveGithubActionsScoreMetadata,
   summarizeDiagnostics,
 } from "@react-doctor/core";
-import type { BlockingLevel, InspectResult, ReactDoctorConfig } from "@react-doctor/core";
+import type {
+  BlockingLevel,
+  InspectResult,
+  ReactDoctorConfig,
+  SuppressedRuleCount,
+} from "@react-doctor/core";
 import { buildRuleBlastRadii } from "./diagnostic-grouping.js";
 import { ACTION_INPUT_ENVIRONMENT_VARIABLES, detectRunnerOs } from "./is-ci-environment.js";
 import { summarizeRuleFirings } from "./record-scan-metrics.js";
@@ -34,6 +39,8 @@ export interface RunEventInput {
   readonly scope: string;
   readonly parallel: boolean;
   readonly workerCount: number | undefined;
+  /** `--max-duration` budget in milliseconds; `null` when no budget was set. */
+  readonly maxDurationMs: number | null;
   readonly lint: boolean;
   readonly deadCode: boolean;
   readonly scoreOnly: boolean;
@@ -55,6 +62,11 @@ export interface RunEventInput {
   // if cost-ordering front-loads the pathological bucket and drops MORE files,
   // this rises on the `cost` cohort vs `arrival`.
   readonly lintDroppedFileCount?: number;
+  // Total files skipped because the `--max-duration` budget ran out — the
+  // "did the budget actually truncate a scan" kill-metric signal for the
+  // flag, distinct from `scan.maxDurationMs` (configured) and
+  // `lintDroppedFileCount` (pathological batches).
+  readonly lintDeadlineSkippedFileCount?: number;
   readonly didDeadCodeFail?: boolean;
   // `true` when the background supply-chain check hit its overlap budget and
   // failed open to no diagnostics. The kill metric for the lint/supply-chain
@@ -65,6 +77,12 @@ export interface RunEventInput {
   // always reports `false`. Omitted only on the failure path (the scan threw
   // before finalizing).
   readonly supplyChainOverlapTimedOut?: boolean;
+  // `true` when the forked security scan failed open to no diagnostics — the
+  // kill metric for that fail-open: a rising rate means fs errors are being
+  // swallowed instead of scanned. Never cached (`shouldStoreScanPayload`), so
+  // a cache hit reports the healthy `false`; omitted (null) on payloads from
+  // before the field and on the failure path.
+  readonly securityScanFailed?: boolean;
   /**
    * Whether the dead-code pass ran concurrently with lint this scan (gate
    * opened / overlap forced). Lets a query compare `runInspect` wall-clock
@@ -75,6 +93,14 @@ export interface RunEventInput {
   // A degraded baseline run (no delta computed) skips the CI gate, so the
   // `wouldBlock` prediction must match — never block on its plain-diff findings.
   readonly gateExempt?: boolean;
+  /**
+   * Per-rule tallies of findings the user explicitly silenced (config off
+   * switch / per-path override / inline disable comment), from the scan
+   * payload — so a cache hit replays them. Rolled up to the `diag.suppressed*`
+   * dims; per-rule identity rides the `rule.suppressed` counter instead
+   * (100+ rules would blow up the attribute set). Omitted on the failure path.
+   */
+  readonly suppressedRuleCounts?: ReadonlyArray<SuppressedRuleCount>;
   /** Present only when the scan threw. */
   readonly error?: unknown;
 }
@@ -195,6 +221,22 @@ const buildOutcomeAttributes = (input: RunEventInput): RunEventAttributes => {
     categoryRollup[`category.${toCategoryKey(category)}`] = count;
   }
 
+  // Findings the user explicitly silenced, by mechanism — the per-scan
+  // complement of the `rule.suppressed` counter (which carries rule identity).
+  // Absent (not zero) when the caller couldn't supply the tallies.
+  const suppressionRollup: RunEventAttributes = {};
+  if (input.suppressedRuleCounts) {
+    const countBySource = { config: 0, override: 0, inline: 0 };
+    for (const suppression of input.suppressedRuleCounts) {
+      countBySource[suppression.source] += suppression.count;
+    }
+    suppressionRollup.suppressed =
+      countBySource.config + countBySource.override + countBySource.inline;
+    suppressionRollup.suppressedConfig = countBySource.config;
+    suppressionRollup.suppressedOverride = countBySource.override;
+    suppressionRollup.suppressedInline = countBySource.inline;
+  }
+
   const attributes: RunEventAttributes = {
     ...withNamespace("outcome", {
       status: outcome,
@@ -216,6 +258,7 @@ const buildOutcomeAttributes = (input: RunEventInput): RunEventAttributes => {
       fixGroups: findingsPerFixGroup.size,
       fixGroupedFindings,
       ...categoryRollup,
+      ...suppressionRollup,
     }),
     ...withNamespace("score", {
       value: result.score ? result.score.score : null,
@@ -227,6 +270,7 @@ const buildOutcomeAttributes = (input: RunEventInput): RunEventAttributes => {
       failureReasonKind: input.lintFailureReasonKind ?? null,
       partialFailureCount: input.lintPartialFailureCount ?? null,
       droppedFileCount: input.lintDroppedFileCount ?? null,
+      deadlineSkippedFileCount: input.lintDeadlineSkippedFileCount ?? null,
       // Per-file lint cache outcome. Numeric so Sentry can `p75(lint.cacheHitRatio)`;
       // all `null` when the cache was off/bypassed so "no cache" reads distinctly
       // from a 0% hit rate (`toSpanAttributes` drops the nulls).
@@ -243,6 +287,9 @@ const buildOutcomeAttributes = (input: RunEventInput): RunEventAttributes => {
     }),
     ...withNamespace("supplyChain", {
       overlapTimedOut: input.supplyChainOverlapTimedOut ?? null,
+    }),
+    ...withNamespace("securityScan", {
+      failed: input.securityScanFailed ?? null,
     }),
     ...withNamespace("timing", {
       elapsedMs: result.elapsedMilliseconds,
@@ -299,6 +346,7 @@ const buildScanAttributes = (input: RunEventInput): RunEventAttributes => {
     scope: input.scope,
     parallel: input.parallel,
     workerCount: input.workerCount ?? null,
+    maxDurationMs: input.maxDurationMs,
     lint: input.lint,
     deadCode: input.deadCode,
     scoreOnly: input.scoreOnly,

@@ -31,6 +31,7 @@ import type { InspectFlags } from "../utils/inspect-flags.js";
 import { filterDiagnosticsByCategories } from "../utils/filter-diagnostics-by-categories.js";
 import { handleError, handleUserError } from "../utils/handle-error.js";
 import { isDebugFlagEnabled } from "../utils/is-debug-flag.js";
+import { isShareOptedOut } from "../utils/is-share-opted-out.js";
 import { isExpectedUserError } from "../utils/is-expected-user-error.js";
 import { handoffToAgent } from "../utils/handoff-to-agent.js";
 import { runProjectMigrations } from "../utils/cli-migrations.js";
@@ -180,6 +181,7 @@ const finalizeScans = (input: FinalizeScansInput): void => {
         scans: jsonCompletedScans,
         totalElapsedMilliseconds: performance.now() - input.startTime,
         baseline,
+        baselineDegraded,
       }),
     );
   }
@@ -224,9 +226,9 @@ const maybeMigrateLegacyConfig = async (
     !isQuiet && !isStaged && process.stdout.isTTY === true && !isCiOrCodingAgentEnvironment();
   if (!isInteractiveHumanRun) return;
 
-  // Runs every pending per-repo migration (currently the config-file rename);
-  // each is tracked so it applies at most once. The migrations themselves print
-  // their own user-facing summary.
+  // Runs every pending per-repo migration (see PROJECT_MIGRATIONS); each is
+  // tracked so it applies at most once. The migrations themselves print their
+  // own user-facing summary.
   await runProjectMigrations(requestedDirectory);
 };
 
@@ -308,6 +310,13 @@ export const inspectAction = async (directory: string, flags: InspectFlags): Pro
     }
 
     const scanOptions: CliInspectOptions = resolveCliInspectOptions(flags, userConfig);
+    // One `--max-duration` budget per invocation, shared by every project of a
+    // workspace scan: fix the absolute deadline once here and hand it to each
+    // project's `inspect()` (rather than restarting the budget per project).
+    // `maxDurationMs` on `scanOptions` stays the configured value so telemetry
+    // reports what the user set, not each project's leftover.
+    const scanDeadlineEpochMs =
+      scanOptions.maxDurationMs !== undefined ? Date.now() + scanOptions.maxDurationMs : undefined;
     const categoryFilters = new Set(scanOptions.categoryFilters ?? []);
     const skipPrompts = shouldSkipPrompts({ yes: flags.yes, json: flags.json });
 
@@ -370,8 +379,14 @@ export const inspectAction = async (directory: string, flags: InspectFlags): Pro
       try {
         const scanResult = await inspect(snapshot.tempDirectory, {
           ...scanOptions,
+          deadlineEpochMs: scanDeadlineEpochMs,
           includePaths: snapshot.stagedFiles,
           configOverride: userConfig,
+          // Resolve `config.plugins` from the real config directory — the
+          // staged temp snapshot has no node_modules or plugin files, so
+          // anchoring resolution there silently drops every custom plugin
+          // from pre-commit scans.
+          configSourceDirectory: scanTarget.configSourceDirectory ?? undefined,
           changedLineRanges: stagedLineRanges ?? undefined,
         });
 
@@ -566,6 +581,7 @@ export const inspectAction = async (directory: string, flags: InspectFlags): Pro
       }
       const scanResult = await inspect(scanDirectory, {
         ...scanOptions,
+        deadlineEpochMs: scanDeadlineEpochMs,
         includePaths,
         configOverride: projectConfig,
         configSourceDirectory: projectConfigSourceDirectory ?? undefined,
@@ -626,7 +642,7 @@ export const inspectAction = async (directory: string, flags: InspectFlags): Pro
 
     if (!isQuiet && isMultiProject && completedScans.length > 0) {
       const shouldShowShareLink =
-        !scanOptions.noScore && (userConfig?.share ?? true) && !scanOptions.isCi;
+        !isShareOptedOut(completedScans, scanOptions.noScore) && !scanOptions.isCi;
       await Effect.runPromise(
         printMultiProjectSummary({
           completedScans,

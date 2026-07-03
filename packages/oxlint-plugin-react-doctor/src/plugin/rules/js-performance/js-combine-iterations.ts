@@ -126,6 +126,42 @@ const isTypePredicateArrow = (filterArgument: EsTreeNode | null | undefined): bo
   return typeof annotationType === "string" && annotationType.includes("TypePredicate");
 };
 
+const isIdentityFilterBody = (
+  body: EsTreeNode | null | undefined,
+  parameterName: string,
+): boolean => {
+  if (!body) return false;
+  if (isNodeOfType(body, "Identifier")) return body.name === parameterName;
+  return (
+    isNodeOfType(body, "UnaryExpression") &&
+    body.operator === "!" &&
+    isNodeOfType(body.argument, "UnaryExpression") &&
+    body.argument.operator === "!" &&
+    isNodeOfType(body.argument.argument, "Identifier") &&
+    body.argument.argument.name === parameterName
+  );
+};
+
+// `.filter(Boolean)` / `.filter(x => x)` / `.filter(x => !!x)` /
+// `.filter(x => { return x; })` — identity narrowing, not a real
+// predicate. Collapsing it into the adjacent step with `.reduce()`
+// loses the readable "drop falsy" intent (and `Boolean`'s type
+// narrowing), so any adjacency involving the filter is exempt.
+const isBooleanOrIdentityFilter = (filterArgument: EsTreeNode | null | undefined): boolean => {
+  if (isNodeOfType(filterArgument, "Identifier") && filterArgument.name === "Boolean") return true;
+  if (!isNodeOfType(filterArgument, "ArrowFunctionExpression")) return false;
+  if (filterArgument.params?.length !== 1) return false;
+  const onlyParameter = filterArgument.params[0];
+  if (!isNodeOfType(onlyParameter, "Identifier")) return false;
+  const body = filterArgument.body as EsTreeNode;
+  if (!isNodeOfType(body, "BlockStatement")) return isIdentityFilterBody(body, onlyParameter.name);
+  const statements = body.body ?? [];
+  if (statements.length !== 1) return false;
+  const onlyStatement = statements[0] as EsTreeNode;
+  if (!isNodeOfType(onlyStatement, "ReturnStatement") || !onlyStatement.argument) return false;
+  return isIdentityFilterBody(onlyStatement.argument as EsTreeNode, onlyParameter.name);
+};
+
 const isNullFilteringPredicate = (filterArgument: EsTreeNode | null | undefined): boolean => {
   if (!filterArgument) return false;
   if (!isNodeOfType(filterArgument, "ArrowFunctionExpression")) return false;
@@ -227,11 +263,19 @@ export const jsCombineIterations = defineRule({
   recommendation:
     "Combine `.map().filter()` style chains into one pass with `.reduce()` or a `for...of` loop, so you only loop over the list once",
   create: (context: RuleContext) => {
-    let generatorNamesInFile: ReadonlySet<string> = new Set();
+    let programNode: EsTreeNode | null = null;
+    let generatorNamesInFile: ReadonlySet<string> | null = null;
+    // Collecting generator names walks the whole program, and the set only
+    // matters once a chained-iteration candidate survives the guards below —
+    // most files never get that far, so the walk is deferred to first use.
+    const getGeneratorNamesInFile = (): ReadonlySet<string> => {
+      generatorNamesInFile ??= programNode ? collectGeneratorNames(programNode) : new Set();
+      return generatorNamesInFile;
+    };
 
     return {
-      Program(programNode: EsTreeNodeOfType<"Program">) {
-        generatorNamesInFile = collectGeneratorNames(programNode);
+      Program(node: EsTreeNodeOfType<"Program">) {
+        programNode = node;
       },
       CallExpression(node: EsTreeNodeOfType<"CallExpression">) {
         if (
@@ -254,16 +298,25 @@ export const jsCombineIterations = defineRule({
         const innerMethod = innerCall.callee.property.name;
         if (!CHAINABLE_ITERATION_METHODS.has(innerMethod)) return;
 
+        if (
+          outerMethod === "filter" &&
+          isBooleanOrIdentityFilter(node.arguments?.[0] as EsTreeNode | null | undefined)
+        ) {
+          return;
+        }
+        if (
+          innerMethod === "filter" &&
+          isBooleanOrIdentityFilter(
+            (innerCall as EsTreeNodeOfType<"CallExpression">).arguments?.[0] as
+              | EsTreeNode
+              | null
+              | undefined,
+          )
+        ) {
+          return;
+        }
         if (innerMethod === "map" && outerMethod === "filter") {
           const filterArgument = node.arguments?.[0];
-          const isBooleanOrIdentityFilter =
-            (isNodeOfType(filterArgument, "Identifier") && filterArgument.name === "Boolean") ||
-            (isNodeOfType(filterArgument, "ArrowFunctionExpression") &&
-              filterArgument.params?.length === 1 &&
-              isNodeOfType(filterArgument.body, "Identifier") &&
-              isNodeOfType(filterArgument.params[0], "Identifier") &&
-              filterArgument.body.name === filterArgument.params[0].name);
-          if (isBooleanOrIdentityFilter) return;
           if (isNullFilteringPredicate(filterArgument as EsTreeNode | null | undefined)) return;
           // `.map(transform).filter((x): x is T => …)` — TS type predicate
           // narrows the result element type; rewriting to `.reduce()`
@@ -277,7 +330,8 @@ export const jsCombineIterations = defineRule({
           if (isTypePredicateArrow(filterArgument as EsTreeNode | null | undefined)) return;
         }
 
-        if (isReceiverChainIteratorRooted(innerCall.callee.object, generatorNamesInFile)) return;
+        if (isReceiverChainIteratorRooted(innerCall.callee.object, getGeneratorNamesInFile()))
+          return;
         if (isSmallLiteralArrayRootedChain(innerCall.callee.object)) return;
         if (isStringSplitRootedChain(innerCall.callee.object)) return;
 

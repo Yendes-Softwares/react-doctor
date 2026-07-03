@@ -133,7 +133,10 @@ jobs:
   react-doctor:
     runs-on: ubuntu-latest
     steps:
+      # fetch-depth: 0 gives React Doctor the full git history it needs to find the merge base with the target branch. Without it a shallow checkout has no merge base, so PR runs can't compare against the base and fall back to reporting every issue in the changed files (pre-existing ones included) instead of only the ones the PR introduced.
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - uses: millionco/react-doctor@${actionRef}
 ${WITH_INDENT}with:
@@ -208,12 +211,12 @@ const parseGate = (content: string): CiGate => {
 // version) are preserved by the YAML AST. An empty `with:` is removed entirely.
 // Returns null when the file doesn't parse or has no React Doctor step.
 const surgicalApplyGate = (content: string, gate: CiGate): CiEditResult | null => {
-  let doc: YAML.Document.Parsed;
-  try {
-    doc = YAML.parseDocument(content);
-  } catch {
-    return null;
-  }
+  // `parseDocument` never throws on a string — it records problems on
+  // `doc.errors` and still returns a partial AST. But `doc.toString()` below
+  // DOES throw for a document with errors, so bail here and let the caller
+  // print the apply-by-hand snippet instead of crashing with an internal error.
+  const doc = YAML.parseDocument(content);
+  if (doc.errors.length > 0) return null;
   const located = findReactDoctorStep(doc);
   if (located === null) return null;
 

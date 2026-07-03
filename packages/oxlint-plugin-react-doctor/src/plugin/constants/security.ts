@@ -188,6 +188,16 @@ export const SECRET_VALUE_PATTERNS = [
   /\b(?:postgres|mysql|mongodb(?:\+srv)?|redis):\/\/[^:\s/@]+:(?!(?:pass(?:word)?|my[a-z]*pass(?:word)?|mysecretpassword|myusername|postgres|mysql|redis|root|admin|minioadmin|secret|example|changeme|change_me|test|guest|placeholder|default|user(?:name)?|x{3,}|\*{2,}|\$\{[^}]*\}|\$[A-Z_]+|<[^>]*>|%[\w.]+%|\{\{[^}]*\}\})@)[^@\s/]+@(?!(?:localhost|127\.0\.0\.1|0\.0\.0\.0|host\.docker\.internal)(?:[:/\s]|$))[^\s:/@]*\./i,
 ];
 
+// A JWT literal: header AND payload segments are base64url-encoded JSON
+// objects, so both start with `eyJ` ("{"...), which excludes random
+// dot-joined tokens. NOT part of SECRET_VALUE_PATTERNS: Supabase anon
+// (public, client-safe) and service_role JWTs are shape-indistinguishable,
+// so sweeping source/artifact files with this would flag legitimate anon
+// keys. Scope it to surfaces where ANY committed JWT is a leak
+// (package-metadata-secret).
+export const JWT_LITERAL_VALUE_PATTERN =
+  /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{16,}\b/;
+
 export const PUBLIC_ENV_SECRET_NAME_PATTERN =
   /\b(?:NEXT_PUBLIC|VITE|REACT_APP|EXPO_PUBLIC)_[A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PRIVATE|DATABASE_URL|SERVICE_ROLE|AWS_ACCESS_KEY|AWS_SECRET)[A-Z0-9_]*\b/i;
 
@@ -236,7 +246,13 @@ export const SECRET_CONTEXTUAL_PLACEHOLDER_VALUE_PATTERNS = [
 export const SECRET_PLACEHOLDER_CONTEXT_PATTERN =
   /(?:placeholder|example|sample|dummy|masked|redacted|mask)/i;
 
-export const SECRET_VARIABLE_PATTERN = /(?:api_?key|secret|token|password|credential|auth)/i;
+// `auth(?!or(?!i[sz]))` keeps `auth` / `oauth` / `authorization` /
+// `authorised` matching while exempting `author` / `authors` /
+// `authority` — the person-who-writes words are the single biggest
+// source of name-heuristic false positives (e.g.
+// `TOP_PR_AUTHORS_COMPONENT_IDENTIFIER`).
+export const SECRET_VARIABLE_PATTERN =
+  /(?:api_?key|secret|token|password|credential|auth(?!or(?!i[sz])))/i;
 
 export const SECRET_TOOLING_FILE_PATTERN = /(?:^|\/)[^/]+\.config\.[cm]?[jt]s$/;
 

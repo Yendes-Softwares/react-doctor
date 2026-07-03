@@ -177,6 +177,95 @@ describe("inspect", () => {
     }
   });
 
+  // Regression: `resolveCliInspectOptions` leaves `noScore` undefined unless a
+  // flag opted out, so a `doctor.config` opt-out must be honored by inspect()'s
+  // merge layer (`inputOptions.noScore ?? userConfig?.noScore`). Reverting that
+  // merge to ignore config would silently re-enable scoring for opted-out users.
+  it("honors config-file noScore (score skipped) when no flag is passed", async () => {
+    clearConfigCache();
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const tempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "react-doctor-noscore-config-"));
+    try {
+      const projectDirectory = setupReactProject(tempDirectory, "app");
+      const scanOptions = { lint: false, deadCode: false, silent: true } as const;
+
+      // Control: no config → scoring on (the merge layer's `?? false` default).
+      const withScore = await inspect(projectDirectory, scanOptions);
+      expect(withScore.score).not.toBeNull();
+
+      // Config opt-out with NO flag → inherited by the merge layer → score skipped.
+      clearConfigCache();
+      writeJson(path.join(projectDirectory, "doctor.config.json"), { noScore: true });
+      const withoutScore = await inspect(projectDirectory, scanOptions);
+      expect(withoutScore.score).toBeNull();
+    } finally {
+      consoleSpy.mockRestore();
+      fs.rmSync(tempDirectory, { recursive: true, force: true });
+    }
+  });
+
+  // Regression: the baseline base scan materializes only the changed source +
+  // config into a temp tree (no node_modules / plugin files), so it MUST resolve
+  // a relative `config.plugins` entry from the REAL config dir. When that
+  // threading was hardcoded to null, the base side dropped the plugin, its
+  // finding vanished from `baseTotalCount`, and head's finding was mislabeled as
+  // newly introduced (gating CI on a pre-existing issue).
+  it("resolves config.plugins from the real config dir for the baseline base scan", async () => {
+    clearConfigCache();
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const projectRoot = fs.mkdtempSync(path.join(os.tmpdir(), "react-doctor-baseline-plugin-"));
+    const forbiddenWordPlugin = `
+module.exports = {
+  meta: { name: "team-conventions" },
+  rules: {
+    "no-forbidden-word": {
+      create: (context) => ({
+        JSXText(node) {
+          if (typeof node.value === "string" && node.value.includes("FORBIDDEN")) {
+            context.report({ node, message: "'FORBIDDEN' is not allowed" });
+          }
+        },
+      }),
+    },
+  },
+};
+`;
+    try {
+      const projectDir = setupReactProject(projectRoot, "app", {
+        files: {
+          "src/App.tsx": "export const App = () => <div>FORBIDDEN base</div>;\n",
+          "lint/team-conventions.cjs": forbiddenWordPlugin,
+        },
+      });
+      writeJson(path.join(projectDir, "doctor.config.json"), {
+        plugins: ["./lint/team-conventions.cjs"],
+        rules: { "team-conventions/no-forbidden-word": "error" },
+      });
+      initGitRepo(projectDir);
+      const baseRef = commitAll(projectDir, "base carries the plugin finding");
+      // Head keeps the finding but edits the file so it's in the scanned diff.
+      writeFile(
+        path.join(projectDir, "src/App.tsx"),
+        "export const App = () => <div>FORBIDDEN head</div>;\n",
+      );
+
+      const result = await inspect(projectDir, {
+        lint: true,
+        deadCode: false,
+        silent: true,
+        includePaths: ["src/App.tsx"],
+        baseline: { ref: baseRef },
+      });
+
+      // baseTotalCount > 0 proves the base scan loaded the relative plugin from
+      // the real config dir; the pre-fix null would leave it at 0.
+      expect(result.baselineDelta?.baseTotalCount).toBeGreaterThan(0);
+    } finally {
+      consoleSpy.mockRestore();
+      fs.rmSync(projectRoot, { recursive: true, force: true });
+    }
+  });
+
   it("reuses head project metadata for baseline scans of leaf-only pnpm catalog monorepos", async () => {
     clearConfigCache();
     const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
@@ -221,6 +310,53 @@ describe("inspect", () => {
     } finally {
       consoleSpy.mockRestore();
       fs.rmSync(monorepoDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it("degrades baseline to a plain diff when the head lint only partially ran", async () => {
+    clearConfigCache();
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const projectDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "react-doctor-partial-"));
+    try {
+      writeJson(path.join(projectDirectory, "package.json"), {
+        name: "partial-head",
+        dependencies: { react: "^19.0.0", "react-dom": "^19.0.0" },
+      });
+      writeFile(
+        path.join(projectDirectory, "src", "App.tsx"),
+        "export const App = () => <main>Base</main>;\n",
+      );
+      initGitRepo(projectDirectory);
+      const baseRef = commitAll(projectDirectory, "initial");
+
+      writeFile(
+        path.join(projectDirectory, "src", "App.tsx"),
+        "export const App = () => <main>Head</main>;\n",
+      );
+
+      // A 1ms budget is spent before any lint batch spawns, so every file is
+      // deadline-skipped: the head lint is incomplete but `didLintFail` stays
+      // false. Baseline must not diff an incomplete head against a full base —
+      // it degrades to a plain diff (no delta) instead.
+      const result = await inspect(projectDirectory, {
+        lint: true,
+        deadCode: false,
+        noScore: true,
+        silent: true,
+        includePaths: ["src/App.tsx"],
+        baseline: { ref: baseRef },
+        maxDurationMs: 1,
+      });
+
+      // A "lint:partial" reason (not a "lint" skip) proves the head lint ran
+      // but was truncated, and the baseline degraded to a plain diff rather
+      // than diffing an incomplete head against a full base.
+      expect(result.skippedCheckReasons?.["lint:partial"]).toContain("max scan duration reached");
+      expect(result.skippedChecks).not.toContain("lint");
+      expect(result.baselineDelta).toBeUndefined();
+    } finally {
+      consoleSpy.mockRestore();
+      fs.rmSync(projectDirectory, { recursive: true, force: true });
     }
   });
 });

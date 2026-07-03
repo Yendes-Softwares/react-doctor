@@ -13,7 +13,15 @@ import { isNodeOfType } from "../../utils/is-node-of-type.js";
 import { isTestlikeFilename } from "../../utils/is-testlike-filename.js";
 import { stripParenExpression } from "../../utils/strip-paren-expression.js";
 
-const MESSAGE = "This child redraws every render because the prop gets brand new JSX each time.";
+// Two message strengths: the harm — a defeated `React.memo` bailout —
+// is only PROVEN when the receiving component is visibly memoised in
+// this file. For imported components (unresolvable in oxlint's
+// single-file model) the claim must stay conditional; a plain function
+// child redraws with its parent no matter what the prop holds.
+const MESSAGE_MEMOISED =
+  "This child redraws every render because the prop gets brand new JSX each time.";
+const MESSAGE_UNKNOWN =
+  "If this child is memoized, it still redraws every render because the prop gets brand new JSX each time.";
 
 // Prop names that conventionally receive single JSX elements (icons,
 // slot content, fallbacks, render props). For these the inline JSX
@@ -38,6 +46,10 @@ const KNOWN_SLOT_PROP_NAMES: ReadonlySet<string> = new Set([
   // Generic content slots
   "prefix",
   "suffix",
+  "separator",
+  "divider",
+  "indicator",
+  "decoration",
   "before",
   "after",
   "header",
@@ -84,6 +96,7 @@ const KNOWN_SLOT_PROP_NAMES: ReadonlySet<string> = new Set([
   "leftContent",
   "rightContent",
   // Generic JSX-receiving slots (corpus-derived)
+  "config",
   "value",
   "currentValue",
   "form",
@@ -243,6 +256,13 @@ const SLOT_PROP_SUFFIXES: ReadonlyArray<string> = [
   "Panel",
   "Overlay",
   "Shape",
+  // material-ui `ListItem leftAvatar/rightAvatar` + `primaryText/
+  // secondaryText`, supabase `loadingState/disabledState/emptyState`,
+  // leemons `leftZone/rightZone` — corpus-derived slot conventions.
+  "Avatar",
+  "Text",
+  "State",
+  "Zone",
   // Slot-replacement / customization suffixes
   "Override",
   "Overrides",
@@ -256,10 +276,18 @@ const SLOT_PROP_SUFFIXES: ReadonlyArray<string> = [
   "Details",
   "Preview",
   "Info",
+  // `checkedChildren` / `unCheckedChildren` (antd Switch) and friends —
+  // any `*Children` prop is a slot by convention.
+  "Children",
 ];
 
 const isSlotPropName = (propName: string): boolean => {
   if (KNOWN_SLOT_PROP_NAMES.has(propName)) return true;
+  // Capitalised exact form of a known slot (`Footer={<PageFooter />}`,
+  // `Header={...}`) — design systems that treat the slot as a
+  // component-shaped prop capitalise the same conventional names.
+  const decapitalized = propName.charAt(0).toLowerCase() + propName.slice(1);
+  if (decapitalized !== propName && KNOWN_SLOT_PROP_NAMES.has(decapitalized)) return true;
   for (const suffix of SLOT_PROP_SUFFIXES) {
     if (propName.length > suffix.length && propName.endsWith(suffix)) return true;
   }
@@ -336,7 +364,8 @@ export const jsxNoJsxAsProp = defineRule({
           parentJsxOpening && isNodeOfType(parentJsxOpening, "JSXOpeningElement")
             ? (parentJsxOpening.name as EsTreeNode)
             : null;
-        if (memoStatusForJsxOpeningName(memoRegistry, openingName) === "not-memoised") return;
+        const memoStatus = memoStatusForJsxOpeningName(memoRegistry, openingName);
+        if (memoStatus === "not-memoised") return;
         // Known slot prop names (icon, tooltip, fallback, header, etc.)
         // and slot suffixes (*Button, *Icon, *Component, *Element, ...)
         // are designed to receive JSX. Flagging them is unactionable.
@@ -355,7 +384,10 @@ export const jsxNoJsxAsProp = defineRule({
         ) {
           return;
         }
-        context.report({ node, message: MESSAGE });
+        context.report({
+          node,
+          message: memoStatus === "memoised" ? MESSAGE_MEMOISED : MESSAGE_UNKNOWN,
+        });
       },
     };
   },
