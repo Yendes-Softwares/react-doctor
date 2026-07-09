@@ -1,14 +1,8 @@
-export type Framework =
-  | "nextjs"
-  | "vite"
-  | "cra"
-  | "remix"
-  | "gatsby"
-  | "expo"
-  | "react-native"
-  | "tanstack-start"
-  | "preact"
-  | "unknown";
+import type { FrameworkToken } from "oxlint-plugin-react-doctor";
+
+// Aliased to the plugin's capability vocabulary: `buildCapabilities` emits
+// `project.framework` as a capability token, so the two unions must be one.
+export type Framework = FrameworkToken;
 
 export interface ProjectInfo {
   rootDirectory: string;
@@ -84,6 +78,13 @@ export interface ProjectInfo {
    */
   hasReanimated: boolean;
   /**
+   * The declared `react-native-reanimated` version spec, or `null` when
+   * absent. The Compiler-compatible `.get()` / `.set()` accessors only
+   * exist from reanimated 3.15.0, so the shared-value hint must not
+   * recommend them to projects pinned below that.
+   */
+  reanimatedVersion: string | null;
+  /**
    * `true` when the project's `tsconfig.json` `compilerOptions.target` or
    * `compilerOptions.lib` indicates the output environment predates ES2023
    * (e.g. `target: "es2022"` or `lib: ["es2022"]`). Drives the `pre-es2023`
@@ -94,6 +95,16 @@ export interface ProjectInfo {
    * the config is unparseable — the safe default is to keep the rule active.
    */
   isPreES2023Target: boolean;
+  /**
+   * `true` when a Next.js project sets `output: "export"` in `next.config.*`
+   * (static HTML export — no request-time server). Drives the
+   * `nextjs:static-export` capability and excludes the project from
+   * `server-actions`, so rules stop recommending server-only fixes (server
+   * `redirect()`, middleware, Server Actions) that don't exist under a static
+   * export. `false` for non-Next projects, when no config sets it, or when the
+   * config is unparseable — the safe default keeps server-aware advice active.
+   */
+  isStaticExport: boolean;
   sourceFileCount: number;
 }
 

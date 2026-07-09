@@ -11,10 +11,12 @@ import { ERROR_PREVIEW_LENGTH_CHARS, OCCURRENCE_MATCHED_CATEGORIES } from "../..
 import { isLintableSourceFile } from "../../utils/is-lintable-source-file.js";
 import { isMinifiedSource } from "../../utils/is-minified-source.js";
 import { OxlintOutputUnparseable, ReactDoctorError } from "../../errors.js";
-import { buildNoSecretsRecommendation } from "../../utils/build-no-secrets-recommendation.js";
+import { getCapabilities } from "../../project-info/capabilities.js";
 import { appendReanimatedSharedValueHint } from "../../utils/append-reanimated-shared-value-hint.js";
 import { redactSensitiveText } from "../../utils/redact-sensitive-text.js";
 import { shouldSuppressLocalUseHookDiagnostic } from "./should-suppress-local-use-hook-diagnostic.js";
+import { shouldSuppressCompilerFindingInWorklet } from "./should-suppress-compiler-finding-in-worklet.js";
+import { suppressMemoizationInBailedOutFunctions } from "./suppress-memoization-in-bailed-out-functions.js";
 
 const FILEPATH_WITH_LOCATION_PATTERN = /\S+\.\w+:\d+:\d+[\s\S]*$/;
 const LEADING_SEVERITY_LABEL_PATTERN = /^(?:Error|Warning):\s*/;
@@ -87,15 +89,21 @@ const PLUGIN_CATEGORY_MAP: Record<string, string> = {
 const lookupOwnString = (record: Record<string, string>, key: string): string | undefined =>
   Object.hasOwn(record, key) ? record[key] : undefined;
 
+// A rule with a `recommendationFor` picks its own prose from the project's
+// capability set (e.g. the static-export redirect advice, the per-framework
+// public-env prefix); everything else renders the static `recommendation`.
+// Core carries no rule-specific prose or rule-name matches here.
 const getRuleRecommendation = (ruleName: string, project: ProjectInfo): string | undefined => {
-  if (ruleName === "no-secrets-in-client-code") {
-    return buildNoSecretsRecommendation(
-      project,
-      reactDoctorPlugin.rules["no-secrets-in-client-code"]?.recommendation ??
-        "Move secrets to server-only code",
+  const rule = reactDoctorPlugin.rules[ruleName];
+  if (!rule) return undefined;
+  if (rule.recommendationFor) {
+    const capabilities = getCapabilities(project);
+    const conditionalRecommendation = rule.recommendationFor((capability) =>
+      capabilities.has(capability),
     );
+    if (conditionalRecommendation !== undefined) return conditionalRecommendation;
   }
-  return reactDoctorPlugin.rules[ruleName]?.recommendation;
+  return rule.recommendation;
 };
 
 // Same shape as `getRuleRecommendation`, but for the diagnostic category
@@ -314,13 +322,14 @@ export const parseOxlintOutput = (
     return minified;
   };
 
-  return parsed.diagnostics
+  const mappedDiagnostics = parsed.diagnostics
     .filter(
       (diagnostic) =>
         diagnostic.code &&
         isLintableSourceFile(diagnostic.filename) &&
         !isMinifiedDiagnosticFile(diagnostic.filename) &&
-        !shouldSuppressLocalUseHookDiagnostic(diagnostic, rootDirectory),
+        !shouldSuppressLocalUseHookDiagnostic(diagnostic, rootDirectory) &&
+        !shouldSuppressCompilerFindingInWorklet(diagnostic, project, rootDirectory),
     )
     .map((diagnostic) => {
       const { plugin, rule } = parseRuleCode(diagnostic.code);
@@ -357,4 +366,14 @@ export const parseOxlintOutput = (
         ...(relatedLocations.length > 0 ? { relatedLocations } : {}),
       };
     });
+  // This suppression is only sound under two invariants:
+  //   1. The `react-hooks-js` bail-out diagnostics and the
+  //      `react-compiler-no-manual-memoization` diagnostics for a file
+  //      always arrive in the SAME parseOxlintOutput batch — the
+  //      suppression can't see a bail-out reported in another batch.
+  //   2. `run-oxlint.ts` disables the per-file lint cache when
+  //      `project.hasReactCompiler` is true (see `useFileLintCache`), so
+  //      cached, unsuppressed memoization diagnostics can never replay
+  //      around this call.
+  return suppressMemoizationInBailedOutFunctions(mappedDiagnostics, rootDirectory);
 };
