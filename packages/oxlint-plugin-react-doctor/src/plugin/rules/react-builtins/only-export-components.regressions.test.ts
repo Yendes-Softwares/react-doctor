@@ -252,14 +252,212 @@ describe("react-builtins/only-export-components — regressions", () => {
     }
   });
 
-  it("still flags module-scope local components", () => {
+  // Exports-only Fast-Refresh model: react-refresh's boundary check only
+  // looks at what a module EXPORTS. Non-exported internal components are
+  // fine; the real breaker is an export whose value is an object that
+  // bundles components with (or without) other values.
+  it("does not flag non-exported module-scope components", () => {
     const moduleScopeFile = `
       const Widget = () => <div />;
     `;
     const result = runRule(onlyExportComponents, moduleScopeFile, {
       filename: "src/widget.tsx",
     });
+    expect(result.diagnostics).toHaveLength(0);
+  });
+
+  it("does not flag a config file that merely uses a local component in an exported value", () => {
+    const configFile = `
+      const Tab = () => <div />;
+      export const tabs = [<Tab />, <Tab />];
+    `;
+    const result = runRule(onlyExportComponents, configFile, {
+      filename: "src/tabs-config.tsx",
+    });
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toHaveLength(0);
+  });
+
+  it("flags a named namespace-object export that bundles components with non-components", () => {
+    const namespaceFile = `
+      const Home = () => <div>Home</div>;
+      const About = () => <div>About</div>;
+      export const Pages = { Home, About, sidebarWidth: 240 };
+    `;
+    const result = runRule(onlyExportComponents, namespaceFile, {
+      filename: "src/pages-namespace.tsx",
+    });
+    expect(result.parseErrors).toEqual([]);
     expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0].message).toContain("bundles components inside an object");
+  });
+
+  it("flags a default namespace-object export carrying components", () => {
+    const namespaceDefaultFile = `
+      const Home = () => <div>Home</div>;
+      const formatTitle = (title) => title.trim();
+      export default { Home, formatTitle };
+    `;
+    const result = runRule(onlyExportComponents, namespaceDefaultFile, {
+      filename: "src/pages-default.tsx",
+    });
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0].message).toContain("bundles components inside an object");
+  });
+
+  it("flags a namespace-object export with an inline PascalCase component property", () => {
+    const inlineNamespaceFile = `
+      export const Widgets = { Header: () => <header />, footerHeight: 64 };
+    `;
+    const result = runRule(onlyExportComponents, inlineNamespaceFile, {
+      filename: "src/widgets.tsx",
+    });
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0].message).toContain("bundles components inside an object");
+  });
+
+  // PR #1093 review: HoC results stored as object properties are
+  // components too — `{ Header: memo(() => …) }` bundles a component
+  // exactly like `{ Header: () => … }` does.
+  it("flags a namespace-object export whose component properties are HoC-wrapped", () => {
+    const hocNamespaceFile = `
+      import { memo } from "react";
+      export const Layout = { Header: memo(() => <header />), gutter: 12 };
+    `;
+    const result = runRule(onlyExportComponents, hocNamespaceFile, {
+      filename: "src/layout-parts.tsx",
+    });
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0].message).toContain("bundles components inside an object");
+  });
+
+  it("flags a default namespace-object export whose only component is HoC-wrapped", () => {
+    const hocDefaultFile = `
+      import { forwardRef } from "react";
+      export default { Body: forwardRef((props, ref) => <div ref={ref} />) };
+    `;
+    const result = runRule(onlyExportComponents, hocDefaultFile, {
+      filename: "src/body-parts.tsx",
+    });
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0].message).toContain("bundles components inside an object");
+  });
+
+  it("does not flag object properties whose calls are not HoCs", () => {
+    const factoryObjectFile = `
+      const createHeader = () => ({ height: 48 });
+      export const layout = { Header: createHeader(), gutter: 12 };
+    `;
+    const result = runRule(onlyExportComponents, factoryObjectFile, {
+      filename: "src/layout-config.tsx",
+    });
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toHaveLength(0);
+  });
+
+  it("does not flag an HoC-valued property under a non-component key", () => {
+    const camelCaseKeyFile = `
+      import { memo } from "react";
+      export const registry = { headerRenderer: memo(() => <header />) };
+    `;
+    const result = runRule(onlyExportComponents, camelCaseKeyFile, {
+      filename: "src/header-registry.tsx",
+    });
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toHaveLength(0);
+  });
+
+  // PR #1093 review: module-scope class components must join the locals
+  // set so `export const Pages = { Home }` after `class Home extends
+  // Component` is recognized as a namespace-object bundling a component.
+  it("flags a namespace-object export referencing a local class component", () => {
+    const classNamespaceFile = `
+      import React from "react";
+      class Home extends React.Component {
+        render() {
+          return <div>Home</div>;
+        }
+      }
+      export const Pages = { Home, sidebarWidth: 240 };
+    `;
+    const result = runRule(onlyExportComponents, classNamespaceFile, {
+      filename: "src/pages-class.tsx",
+    });
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0].message).toContain("bundles components inside an object");
+  });
+
+  it("flags a default namespace-object export referencing a local class component", () => {
+    const classDefaultFile = `
+      import { Component } from "react";
+      class Home extends Component {
+        render() {
+          return <div>Home</div>;
+        }
+      }
+      export default { Home };
+    `;
+    const result = runRule(onlyExportComponents, classDefaultFile, {
+      filename: "src/pages-class-default.tsx",
+    });
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0].message).toContain("bundles components inside an object");
+  });
+
+  it("flags a namespace-object export referencing a class-expression component", () => {
+    const classExpressionFile = `
+      import React from "react";
+      const Home = class extends React.PureComponent {
+        render() {
+          return <div>Home</div>;
+        }
+      };
+      export const Pages = { Home };
+    `;
+    const result = runRule(onlyExportComponents, classExpressionFile, {
+      filename: "src/pages-class-expression.tsx",
+    });
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0].message).toContain("bundles components inside an object");
+  });
+
+  it("does not treat non-React classes as bundled components", () => {
+    const plainClassFile = `
+      class HomeStore {
+        state = {};
+      }
+      export const stores = { HomeStore };
+    `;
+    const result = runRule(onlyExportComponents, plainClassFile, {
+      filename: "src/home-stores.tsx",
+    });
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toHaveLength(0);
+  });
+
+  it("does not flag a plain config-object export without components", () => {
+    const plainObjectFile = `
+      export const ProfileCard = () => <div>Profile</div>;
+      export const Home = () => <div>Home</div>;
+    `;
+    const configOnlyFile = `
+      export const theme = { primary: "#333", spacing: 8 };
+    `;
+    for (const [code, filename] of [
+      [plainObjectFile, "src/profile.tsx"],
+      [configOnlyFile, "src/theme-config.tsx"],
+    ]) {
+      const result = runRule(onlyExportComponents, code, { filename });
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toHaveLength(0);
+    }
   });
 
   it("still flags non-component exports in ordinary component files", () => {
@@ -325,5 +523,145 @@ describe("react-builtins/only-export-components — regressions", () => {
     });
     expect(result.parseErrors).toEqual([]);
     expect(result.diagnostics).toHaveLength(1);
+  });
+
+  // Fuzz edge-case audit 2026-07: a PascalCase name alone is a heuristic.
+  // Namespace-object detection requires render-output evidence from a
+  // directly-inspectable function body, so a formatter map whose helpers
+  // happen to be PascalCase-named is not a component bundle.
+  it("does not flag an exported object of PascalCase formatter functions (no render output)", () => {
+    const formatterMapFile = `
+      const FormatDate = (date) => date.toISOString();
+      export const formatters = {
+        FormatDate,
+        ShortTime: (date) => date.toLocaleTimeString(),
+        locale: "en-US",
+      };
+    `;
+    const result = runRule(onlyExportComponents, formatterMapFile, {
+      filename: "src/format-map.tsx",
+    });
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toHaveLength(0);
+  });
+
+  it("flags a namespace-object export bundling only components (no other members needed)", () => {
+    const componentsOnlyNamespaceFile = `
+      const Home = () => <div>Home</div>;
+      const About = () => <div>About</div>;
+      export const Pages = { Home, About };
+    `;
+    const result = runRule(onlyExportComponents, componentsOnlyNamespaceFile, {
+      filename: "src/pages.tsx",
+    });
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0].message).toContain("bundles components inside an object");
+  });
+
+  it("flags a namespace-object export reaching a component through a spread sibling", () => {
+    const spreadNamespaceFile = `
+      const Home = () => <div>Home</div>;
+      export const Pages = { ...basePages, Home };
+    `;
+    const result = runRule(onlyExportComponents, spreadNamespaceFile, {
+      filename: "src/pages-spread.tsx",
+    });
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toHaveLength(1);
+  });
+
+  it("still detects HOC-wrapped local components inside a namespace-object export", () => {
+    const memoNamespaceFile = `
+      const Home = memo(() => <div>Home</div>);
+      export const Pages = { Home, sidebarWidth: 240 };
+    `;
+    const result = runRule(onlyExportComponents, memoNamespaceFile, {
+      filename: "src/pages-memo.tsx",
+    });
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toHaveLength(1);
+  });
+
+  // `export default factory({ … })` — an unknown factory fed only config
+  // objects is a library definition (SDK registrations, route manifests),
+  // not an unnamed component (fuzz FP hunt: twenty front-components).
+  describe("config-object factory default exports", () => {
+    it("does not flag a default-exported config factory call", () => {
+      const configFactoryFile = `
+        import { defineFrontComponent } from "twenty-sdk/define";
+        const ContributorStats = () => <div />;
+        export default defineFrontComponent({
+          name: "Contributor Stats",
+          component: ContributorStats,
+        });
+      `;
+      const result = runRule(onlyExportComponents, configFactoryFile, {
+        filename: "src/contributor-stats.front-component.tsx",
+      });
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toEqual([]);
+    });
+
+    it("reports the mixed boundary when a component export sits beside the factory", () => {
+      const mixedFile = `
+        import { defineFrontComponent } from "twenty-sdk/define";
+        export const Stats = () => <div />;
+        export default defineFrontComponent({ name: "Stats" });
+      `;
+      const result = runRule(onlyExportComponents, mixedFile, {
+        filename: "src/stats.tsx",
+      });
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toHaveLength(1);
+      expect(result.diagnostics[0]?.message).toContain("exports non-components");
+    });
+
+    it("still flags a zero-argument default-exported factory call", () => {
+      const zeroArgFactoryFile = `export default makeHomePage();`;
+      const result = runRule(onlyExportComponents, zeroArgFactoryFile, {
+        filename: "src/home-page.tsx",
+      });
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toHaveLength(1);
+      expect(result.diagnostics[0]?.message).toContain("unnamed");
+    });
+
+    it("still flags an anonymous component wrapped in a known HOC", () => {
+      const anonymousMemoFile = `export default memo(() => <div />);`;
+      const result = runRule(onlyExportComponents, anonymousMemoFile, {
+        filename: "src/anonymous.tsx",
+      });
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toHaveLength(1);
+      expect(result.diagnostics[0]?.message).toContain("unnamed");
+    });
+
+    it("still flags an unknown curried HOC wrapping a component identifier", () => {
+      const curriedFile = `
+        const MainView = () => <div />;
+        export default compose()(MainView);
+      `;
+      const result = runRule(onlyExportComponents, curriedFile, {
+        filename: "src/main-view.tsx",
+      });
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toHaveLength(1);
+    });
+  });
+
+  // Modern Vite Fast Refresh treats `use[A-Z]*` exports as refresh
+  // boundaries alongside components, so a hook export next to the
+  // component is not a hazard.
+  it("does not flag a custom-hook export alongside a component", () => {
+    const hookAndComponentFile = `
+      export const useToggle = () => useState(false);
+      export const Switch = () => <button />;
+    `;
+    const result = runRule(onlyExportComponents, hookAndComponentFile, {
+      filename: "src/components/switch-control.tsx",
+    });
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toHaveLength(0);
   });
 });

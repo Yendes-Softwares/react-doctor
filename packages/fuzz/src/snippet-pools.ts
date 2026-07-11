@@ -38,6 +38,9 @@ export const EFFECT_SNIPPET_POOL = [
   `useEffect(() => store.subscribe(handle), []);`,
   `useLayoutEffect(() => { const rect = containerRef.current?.getBoundingClientRect(); if (rect) setState(rect.width); }, []);`,
   `useEffect(() => { const objectUrl = URL.createObjectURL(blob); setState(objectUrl); return () => URL.revokeObjectURL(objectUrl); }, [blob]);`,
+  `const onTick = useEffectEvent(() => handle(value)); useEffect(() => { onTick(); }, [onTick]);`,
+  `const [phase, setPhase] = useState(""); const [total, setTotal] = useState(0); const [ready, setReady] = useState(false); useEffect(() => { setPhase("sync"); setTotal(items.length); setReady(true); }, [items]);`,
+  `const [snapshot, setSnapshot] = useState(sharedSnapshot); useEffect(() => subscribeSnapshot(setSnapshot), []);`,
 ] as const;
 
 // State — lazy initializers (incl. SSR-hazardous localStorage/matchMedia),
@@ -61,6 +64,10 @@ export const STATE_SNIPPET_POOL = [
   `const id = useId();`,
   `const deferredValue = useDeferredValue(state);`,
   `const [isPending, startTransition] = useTransition();`,
+  `const [counterState, dispatchCounter] = useReducer((state, action) => { state.count += 1; return state; }, { count: 0 });`,
+  `const [parsedItems, setParsedItems] = useState(parseItems(value));`,
+  `const indexRef = useRef(buildIndex(items));`,
+  `const doubled = useMemo(() => state * 2, [state]);`,
 ] as const;
 
 // Handlers — async submits with loading flags, keyboard commit paths,
@@ -89,11 +96,14 @@ export const HANDLER_SNIPPET_POOL = [
   `const handleReset = () => { const next = { ...values }; next.title = ""; setValues(next); };`,
   `const handleMutate = () => { values.title = "changed"; setValues(values); };`,
   `const handleAsyncToggle = () => { setTimeout(() => setIsOpen(!isOpen), 100); };`,
+  `const timerRef = useRef(null); const handleSchedule = () => { if (timerRef.current) return; timerRef.current = setTimeout(() => { timerRef.current = null; handle(); }, 300); }; const handleCancel = () => { if (timerRef.current) { clearTimeout(timerRef.current); } };`,
+  `const timerRef = useRef(null); const handleQueue = () => { clearTimeout(timerRef.current); timerRef.current = setTimeout(handle, 250); }; const handleFlush = () => { clearTimeout(timerRef.current); timerRef.current = null; handle(); };`,
   `const handleBatch = async () => { for (const item of items) { await api.post(url, item); } };`,
   `const handleBatch = async () => { await Promise.all(items.map((item) => api.post(url, item))); };`,
   `const handleSequence = async () => { const first = await fetch(url); const second = await fetch(url); handle(first, second); };`,
   `const handlePersistToken = () => { localStorage.setItem("auth_token", String(value)); };`,
   `const handleRedirect = () => { window.location.href = String(params.next); };`,
+  `const renderStatus = () => { const [open] = useState(false); return <b>{String(open)}</b>; }; const statusNode = <div>{renderStatus()}</div>;`,
 ] as const;
 
 // Guards / nullability — find/match/get derefs, optional chains, splits,
@@ -163,6 +173,7 @@ export const MODULE_SCOPE_SNIPPET_POOL = [
   `const ARROW_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);`,
   `const defaults = { title: "untitled", pageSize: 20 };`,
   `reaction(() => store.value, (next) => persist(next));`,
+  `let sharedSnapshot = "idle"; const snapshotListeners = new Set(); function subscribeSnapshot(listener) { snapshotListeners.add(listener); return () => snapshotListeners.delete(listener); }`,
 ] as const;
 
 // Attributes that specifically trip a11y validity rules — misspelled aria
@@ -182,6 +193,9 @@ export const A11Y_TRIGGER_ATTRIBUTE_POOL = [
   `onMouseOver={handle}`,
   `onScroll={handle}`,
   `checked={isChecked}`,
+  `role="switch"`,
+  `role="dialog"`,
+  `aria-hidden="true" tabIndex={0}`,
 ] as const;
 
 // JSX attributes — a11y, keys, handlers, security-relevant props.
@@ -244,6 +258,7 @@ export const JSX_LEAF_POOL = [
   `<input value={state} onChange={(event) => setState(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") handle(); }} />`,
   `<input value="frozen" onChange={handleChange} />`,
   `<input type="checkbox" checked={isChecked} onChange={(event) => setState(event.target.checked)} />`,
+  `<input type="checkbox" indeterminate />`,
   `<input type="radio" value="a" checked={state === "a"} onChange={() => setState("a")} />`,
   `<input type="radio" name="group" value="b" defaultChecked />`,
   `<input type="number" min={0} max={100} value={state} onChange={handleAmount} />`,
@@ -269,6 +284,8 @@ export const JSX_LEAF_POOL = [
   `<video autoPlay />`,
   `<marquee>{state}</marquee>`,
   `<iframe src={url} />`,
+  `<time>{new Date(value).toLocaleString()}</time>`,
+  `<span>{new Intl.DateTimeFormat().format(state)}</span>`,
 ] as const;
 
 // Rare-but-parseable weirdness kept from the original generator, plus
@@ -319,6 +336,7 @@ export const IMPORT_LINE_POOL = [
   `import { useForm } from "react-hook-form";`,
   `import debounce from "lodash/debounce";`,
   `import { z } from "zod";`,
+  `import { forwardRef } from "react";`,
 ] as const;
 
 // Filenames rotate per iteration because a large rule population is

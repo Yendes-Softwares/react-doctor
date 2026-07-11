@@ -168,6 +168,9 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     settings: { "react-doctor": { displayName: { ignoreTranspilerName: true } } },
     forceJsx: true,
   },
+  "effect-listener-cleanup-mismatch": {
+    code: 'import { useEffect } from "react";\nexport const Listener = () => {\n  useEffect(() => {\n    window.addEventListener("resize", () => resize());\n    return () => window.removeEventListener("resize", () => resize());\n  }, []);\n  return null;\n};',
+  },
   "effect-needs-cleanup": {
     code: 'import { useEffect } from "react";\nexport const WatchForm = ({ form }) => {\n  useEffect(() => form.watch((value) => {\n    console.log(value);\n  }), [form]);\n  return null;\n};',
   },
@@ -529,7 +532,7 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     code: "\n      const Row = ({ item }) => <li>{item}</li>;\n      const List = ({ items }) => (\n        <ul>{items.map((item) => Row({ item }))}</ul>\n      );\n      ",
   },
   "no-cascading-set-state": {
-    code: '\n      import { useEffect, useState } from "react";\n      interface Team { id: string }\n      interface Snapshot { home_team: Team; away_team: Team }\n      export const MatchSimulation = ({ managerTeamId, matchMode }: { managerTeamId: string | null; matchMode: string }) => {\n        const [snapshot] = useState<Snapshot | null>(null);\n        const [userSide, setUserSide] = useState<"Home" | "Away" | null>(null);\n        const [isSpectator, setIsSpectator] = useState(false);\n        useEffect(() => {\n          if (!snapshot) return;\n          if (!managerTeamId) {\n            setIsSpectator(true);\n            return;\n          }\n          if (snapshot.home_team.id === managerTeamId) setUserSide("Home");\n          else if (snapshot.away_team.id === managerTeamId) setUserSide("Away");\n          else setIsSpectator(true);\n          if (matchMode === "spectator") setIsSpectator(true);\n        }, [snapshot, managerTeamId, matchMode]);\n        return <div>{userSide}{String(isSpectator)}</div>;\n      };\n    ',
+    code: '\n      import { useEffect, useState } from "react";\n      export const Init = ({ id }: { id: string }) => {\n        const [a, setA] = useState(0);\n        const [b, setB] = useState(0);\n        const [c, setC] = useState(0);\n        useEffect(() => {\n          setA(1);\n          setB(2);\n          setC(3);\n        }, [id]);\n        return <div>{a}{b}{c}</div>;\n      };\n    ',
   },
   "no-chain-state-updates": {
     code: 'export const Search = () => {\n        const [query, setQuery] = useState("");\n        const [highlighted, setHighlighted] = useState(-1);\n        const clearLater = () => {\n          setTimeout(() => setQuery(""), 5000);\n        };\n        const onChange = (event) => setQuery(event.target.value);\n        useEffect(() => {\n          setHighlighted(-1);\n        }, [query]);\n        return <input onChange={onChange} onBlur={clearLater} />;\n      };',
@@ -652,6 +655,9 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
   "no-img-lazy-with-high-fetchpriority": {
     code: 'const Hero = () => <img src="/a.png" loading="lazy" fetchPriority="high" />;',
   },
+  "no-indeterminate-attribute": {
+    code: 'const Checkbox = () => <input type="checkbox" indeterminate />;',
+  },
   "no-initialize-state": {
     code: "function C() {\n        const [count, setCount] = useState(null);\n        useEffect(() => {\n          const initial = 42;\n          setCount(initial);\n          return () => console.log(initial);\n        }, []);\n        return null;\n      }",
   },
@@ -696,8 +702,14 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
   "no-legacy-context-api": {
     code: 'class ColorProvider extends React.Component {\n  static childContextTypes = { color: PropTypes.string };\n  getChildContext() {\n    return { color: "red" };\n  }\n  render() {\n    return <div>{this.props.children}</div>;\n  }\n}',
   },
+  "no-locale-format-in-render": {
+    code: '"use client";\nexport const Timestamp = ({ value }) => <time>{new Date(value).toLocaleString()}</time>;',
+  },
   "no-long-transition-duration": {
     code: 'const S = () => <div style={{ transition: "width 2s ease" }} />;',
+  },
+  "no-match-media-in-state-initializer": {
+    code: 'import { useState } from "react";\nuseState(() => window.matchMedia("(prefers-color-scheme: dark)").matches);',
   },
   "no-many-boolean-props": {
     code: "const Toggle = ({ isOpen, isLoading, hasIcon, canEdit }) => <div />;",
@@ -782,7 +794,7 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     forceJsx: true,
   },
   "no-render-in-render": {
-    code: "const Foo = () => <div>{renderRow()}</div>;",
+    code: "const Foo = () => {\n        const renderRow = () => {\n          const [open] = useState(false);\n          return <div>{String(open)}</div>;\n        };\n        return <div>{renderRow()}</div>;\n      };",
   },
   "no-render-prop-children": {
     code: '\n        import { Layout } from "@/components/layout";\n        const Panel = () => (\n          <Layout\n            renderHeader={() => <h1>Title</h1>}\n            renderFooter={() => <footer>Footer</footer>}\n            renderActions={() => <button>Go</button>}\n          />\n        );\n      ',
@@ -815,6 +827,9 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
   },
   "no-side-tab-border": {
     code: 'const C = () => <div className="border-l-4 border-[#ff0000]" />;',
+  },
+  "no-stale-timer-ref": {
+    code: 'import { useRef } from "react";\nexport const useDelayedCallback = (callback) => {\n  const timerRef = useRef(null);\n  const schedule = () => {\n    if (timerRef.current) return;\n    timerRef.current = setTimeout(callback, 100);\n  };\n  const cancel = () => {\n    clearTimeout(timerRef.current);\n  };\n  return { schedule, cancel };\n};',
   },
   "no-static-element-interactions": {
     code: "export const A = ({ onClick }) => <div role={'wat'} onClick={onClick} />;",

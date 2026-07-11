@@ -6,6 +6,7 @@ import { getEffectCallback } from "../../utils/get-effect-callback.js";
 import { getRootIdentifierName } from "../../utils/get-root-identifier-name.js";
 import { isHookCall } from "../../utils/is-hook-call.js";
 import { isInitialOnlyPropName } from "../../utils/is-initial-only-prop-name.js";
+import { isNoOpStatement } from "../../utils/is-no-op-statement.js";
 import { isSetterCall } from "../../utils/is-setter-call.js";
 import { isSetterIdentifier } from "../../utils/is-setter-identifier.js";
 import { isUseStateSetterInScope } from "../../utils/is-use-state-setter-in-scope.js";
@@ -86,6 +87,39 @@ const collectValueIdentifierNames = (
   }
 };
 
+// Wrapping the setter in an `if` guard (`if (a !== b) setX(a)`) is still
+// derived state — recurse into IfStatement branches so the guard doesn't
+// silence the rule. Any branch statement that isn't itself an
+// ExpressionStatement or a nested IfStatement disqualifies the effect
+// (returns null), preserving the strict "contains only setState calls"
+// contract of the flattened list.
+const flattenGuardedStatements = (
+  statements: ReadonlyArray<EsTreeNode>,
+): ReadonlyArray<EsTreeNode> | null => {
+  const flattened: EsTreeNode[] = [];
+  for (const statement of statements) {
+    if (isNoOpStatement(statement)) continue;
+    if (isNodeOfType(statement, "ExpressionStatement")) {
+      flattened.push(statement);
+      continue;
+    }
+    if (isNodeOfType(statement, "IfStatement")) {
+      for (const branch of [statement.consequent, statement.alternate]) {
+        if (!branch) continue;
+        const branchStatements = isNodeOfType(branch, "BlockStatement")
+          ? (branch.body ?? [])
+          : [branch];
+        const flattenedBranch = flattenGuardedStatements(branchStatements);
+        if (flattenedBranch === null) return null;
+        flattened.push(...flattenedBranch);
+      }
+      continue;
+    }
+    return null;
+  }
+  return flattened;
+};
+
 export const noDerivedStateEffect = defineRule({
   id: "no-derived-state-effect",
   title: "Derived state stored in an effect",
@@ -127,8 +161,8 @@ export const noDerivedStateEffect = defineRule({
       }
       if (sawAnyDep && allDepsAreInitialOnly) return;
 
-      const statements = getCallbackStatements(callback);
-      if (statements.length === 0) return;
+      const statements = flattenGuardedStatements(getCallbackStatements(callback));
+      if (statements === null || statements.length === 0) return;
 
       const containsOnlySetStateCalls = statements.every((statement: EsTreeNode) => {
         if (!isNodeOfType(statement, "ExpressionStatement")) return false;

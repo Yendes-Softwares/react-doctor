@@ -111,4 +111,75 @@ describe("a11y/role-supports-aria-props regressions", () => {
     );
     expect(result.diagnostics).toHaveLength(1);
   });
+
+  it("flags a prop unsupported by BOTH branches of a ternary role", () => {
+    const result = runRule(
+      roleSupportsAriaProps,
+      `const F = ({ grouped }) => (
+        <div role={grouped ? "radiogroup" : "toolbar"} aria-multiselectable="true" />
+      );`,
+    );
+    expect(result.diagnostics).toHaveLength(1);
+    expect(result.diagnostics[0].message).toContain("`radiogroup` / `toolbar`");
+  });
+
+  it("flags a prop unsupported by a const-bound role", () => {
+    const result = runRule(
+      roleSupportsAriaProps,
+      `const groupRole = "radiogroup";
+const F = () => <div role={groupRole} aria-multiselectable="true" />;`,
+    );
+    expect(result.diagnostics).toHaveLength(1);
+  });
+
+  it("does not flag when one ternary branch supports the prop", () => {
+    const result = runRule(
+      roleSupportsAriaProps,
+      `const F = ({ isList }) => (
+        <div role={isList ? "listbox" : "radiogroup"} aria-multiselectable="true" />
+      );`,
+    );
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("does not flag a role resolved from a parameter", () => {
+    const result = runRule(
+      roleSupportsAriaProps,
+      `const F = ({ widgetRole }) => <div role={widgetRole} aria-multiselectable="true" />;`,
+    );
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  // `aria-x={undefined}` / `{null}` renders no attribute at all, so the
+  // "role ignores it" claim has nothing to attach to (oxc is_nullish_value
+  // parity — the conditional-clearing pattern is idiomatic React).
+  it("does not flag an aria prop cleared with undefined", () => {
+    const result = runRule(
+      roleSupportsAriaProps,
+      `const F = () => <div role="toolbar" aria-multiselectable={undefined} />;`,
+    );
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("does not flag an aria prop cleared with null on an implicit role", () => {
+    const result = runRule(roleSupportsAriaProps, `const F = () => <li aria-checked={null} />;`);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("does not flag a role bound via a destructuring default (source may override)", () => {
+    const result = runRule(
+      roleSupportsAriaProps,
+      `const { role = "toolbar" } = config;
+const F = () => <div role={role} aria-multiselectable="true" />;`,
+    );
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("does not flag a space-separated fallback role list (conservative bail)", () => {
+    const result = runRule(
+      roleSupportsAriaProps,
+      `const F = () => <div role="button link" aria-checked="true" />;`,
+    );
+    expect(result.diagnostics).toEqual([]);
+  });
 });

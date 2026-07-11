@@ -80,4 +80,88 @@ describe("a11y/anchor-is-valid regressions", () => {
     const result = runRule(anchorIsValid, `const L = () => <a href="javascript:void(0)">x</a>;`);
     expect(result.diagnostics).toHaveLength(1);
   });
+
+  it("flags a ternary href whose branches both go nowhere", () => {
+    const result = runRule(
+      anchorIsValid,
+      `const L = ({ active, act }) => (
+        <a href={active ? "#" : ""} onClick={act}>toggle</a>
+      );`,
+    );
+    expect(result.diagnostics).toHaveLength(1);
+  });
+
+  it("flags a const-bound javascript: href", () => {
+    const result = runRule(
+      anchorIsValid,
+      `const noopHref = "javascript:void(0)";
+const L = () => <a href={noopHref}>x</a>;`,
+    );
+    expect(result.diagnostics).toHaveLength(1);
+  });
+
+  it("does not flag a ternary href with one real destination", () => {
+    const result = runRule(
+      anchorIsValid,
+      `const L = ({ ready, act }) => (
+        <a href={ready ? "/checkout" : "#"} onClick={act}>go</a>
+      );`,
+    );
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("does not flag a const-bound `#` href without onClick (scroll-to-top)", () => {
+    const result = runRule(
+      anchorIsValid,
+      `const topHref = "#";
+const L = () => <a href={topHref}>top</a>;`,
+    );
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("does not flag an href resolved from a parameter", () => {
+    const result = runRule(anchorIsValid, `const L = ({ href }) => <a href={href}>link</a>;`);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  // oxc `is_invalid_href` parity: any `javascript:`-scheme href goes
+  // nowhere, not just the exact `javascript:void(0)` spelling.
+  it('flags `href="javascript:;"` with onClick', () => {
+    const result = runRule(
+      anchorIsValid,
+      `const B = () => <a href="javascript:;" onClick={go}>x</a>;`,
+    );
+    expect(result.diagnostics).toHaveLength(1);
+  });
+
+  it("flags a javascript: href hidden behind leading whitespace", () => {
+    const result = runRule(
+      anchorIsValid,
+      `const B = () => <a href=" javascript:alert('x')">x</a>;`,
+    );
+    expect(result.diagnostics).toHaveLength(1);
+  });
+
+  it("does not flag a template href with an expression (dynamic, assumed valid)", () => {
+    const result = runRule(anchorIsValid, "const L = ({ id }) => <a href={`#${id}`}>x</a>;");
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("does not flag an imported const href (cross-file, stays dynamic)", () => {
+    const result = runRule(
+      anchorIsValid,
+      `import { HREF } from "./links";
+const L = () => <a href={HREF} onClick={go}>x</a>;`,
+    );
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("does not flag an href bound via a destructuring default (source may override)", () => {
+    const result = runRule(
+      anchorIsValid,
+      `const { href = "#" } = config;
+const L = ({ act }) => <a href={href} onClick={act}>x</a>;`,
+    );
+    expect(result.diagnostics).toEqual([]);
+  });
 });
