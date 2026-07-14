@@ -1,6 +1,7 @@
 import {
   filterDiagnosticsForSurface,
   isReactDoctorError,
+  JSX_FILE_PATTERN,
   resolveGithubActionsScoreMetadata,
   summarizeDiagnostics,
 } from "@react-doctor/core";
@@ -11,6 +12,8 @@ import type {
   SuppressedRuleCount,
 } from "@react-doctor/core";
 import { buildRuleBlastRadii } from "./diagnostic-grouping.js";
+import { hasLintHardFailure } from "./has-lint-hard-failure.js";
+import { isInspectResultComplete } from "./is-inspect-result-complete.js";
 import { ACTION_INPUT_ENVIRONMENT_VARIABLES, detectRunnerOs } from "./is-ci-environment.js";
 import { summarizeRuleFirings } from "./record-scan-metrics.js";
 import { isValidBlockingLevel } from "./resolve-blocking-level.js";
@@ -224,6 +227,7 @@ const buildOutcomeAttributes = (input: RunEventInput): RunEventAttributes => {
     return withNamespace("outcome", {
       status: "error",
       exitCode: 1,
+      complete: false,
       knownError: known,
       errorTag: known ? error.reason._tag : error instanceof Error ? error.name : null,
     });
@@ -242,14 +246,19 @@ const buildOutcomeAttributes = (input: RunEventInput): RunEventAttributes => {
     "ciFailure",
     input.userConfig,
   );
-  // `scoreOnly` runs never raise a non-zero exit (finalizeScans guards the gate
-  // on `!isScoreOnly`), and a degraded baseline run (`gateExempt`) skips the
-  // gate too — keep `outcome.wouldBlock`/`outcome.status`/`outcome.exitCode` consistent with the real exit.
+  const complete = isInspectResultComplete(result);
+  // `scoreOnly` runs never raise a non-zero exit for ordinary findings, and a
+  // degraded baseline run (`gateExempt`) skips the finding gate. A hard lint
+  // failure (engine/plugin/binding) destroys the scan's findings, so it exits
+  // one in every mode except the advisory `--blocking none`; fail-open
+  // degradations and deliberate skips stay advisory and surface through
+  // `outcome.complete` instead.
+  const didLintHardFail = hasLintHardFailure(result);
+  const failsOnHardFailure = didLintHardFail && blockingLevel !== "none";
   const wouldBlock =
     !input.scoreOnly && !input.gateExempt && shouldBlockCi(gateDiagnostics, blockingLevel);
-  const hasSkippedChecks = result.skippedChecks.length > 0;
-  const isClean = result.diagnostics.length === 0 && !hasSkippedChecks;
-  const outcome = wouldBlock ? "blocked" : isClean ? "clean" : "ok";
+  const isClean = result.diagnostics.length === 0 && complete;
+  const outcome = didLintHardFail ? "error" : wouldBlock ? "blocked" : isClean ? "clean" : "ok";
 
   const firings = summarizeRuleFirings(result.diagnostics);
   const countByRule = new Map<string, number>();
@@ -278,6 +287,7 @@ const buildOutcomeAttributes = (input: RunEventInput): RunEventAttributes => {
 
   let diagnosticsInTestFiles = 0;
   let diagnosticsInStoryFiles = 0;
+  const diagnosticSiteCounts = new Map<string, number>();
   // Root-cause grouping rollup: how many distinct fix groups, and how many
   // findings they cover. `fixGroupedFindings - fixGroups` is the number of
   // findings that collapse away (one fix, not N tasks) — the signal that says
@@ -286,6 +296,14 @@ const buildOutcomeAttributes = (input: RunEventInput): RunEventAttributes => {
   for (const diagnostic of result.diagnostics) {
     if (diagnostic.fileContext === "test") diagnosticsInTestFiles += 1;
     if (diagnostic.fileContext === "story") diagnosticsInStoryFiles += 1;
+    const diagnosticSite = JSON.stringify([
+      diagnostic.filePath,
+      diagnostic.line,
+      diagnostic.column,
+      diagnostic.plugin,
+      diagnostic.rule,
+    ]);
+    diagnosticSiteCounts.set(diagnosticSite, (diagnosticSiteCounts.get(diagnosticSite) ?? 0) + 1);
     if (diagnostic.fixGroupId) {
       findingsPerFixGroup.set(
         diagnostic.fixGroupId,
@@ -295,6 +313,10 @@ const buildOutcomeAttributes = (input: RunEventInput): RunEventAttributes => {
   }
   let fixGroupedFindings = 0;
   for (const count of findingsPerFixGroup.values()) fixGroupedFindings += count;
+  let sameSiteOccurrences = 0;
+  for (const count of diagnosticSiteCounts.values()) {
+    sameSiteOccurrences += Math.max(0, count - 1);
+  }
 
   // Per-category diagnostic counts, keyed so the `diag` namespace yields
   // `diag.category.<key>` once prefixed.
@@ -326,10 +348,11 @@ const buildOutcomeAttributes = (input: RunEventInput): RunEventAttributes => {
   const attributes: RunEventAttributes = {
     ...withNamespace("outcome", {
       status: outcome,
-      exitCode: wouldBlock ? 1 : 0,
+      exitCode: failsOnHardFailure || wouldBlock ? 1 : 0,
       wouldBlock,
       blocking: blockingLevel,
       clean: isClean,
+      complete,
       skippedChecks: result.skippedChecks.length,
     }),
     ...withNamespace("diag", {
@@ -341,6 +364,7 @@ const buildOutcomeAttributes = (input: RunEventInput): RunEventAttributes => {
       inStoryFiles: diagnosticsInStoryFiles,
       distinctRules: countByRule.size,
       topRule,
+      sameSiteOccurrences,
       fixGroups: findingsPerFixGroup.size,
       fixGroupedFindings,
       ...categoryRollup,
@@ -463,6 +487,13 @@ const buildScanAttributes = (input: RunEventInput): RunEventAttributes => {
     // Scan extent — how many files this run covered (the denominator for
     // `diag.affectedFiles`). Known only on the success path.
     fileCount: input.result?.scannedFileCount ?? null,
+    nonJsxFileCount:
+      input.result?.analyzedFiles?.filter((filePath) => !JSX_FILE_PATTERN.test(filePath)).length ??
+      null,
+    multilineDiagnosticCount:
+      input.result?.diagnostics.filter(
+        (diagnostic) => (diagnostic.endLine ?? diagnostic.line) > diagnostic.line,
+      ).length ?? null,
   });
 };
 

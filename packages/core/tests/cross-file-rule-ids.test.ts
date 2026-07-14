@@ -47,6 +47,7 @@ const CROSS_FILE_PRIMITIVE_FILES = [
   "utils/find-ancestor-metadata-layout.ts",
   "utils/is-barrel-index-module.ts",
   "utils/read-nearest-package-manifest.ts",
+  "utils/get-fast-refresh-file-status.ts",
 ].map((relativePath) => path.resolve(PLUGIN_SOURCE_DIRECTORY, relativePath));
 const primitiveFileSet = new Set(CROSS_FILE_PRIMITIVE_FILES);
 
@@ -133,19 +134,31 @@ describe("CROSS_FILE_RULE_IDS", () => {
     expect(detected).toEqual(declared);
   });
 
-  it("contains the verified fourteen and nothing the analysis can't justify", () => {
+  it("contains the verified set and nothing the analysis can't justify", () => {
     expect([...CROSS_FILE_RULE_IDS].sort()).toEqual([
+      "client-passive-event-listeners",
+      "exhaustive-deps",
       "nextjs-missing-metadata",
       "nextjs-no-use-search-params-without-suspense",
+      "no-adjust-state-on-prop-change",
       "no-barrel-import",
+      "no-derived-state",
+      "no-derived-state-effect",
       "no-dynamic-import-path",
+      "no-effect-with-fresh-deps",
+      "no-event-handler",
       "no-full-lodash-import",
+      "no-hydration-branch-on-browser-global",
       "no-indeterminate-attribute",
+      "no-initialize-state",
       "no-locale-format-in-render",
       "no-match-media-in-state-initializer",
       "no-mutating-reducer-state",
+      "no-unguarded-browser-global-in-render-or-hook-init",
+      "only-export-components",
       "prefer-dynamic-import",
       "rendering-hydration-mismatch-time",
+      "rerender-memo-with-default-value",
       "rn-no-legacy-shadow-styles",
       "rn-no-raw-text",
       "rn-prefer-expo-image",

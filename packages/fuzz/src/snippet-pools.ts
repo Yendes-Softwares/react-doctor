@@ -10,6 +10,8 @@
 // Effects — listener pairs (matched and mismatched), observers, rAF loops,
 // timers, async IIFEs with and without cancellation, body mutations.
 export const EFFECT_SNIPPET_POOL = [
+  `useEffect(() => { const handleWheel = () => handle(); window.addEventListener("wheel", handleWheel); return () => window.removeEventListener("wheel", handleWheel); }, []);`,
+  `useEffect(() => { const handleWheel = (event) => handle(event); window.addEventListener("wheel", handleWheel); return () => window.removeEventListener("wheel", handleWheel); }, []);`,
   `useEffect(() => { window.addEventListener("resize", handle); return () => window.removeEventListener("resize", handle); }, []);`,
   `useEffect(() => { window.addEventListener("scroll", handle, { passive: true, capture: true }); return () => window.removeEventListener("scroll", handle, { capture: true }); }, []);`,
   `useEffect(() => { document.addEventListener("keydown", handle); return () => document.removeEventListener("keydown", handle); }, []);`,
@@ -28,24 +30,59 @@ export const EFFECT_SNIPPET_POOL = [
   `useEffect(() => { const controller = new AbortController(); fetch(url, { signal: controller.signal }).catch(() => {}); return () => controller.abort(); }, [url]);`,
   `useEffect(() => { fetch(url).then((response) => response.json()).then(setState); }, [url]);`,
   `useEffect(() => { fetch(url).then((response) => response.json()).then(setState).catch(handle); }, [url]);`,
+  `useEffect(() => { let isActive = true; let timeoutId; fetch(url).then(() => { if (!isActive) return; timeoutId = setTimeout(handle, 100); }); return () => { isActive = false; clearTimeout(timeoutId); }; }, [url]);`,
+  `useEffect(() => { let isActive = true; let timeoutId; fetch(url).then(() => { if (!isActive) return; timeoutId = setTimeout(firstHandle, 100); timeoutId = setTimeout(secondHandle, 100); }); return () => { isActive = false; clearTimeout(timeoutId); }; }, [url]);`,
+  `useEffect(() => { let isActive = true; let timeoutId; fetch(url).then(() => { prepare(); if (!isActive) return; timeoutId = setTimeout(handle, 100); }); return () => { isActive = false; if (timeoutId) clearTimeout(timeoutId); }; }, [url]);`,
+  `useEffect(() => { let isActive = true; let timeoutId; fetch(url).then(() => { if (!isActive) return; timeoutId = setTimeout(handle, 100); }); return () => { isActive = false; if (shouldRelease) clearTimeout(timeoutId); }; }, [url, shouldRelease]);`,
+  `useEffect(() => { let isActive = true; let timeoutId; fetch(url).then(() => { if (!isActive) return; timeoutId = setTimeout(handle, 100); }); return () => { isActive = false; if (timeoutId != null) clearTimeout(timeoutId); timeoutId = undefined; }; }, [url]);`,
+  `useEffect(() => { let isActive = true; let timeoutId; fetch(url).then(() => { if (!isActive) return; timeoutId = setTimeout(handle, 100); }); return () => { isActive = false; if (timeoutId == null) clearTimeout(timeoutId); }; }, [url]);`,
+  `useEffect(() => { let isActive = true; let timeoutId; fetch(url).then(() => { if (!isActive) return; timeoutId = setTimeout(handle, 100); }); return () => { isActive = false; timeoutId = null; if (timeoutId) clearTimeout(timeoutId); }; }, [url]);`,
+  `useEffect(() => { let isActive = true; let timeoutId; fetch(url).then(() => { if (!isActive) { logInactive(); return; } timeoutId = setTimeout(handle, 100); }); return () => { isActive = false; clearTimeout(timeoutId); }; }, [url]);`,
+  `useEffect(() => { let isActive = true; let timeoutId; fetch(url).then(() => { if (!isActive) return; if (shouldPrepare) prepare(); timeoutId = setTimeout(handle, 100); }); return () => { isActive = false; clearTimeout(timeoutId); }; }, [url, shouldPrepare]);`,
+  `useEffect(() => { let isActive = true; let timeoutId; fetch(url).then(() => { if (!isActive) return; timeoutId = setTimeout(handle, 100); }); return () => { isActive = false; if (timeoutId) { if (shouldSkipRelease) return; clearTimeout(timeoutId); } }; }, [url, shouldSkipRelease]);`,
+  `useEffect(() => { let isActive = true; let timeoutId; fetch(url).then(() => { if (!isActive) return; timeoutId = setTimeout(handle, 100); }); return () => { isActive = false; if (timeoutId) { timeoutId = null; clearTimeout(timeoutId); } }; }, [url]);`,
   `useEffect(() => { document.body.style.overflow = "hidden"; return () => { document.body.style.overflow = ""; }; }, []);`,
   `useEffect(() => { if (isOpen) { document.body.classList.add("modal-open"); } return () => document.body.classList.remove("modal-open"); }, [isOpen]);`,
   `useEffect(() => { document.title = String(state); }, [state]);`,
   `useEffect(() => { setState(value); }, [value]);`,
   `useEffect(() => { if (value) { handle(value); } }, [value]);`,
+  `const CallbackRefChild = ({ onSelect }) => { const callbackRef = useRef(onSelect); callbackRef.current = onSelect; const childData = buildPhoneData(); useEffect(() => { callbackRef.current(childData); }, [childData]); return null; };`,
   `useEffect(() => { const debounced = debounce(() => handle(value), 300); debounced(); return () => debounced.cancel(); }, [value]);`,
   `useEffect(() => { const unsubscribe = store.subscribe(handle); return unsubscribe; }, []);`,
   `useEffect(() => store.subscribe(handle), []);`,
+  `const activeSessionRef = useRef(null); const stopSession = useCallback(() => { const session = activeSessionRef.current; if (!session) return; document.removeEventListener("mousemove", session.handleMouseMove); activeSessionRef.current = null; }, []); useEffect(() => stopSession, [stopSession]); const startSession = useCallback(() => { stopSession(); const handleMouseMove = () => {}; activeSessionRef.current = { handleMouseMove }; document.addEventListener("mousemove", handleMouseMove); }, [stopSession]);`,
   `useLayoutEffect(() => { const rect = containerRef.current?.getBoundingClientRect(); if (rect) setState(rect.width); }, []);`,
   `useEffect(() => { const objectUrl = URL.createObjectURL(blob); setState(objectUrl); return () => URL.revokeObjectURL(objectUrl); }, [blob]);`,
+  `const outsideActionEvents = ["mousedown", "focusin", "touchstart"] as const; useEffect(() => { for (const event of outsideActionEvents) document.addEventListener(event, handle); return () => { for (const event of outsideActionEvents) document.removeEventListener(event, handle); }; }, [handle]);`,
+  `const guardedEvents = ["mousedown", "focusin"] as const; useEffect(() => { for (const event of guardedEvents) document.addEventListener(event, handle); return () => { for (const event of guardedEvents) if (enabled) document.removeEventListener(event, handle); }; }, [enabled, handle]);`,
+  `const mutableHandlerEvents = ["mousedown", "focusin"] as const; useEffect(() => { const setupHandler = handlers.current; for (const event of mutableHandlerEvents) document.addEventListener(event, setupHandler); handlers.current = nextHandler; const cleanupHandler = handlers.current; return () => { for (const event of mutableHandlerEvents) document.removeEventListener(event, cleanupHandler); }; }, [handlers, nextHandler]);`,
+  `const setupEvents = ["mousedown", "focusin"] as const; const cleanupEvents = ["keydown"] as const; useEffect(() => { let event; for (event of setupEvents) document.addEventListener(event, handle); return () => { for (event of cleanupEvents) document.removeEventListener(event, handle); }; }, [handle]);`,
   `const onTick = useEffectEvent(() => handle(value)); useEffect(() => { onTick(); }, [onTick]);`,
+  `const [, setOpen] = useState(false); const stableHandle = useCallback(() => setOpen(true), [setOpen]); useEffect(() => { const timeoutId = setTimeout(() => stableHandle(), 100); return () => clearTimeout(timeoutId); }, [stableHandle, value]);`,
+  `const deferredHandle = useCallback(() => handle(value), [value]); useEffect(() => { const timeoutId = setTimeout(() => deferredHandle(), 100); return () => clearTimeout(timeoutId); }, [deferredHandle, value]);`,
+  `const [didSubmit, setDidSubmit] = useState(false); useEffect(() => { if (didSubmit) handle(value); }, [didSubmit, value]); const eventRelayButton = <button onClick={() => setDidSubmit(true)}>Submit</button>;`,
   `const [phase, setPhase] = useState(""); const [total, setTotal] = useState(0); const [ready, setReady] = useState(false); useEffect(() => { setPhase("sync"); setTotal(items.length); setReady(true); }, [items]);`,
   `const [snapshot, setSnapshot] = useState(sharedSnapshot); useEffect(() => subscribeSnapshot(setSnapshot), []);`,
+  `const [guardedSnapshot, setGuardedSnapshot] = useState(value); useEffect(() => { if (!Object.is(guardedSnapshot, value)) setGuardedSnapshot(value); }, [value]);`,
+  `const equalSnapshots = () => false; const [namedGuardSnapshot, setNamedGuardSnapshot] = useState(value); useEffect(() => { if (!equalSnapshots(namedGuardSnapshot, value)) setNamedGuardSnapshot(value); }, [value]);`,
+  `const [mismatchedSnapshot, setMismatchedSnapshot] = useState(value); useEffect(() => { if (mismatchedSnapshot !== value) setMismatchedSnapshot(state); }, [state, value]);`,
+  `const directoryStore = useDirectoryStore(); const directorySnapshot = directoryStore(); const nextDirectory = directorySnapshot.path.directory; useEffect(() => { if (props.draftId) return; const next = nextDirectory; if (!next || next === props.directory) return; navigate(encodeDirectory(next), { replace: true }); }, [props.draftId, props.directory, nextDirectory, navigate]);`,
+  `useFuzzDocumentEvents(() => handle(value), [value]);`,
+  `const fuzzDocumentEventArguments = condition ? [] : [() => handle(value), [value]]; useFuzzDocumentEvents(...fuzzDocumentEventArguments);`,
+  `const fuzzDocumentEventOptions = { callback: () => handle(value) }; fuzzDocumentEventOptions.callback = handle; useFuzzDocumentEventOptions(fuzzDocumentEventOptions);`,
+  `const fuzzSessionKey = String(value); const fuzzSessionUser = { role: value ? "admin" : "user" }; useEffect(() => { showLiveRole(fuzzSessionUser.role); }, [fuzzSessionKey]);`,
+  `const [domClassName, setDomClassName] = useState(""); const domClassRef = useRef(null); useLayoutEffect(() => { setDomClassName(domClassRef.current?.className ?? ""); });`,
+  `const [loopSnapshot, setLoopSnapshot] = useState(null); useEffect(() => { setLoopSnapshot({ value }); });`,
+  `const [fuzzPlatform, setFuzzPlatform] = useState(""); useEffect(() => { setFuzzPlatform(navigator.userAgent.includes("Mobile") ? "mobile" : "desktop"); });`,
+  `const [fuzzChildCount, setFuzzChildCount] = useState(0); useEffect(() => { setFuzzChildCount(Children.toArray(children).length); });`,
+  `const [guardSelection, setGuardSelection] = useState(0); const [guardLabel, setGuardLabel] = useState(""); const guardValueKey = String(value); const previousGuardValueRef = useRef(guardValueKey); useEffect(() => { const didGuardValueChange = previousGuardValueRef.current !== guardValueKey; previousGuardValueRef.current = guardValueKey; if (!didGuardValueChange) return; setGuardLabel("reset"); }, [guardSelection, guardValueKey]); const guardedChainButton = <button onClick={() => setGuardSelection((previousSelection) => previousSelection + 1)}>{guardLabel}</button>;`,
+  `const [labeledSelection, setLabeledSelection] = useState(0); const [labeledValue, setLabeledValue] = useState(""); const labeledValueKey = String(value); const previousLabeledValueRef = useRef(labeledValueKey); useEffect(() => { const didLabeledValueChange = previousLabeledValueRef.current !== labeledValueKey; previousLabeledValueRef.current = labeledValueKey; snapshotGuard: { if (!didLabeledValueChange) break snapshotGuard; } setLabeledValue(labeledValueKey); }, [labeledSelection, labeledValueKey]); const labeledChainButton = <button onClick={() => setLabeledSelection((previousSelection) => previousSelection + 1)}>{labeledValue}</button>;`,
 ] as const;
 
 // State — lazy initializers (incl. SSR-hazardous localStorage/matchMedia),
 // toggles, loading triples, prop mirrors, reducers, ref-sync.
 export const STATE_SNIPPET_POOL = [
+  `const FuzzNestedPanel = () => <div>nested</div>; const fuzzNestedPanelNode = <FuzzNestedPanel />;`,
   `const [state, setState] = useState(0);`,
   `const [state, setState] = useState(() => Number(localStorage.getItem("count") ?? 0));`,
   `const [theme, setTheme] = useState(() => (typeof window === "undefined" ? "light" : (localStorage.getItem("theme") ?? "light")));`,
@@ -55,6 +92,10 @@ export const STATE_SNIPPET_POOL = [
   `const [selected, setSelected] = useState<string[]>([]);`,
   `const [loading, setLoading] = useState(false); const [error, setError] = useState(null); const [data, setData] = useState(null);`,
   `const [internalValue, setInternalValue] = useState(value); useEffect(() => { setInternalValue(value); }, [value]);`,
+  `const [previousValue, setPreviousValue] = useState(Boolean(value)); useEffect(() => { setPreviousValue(Boolean(value)); }, [value]);`,
+  `const [resetDraft, setResetDraft] = useState(""); useEffect(() => { setResetDraft(""); }, [value]);`,
+  `const FuzzHiddenResetMenu = ({ visible }) => { const [open, setOpen] = useState(false); useEffect(() => { setOpen(false); }, [visible]); return visible && open && <div role="menu">Menu</div>; }; const fuzzHiddenResetMenuNode = <FuzzHiddenResetMenu visible={condition} />;`,
+  `const FuzzOpaqueVisibilityPanel = ({ visible, isAllowed }) => { const [canShowPanel, setCanShowPanel] = useState(true); useEffect(() => { setCanShowPanel(true); }, [visible]); return visible && isAllowed() && canShowPanel && <output onClick={() => setCanShowPanel(false)}>Panel</output>; }; const fuzzOpaqueVisibilityPanelNode = <FuzzOpaqueVisibilityPanel visible={condition} isAllowed={() => condition} />;`,
   `const [reducerState, dispatch] = useReducer(reducer, { count: 0 });`,
   `const containerRef = useRef(null);`,
   `const handleRef = useRef(handle); handleRef.current = handle;`,
@@ -65,6 +106,7 @@ export const STATE_SNIPPET_POOL = [
   `const deferredValue = useDeferredValue(state);`,
   `const [isPending, startTransition] = useTransition();`,
   `const [counterState, dispatchCounter] = useReducer((state, action) => { state.count += 1; return state; }, { count: 0 });`,
+  `const [persistedCount, setPersistedCount] = useState(0); const incrementPersistedCount = () => setPersistedCount((previousCount) => { localStorage.setItem("count", String(previousCount + 1)); return previousCount + 1; });`,
   `const [parsedItems, setParsedItems] = useState(parseItems(value));`,
   `const indexRef = useRef(buildIndex(items));`,
   `const doubled = useMemo(() => state * 2, [state]);`,
@@ -73,6 +115,7 @@ export const STATE_SNIPPET_POOL = [
 // Handlers — async submits with loading flags, keyboard commit paths,
 // numeric input parsing, window.open, clipboard, toggles.
 export const HANDLER_SNIPPET_POOL = [
+  `const handleSyncRequest = () => { const request = new XMLHttpRequest(); request.open("GET", String(url), false); request.send(); };`,
   `const handleSubmit = async () => { setLoading(true); try { await fetch(url, { method: "POST", body: JSON.stringify(values) }); setState(true); } catch (submitError) { setError(submitError); } finally { setLoading(false); } };`,
   `const handleSubmit = async () => { setLoading(true); const result = await api.post(url, values); setState(result); setLoading(false); };`,
   `const handleSave = async () => { if (loading) return; setLoading(true); await api.put(url, values); setLoading(false); };`,
@@ -100,15 +143,28 @@ export const HANDLER_SNIPPET_POOL = [
   `const timerRef = useRef(null); const handleQueue = () => { clearTimeout(timerRef.current); timerRef.current = setTimeout(handle, 250); }; const handleFlush = () => { clearTimeout(timerRef.current); timerRef.current = null; handle(); };`,
   `const handleBatch = async () => { for (const item of items) { await api.post(url, item); } };`,
   `const handleBatch = async () => { await Promise.all(items.map((item) => api.post(url, item))); };`,
+  `const query = async (item) => { await Promise.resolve(); return item * 2; }; const handleQueries = async () => { for (const item of items) { await query(item); } };`,
+  `const doubleCell = async (cell) => { await Promise.resolve(); cell.value *= 2; }; const handleCells = async () => { await doubleCell(items[0]); await doubleCell(items[1]); await doubleCell(items[2]); };`,
+  `let escapedCursor = 0; const escapedQuery = async (item) => { await Promise.resolve(); return item * 2; }; const escapedHelpers = { escapedQuery }; Object.assign(escapedHelpers, { escapedQuery: async (item) => { const previousCursor = escapedCursor; await Promise.resolve(); escapedCursor = previousCursor + item; return escapedCursor; } }); const handleEscapedQueries = async () => { await escapedHelpers.escapedQuery(items[0]); await escapedHelpers.escapedQuery(items[1]); await escapedHelpers.escapedQuery(items[2]); };`,
+  `const observedCellValues = []; const observedCell = { value: 1 }; const getObservedCell = () => { observedCellValues.push(observedCell.value); return observedCell; }; const doubleObservedCell = async (cell) => { await Promise.resolve(); cell.value *= 2; }; const handleObservedCell = async () => { await doubleObservedCell(getObservedCell()); await doubleObservedCell(getObservedCell()); await doubleObservedCell(getObservedCell()); };`,
+  `const queryItem = async (item) => { await Promise.resolve(); return item * 2; }; const queryHelpers = { queryItem }; const handleMixedQueries = async () => { await queryItem(items[0]); await queryHelpers.queryItem(items[1]); await queryHelpers["queryItem"](items[2]); };`,
+  `const mutableQuery = async (item) => { await Promise.resolve(); return item * 2; }; const mutableQueryHelpers = { mutableQuery }; let mutableQueryHolder = mutableQueryHelpers; const nestedMutableQueryHolder = mutableQueryHolder; nestedMutableQueryHolder.mutableQuery = async (item) => item + 1; const handleMutableQueries = async () => { await mutableQuery(items[0]); await mutableQueryHelpers.mutableQuery(items[1]); await mutableQuery(items[2]); };`,
+  `const handleMatch = () => { for (const item of items) { new RegExp("token", "i").test(String(item)); } };`,
+  `const handleStatefulMatch = () => { for (const item of items) { new RegExp("token", "g").test(String(item)); } };`,
+  `const handleReplaceAll = (text: string) => { for (const item of items) { text.replaceAll(new RegExp("token", "g"), String(item)); } };`,
+  `globalThis.RegExp = CustomRegExp; const handleCustomMatch = () => { for (const item of items) { new RegExp("token", "i").test(String(item)); } };`,
   `const handleSequence = async () => { const first = await fetch(url); const second = await fetch(url); handle(first, second); };`,
   `const handlePersistToken = () => { localStorage.setItem("auth_token", String(value)); };`,
   `const handleRedirect = () => { window.location.href = String(params.next); };`,
   `const renderStatus = () => { const [open] = useState(false); return <b>{String(open)}</b>; }; const statusNode = <div>{renderStatus()}</div>;`,
+  `const FuzzMemoRenderContent = () => <div>{state}</div>; const fuzzMemoContent = useMemo(FuzzMemoRenderContent, [state]);`,
+  `const FuzzNestedComponent = () => <div>{state}</div>; const fuzzNestedElement = <FuzzNestedComponent />;`,
 ] as const;
 
 // Guards / nullability — find/match/get derefs, optional chains, splits,
 // alias-then-guard, canUseDOM aliases, JSON.parse.
 export const GUARD_SNIPPET_POOL = [
+  `if (!useState || !useRef || !useEffect) return null;`,
   `const found = items.find((item) => item.id === value); if (!found) return null;`,
   `const label = items.find((item) => item.active)?.name ?? "none";`,
   `const first = items.find((item) => item.active)!.name;`,
@@ -122,6 +178,7 @@ export const GUARD_SNIPPET_POOL = [
   `const keys = Object.keys(config ?? {});`,
   `const entries = Object.entries(config);`,
   `if (!items.length) return null;`,
+  `if (value) onSelect(value);`,
   `if (items.length === 0) { return <p>No items</p>; }`,
   `const parsed = JSON.parse(String(value)).settings;`,
   `let parsed = {}; try { parsed = JSON.parse(String(value)); } catch { parsed = {}; }`,
@@ -138,11 +195,19 @@ export const GUARD_SNIPPET_POOL = [
   `const merged = { ...defaults, ...props };`,
   `const flattened = items.reduce((accumulator, item) => [...accumulator, ...item.children], []);`,
   `const lookup = items.reduce((accumulator, item) => ({ ...accumulator, [item.id]: item }), {});`,
+  `const smallestValue = [3, 1, 2].sort((leftValue, rightValue) => leftValue - rightValue)[0];`,
 ] as const;
 
 // Library idioms — tanstack, mobx, styled-components, next/dynamic, redux.
 export const LIBRARY_SNIPPET_POOL = [
+  `const zodSchema = z.object({ value: z.string() }).strict();`,
+  `const subscribeStore = useCallback((onStoreChange) => { store.on("change", onStoreChange); return () => store.off("change", onStoreChange); }, [store]); const snapshot = useSyncExternalStore(subscribeStore, getSnapshot);`,
   `const { data: queryData, isPending } = useQuery({ queryKey: ["items", value], queryFn: () => fetch(url).then((response) => response.json()) });`,
+  `const queryResult = useQuery({ queryKey: ["items", value], queryFn: () => fetch(url).then((response) => response.json()) }); useEffect(() => { queryResult["refetch"](); }, [queryResult]);`,
+  `const wrappedQueryResult = (ReactQuery as typeof ReactQuery)[\`useQuery\`]({ queryKey: ["wrapped", value] }); useEffect(() => { wrappedQueryResult.refetch(); }, [wrappedQueryResult]);`,
+  `const overwrittenQuery = useQuery({ queryKey: ["overwritten", value] }); useEffect(() => { overwrittenQuery.refetch(); }, [overwrittenQuery]); try { handle(value); } catch { handle(value); } finally { overwrittenQuery.refetch = handle; }`,
+  `const conditionallyOverwrittenQuery = useQuery({ queryKey: ["conditional", value] }); const overwriteQueryRefetch = () => { conditionallyOverwrittenQuery.refetch = handle; }; useEffect(() => { conditionallyOverwrittenQuery.refetch(); }, [conditionallyOverwrittenQuery]); value && overwriteQueryRefetch();`,
+  `const searchIndex = { refetch: () => handle(value) }; useEffect(() => { searchIndex.refetch(); }, [searchIndex]);`,
   `const mutation = useMutation({ mutationFn: (payload) => api.post(url, payload) });`,
   `const { mutate, mutateAsync } = useMutation({ mutationFn: (payload) => api.post(url, payload) });`,
   `useEffect(() => { mutateAsync({ event: "view" }); }, []);`,
@@ -155,7 +220,22 @@ export const LIBRARY_SNIPPET_POOL = [
 
 // Module scope — SSR hazards, guard aliases, contexts, caches, styled.
 export const MODULE_SCOPE_SNIPPET_POOL = [
+  `import { motion as FuzzMotion } from "framer-motion"; export const FuzzMotionPanel = () => <FuzzMotion.div animate={{ x: 120 }}>moving</FuzzMotion.div>;`,
+  `import { createRoot as mountFuzzRoot } from "react-dom/client"; export const FuzzRootApp = () => <div />; export const fuzzRootConfig = getConfig(); const fuzzApplicationRoot = mountFuzzRoot(document.body); fuzzApplicationRoot.render(<FuzzRootApp />);`,
   `const GLOBAL_CACHE = new Map<string, unknown>();`,
+  `class FuzzProtocolRegistry { static contextTypes = new Set(["json", "text"]); static childContextTypes = new Map(); getChildContext() { return { protocol: "json" }; } } const FuzzSchemaRegistry = {}; FuzzSchemaRegistry.contextTypes = new Set(["json", "text"]);`,
+  `const fuzzLeftItems = ["a", "b"]; const fuzzRightItems = ["a", "b"]; const fuzzItemsMatch = fuzzLeftItems.every((item, index) => item === fuzzRightItems[index]);`,
+  `const FuzzLargeTextThreshold = 50_000; const FuzzLargeTextCodeBlock = ({ children }) => { if (typeof children === "string" && children.length > FuzzLargeTextThreshold) return <VirtualizedCode text={children} />; return <pre>{children}</pre>; }; const FuzzPolymorphicChildPanel = ({ children }) => typeof children === "string" ? <span>{children}</span> : <div>{children}</div>;`,
+  `const FuzzMemoList = React.memo(({ items }) => <div>{items.length}</div>, (previousProps, nextProps) => previousProps.items.length === nextProps.items.length); const FuzzDefaultList = ({ items = [] }) => <FuzzMemoList items={items} />;`,
+  `const useFuzzCollection = (items: readonly string[]) => { items.forEach((item) => consume(item)); }; const useFuzzCallback = (onVisit: (item: string) => void) => { onVisit(String(value)); };`,
+  `const FuzzPropTypesPanel = ({ value }) => <div>{value}</div>; FuzzPropTypesPanel.propTypes = { value: () => true };`,
+  `function FuzzNestedWritePanel() { return <div />; } function unusedFuzzNestedWrite() { FuzzNestedWritePanel = () => null; } FuzzNestedWritePanel.propTypes = { value: () => true };`,
+  `function FuzzReturnedLabel() { let output = "label"; function unusedFuzzOutputWrite() { output = <div />; } return output; } FuzzReturnedLabel.propTypes = { value: () => true };`,
+  `function FuzzExitedWrite(condition: boolean) { let output; if (condition) { output = <div />; return "label"; } return output; } FuzzExitedWrite.propTypes = { value: () => true };`,
+  `const FuzzRenamedChildrenPanel = ({ children: content = null }) => content; FuzzRenamedChildrenPanel.propTypes = { children: () => true };`,
+  `const FuzzNestedChildrenSchema = ({ children: { value } }) => value; FuzzNestedChildrenSchema.propTypes = { value: () => true };`,
+  `const FuzzReassignedChildrenSchema = ({ children }) => { children = { value: true }; return children; }; FuzzReassignedChildrenSchema.propTypes = { value: () => true };`,
+  `const FuzzCallbackSchema = (items) => items.some((item) => <span>{item}</span>); FuzzCallbackSchema.propTypes = { value: () => true };`,
   `let moduleMutableState = 0;`,
   `const ThemeContext = React.createContext({ mode: "light" });`,
   `const ItemsContext = React.createContext(null);`,
@@ -171,9 +251,87 @@ export const MODULE_SCOPE_SNIPPET_POOL = [
   `const StyledInput = styled.input<{ $error: boolean }>\`border: 1px solid \${(styledProps) => (styledProps.$error ? "red" : "gray")}; border: 2px dashed blue;\`;`,
   `const SECRET_KEY = "sk-live-abc123def456ghi789jkl012mno345";`,
   `const ARROW_KEYS = new Set(["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"]);`,
+  `export const STATIC_STYLED_ELEMENT = <div style={{ display: "flex", width: "100%", height: "100%", alignItems: "center", justifyContent: "center", flexDirection: "column", backgroundColor: "white", fontSize: 64 }} />;`,
   `const defaults = { title: "untitled", pageSize: 20 };`,
   `reaction(() => store.value, (next) => persist(next));`,
   `let sharedSnapshot = "idle"; const snapshotListeners = new Set(); function subscribeSnapshot(listener) { snapshotListeners.add(listener); return () => snapshotListeners.delete(listener); }`,
+  `const useFuzzDocumentEvents = (callback = () => {}, dependencies = []) => { useEffect(() => callback(), [callback, dependencies]); };`,
+  `const useFuzzDocumentEventOptions = ({ callback }) => { useEffect(callback, [callback]); };`,
+  `const FuzzPolyfillScript = () => <script src="https://polyfill.io/v3/polyfill.min.js" />;`,
+  `import FuzzRawMarkdown from "react-markdown"; import fuzzRawPlugin from "rehype-raw"; export const FuzzRawMarkdownPreview = ({ value }) => <FuzzRawMarkdown rehypePlugins={[fuzzRawPlugin]}>{String(value)}</FuzzRawMarkdown>;`,
+] as const;
+
+export const SERVER_MODULE_PROGRAM_POOL = [
+  `const initializeProfile = async (value: number) => { await Promise.resolve(); return value * 2; };
+const loadPreferences = async (value: number) => { await Promise.resolve(); return value * 3; };
+export const loadProfile = async () => {
+  const profile = await initializeProfile(2);
+  const preferences = await loadPreferences(3);
+  return { profile, preferences };
+};`,
+  `"use server";
+const state = Object.seal({ count: 0 });
+export const increment = async () => {
+  state.count++;
+};`,
+  `"use server";
+const state = Object.preventExtensions({ users: [] });
+export const addUser = async (user: unknown) => {
+  state.users.push(user);
+};`,
+  `"use server";
+const state = Object.seal({ cache: new Map<string, unknown>() });
+export const remember = async (key: string, value: unknown) => {
+  state.cache.set(key, value);
+};`,
+  `"use server";
+const state = Object.seal({ count: 0 });
+const incrementState = (target: { count: number }) => {
+  target.count++;
+};
+export const increment = async () => {
+  incrementState(state);
+};`,
+  `"use server";
+const state = Object.seal({ count: 0 });
+export const update = async (patch: { count?: number }) => {
+  Object.assign(state, patch);
+};`,
+  `"use server";
+const state = Object.preventExtensions({ count: 0 });
+export const removeCount = async () => {
+  delete state.count;
+};`,
+  `"use server";
+const state = Object.freeze({ count: 0 });
+export const increment = async () => {
+  state.count++;
+};`,
+  `"use server";
+const state = Object.seal({ get count() { return 0; } });
+export const increment = async () => {
+  state.count++;
+};`,
+  `"use server";
+const state = Object.preventExtensions({ count: 0 });
+state.count = 1;
+export const read = async () => state.count;`,
+  `"use server";
+const state = Object.seal({ service: getService() });
+export const update = async () => {
+  state.service.set("status", "active");
+};`,
+  `"use server";
+const state = Object.seal({ service: { set(value: string) { persist(value); } } });
+export const update = async () => {
+  state.service.set("active");
+};`,
+  `"use server";
+const Object = { seal: <Value,>(value: Value) => value };
+const state = Object.seal({ count: 0 });
+export const increment = async () => {
+  state.count++;
+};`,
 ] as const;
 
 // Attributes that specifically trip a11y validity rules — misspelled aria
@@ -220,8 +378,11 @@ export const JSX_ATTRIBUTE_POOL = [
   `onKeyDown={handleKeyDown}`,
   `onChange={handleChange}`,
   `onMouseEnter={() => setIsOpen(true)}`,
+  `style="color: red"`,
   `style={{ color: "red" }}`,
   `style={{ width: state }}`,
+  `classList={{ active: isOpen }} style={\`left: \${state}px\`}`,
+  `style={{ display: "flex", width: "100%", height: "100%", alignItems: "center", justifyContent: "center", flexDirection: "column", backgroundColor: "white", fontSize: 64 }}`,
   `key={index}`,
   `key={item.id}`,
   `key={Math.random()}`,
@@ -274,25 +435,36 @@ export const JSX_LEAF_POOL = [
   `<a href={url}></a>`,
   `<a href="#">click here</a>`,
   `<button onClick={handleClick}>Click here…</button>`,
+  `<div onClick={condition ? undefined : () => setIsOpen(true)}>{!condition && <Button aria-label="Open" onPress={() => setIsOpen(true)}>Open</Button>}</div>`,
   `<button>Submit — now...</button>`,
   `<h2></h2>`,
   `<img src={url} onError={(event) => { event.currentTarget.src = "/fallback.png"; }} />`,
   `<div role="button" onClick={handleClick}>{state}</div>`,
   `<div style={{ paddingLeft: 8, paddingRight: 8, width: 100, height: 100 }}>{state}</div>`,
   `<div style={{ marginTop: 4, marginBottom: 4 }}>{state}</div>`,
+  `<div style={{ backgroundColor: "#000", boxShadow: "0 0 60px rgb(255 0 0 / 0%)" }}>{state}</div>`,
+  `<div style={{ backgroundColor: "#000", boxShadow: "0 0 60px rgb(255 0 0 / 10%)" }}>{state}</div>`,
   `<input type="checkbox" checked={isChecked} />`,
   `<video autoPlay />`,
   `<marquee>{state}</marquee>`,
   `<iframe src={url} />`,
   `<time>{new Date(value).toLocaleString()}</time>`,
   `<span>{new Intl.DateTimeFormat().format(state)}</span>`,
+  `<time>{new Intl.DateTimeFormat("en-US", localeOptionsAlias).format(new Date(value))}</time>`,
+  `<FuzzMarkdown rehypePlugins={[fuzzRehypeRaw]}>{String(value)}</FuzzMarkdown>`,
 ] as const;
 
 // Rare-but-parseable weirdness kept from the original generator, plus
 // trace-mined oddities (unicode, globalThis gymnastics, labels).
 export const EDGE_CASE_STATEMENT_POOL = [
+  `const contextCallback = config.onSelect; const effectiveCallback = onSelect ?? contextCallback; const derivedHandler = useCallback(() => effectiveCallback?.(), [effectiveCallback]);`,
+  `const membershipCandidates = [1, 2, 3, 4, 5, 6, 7, 8, 9]; const membershipValues = [1, 2, 3, 4, 5, 6, 7, 8, 9]; for (const membershipCandidate of membershipCandidates) { membershipValues.includes(membershipCandidate); }`,
+  `const numericMembershipValues: number[] = []; const numericMembershipAllowed: number[] = []; numericMembershipValues.reduce((count, value) => numericMembershipAllowed.indexOf(value) !== -1 ? count + 1 : count, 0);`,
+  `class NumericMembershipCollection<Value extends number> { retain(candidates: Value[], allowed: Value[]) { return candidates.filter((candidate) => allowed.indexOf(candidate) !== -1); } }`,
+  `const localeOptionsBase = { timeZone: "UTC" }; const localeOptionsAlias = localeOptionsBase; const { timeZone: localeTimeZone } = localeOptionsAlias;`,
   `const useState = () => [0, () => {}] as const;`,
   `const { useEffect: renamedEffect } = React;`,
+  `const { onConfirm, onCancel } = props;`,
   `const shadowed = (useMemo: () => void) => useMemo();`,
   `const conditionalHook = () => { if (Math.random() > 0.5) { useState(0); } };`,
   `function* generatorWithHookName() { yield useRef; }`,
@@ -306,6 +478,10 @@ export const EDGE_CASE_STATEMENT_POOL = [
   `label: for (let index = 0; index < 3; index += 1) { continue label; }`,
   `const tagged = html\`<div onclick="\${value}"></div>\`;`,
   `export default class extends React.Component { render() { return null; } }`,
+  `export function FuzzPortalComponent(): JSX.Element | null { const portalContent = <div />; return createPortal(portalContent, document.body); }`,
+  `export function FuzzNullComponent(): null { return null; } export default FuzzNullComponent;`,
+  `export const FuzzCard = () => <div />; const FormatCurrency = (value: number) => String(value); export default FormatCurrency;`,
+  `class EventShield extends React.Component { handleClick(event) { event.stopPropagation(); } render() { return <div onClick={this.handleClick} />; } }`,
   `const globalCount = (globalThis as any).__count = ((globalThis as any).__count ?? 0) + 1;`,
   `const emDash = \`\${value} — \${state}\`;`,
   `const composed = event.composedPath()[0];`,
@@ -317,9 +493,11 @@ export const EDGE_CASE_STATEMENT_POOL = [
 ] as const;
 
 export const IMPORT_LINE_POOL = [
+  `import { motion, MotionConfig, useReducedMotion } from "framer-motion";`,
   `import React from "react";`,
   `import * as React from "react";`,
-  `import { useState, useEffect, useMemo, useCallback, useRef, useContext, useReducer, useTransition, useDeferredValue, useId, useLayoutEffect } from "react";`,
+  `import ReactLegacyContext from "react";\nclass FuzzLegacyContextProvider extends ReactLegacyContext.Component { static contextTypes = {}; render() { return null; } }`,
+  `import { useState, useEffect, useMemo, useCallback, useRef, useContext, useReducer, useTransition, useDeferredValue, useId, useLayoutEffect, useSyncExternalStore } from "react";`,
   `import { useState as useLocalState } from "react";`,
   `import { createPortal } from "react-dom";`,
   `import Link from "next/link";`,
@@ -327,6 +505,7 @@ export const IMPORT_LINE_POOL = [
   `import dynamic from "next/dynamic";`,
   `import { View, Text, FlatList } from "react-native";`,
   `import { useQuery, useMutation } from "@tanstack/react-query";`,
+  `import * as ReactQuery from "@tanstack/react-query";`,
   `import { observer } from "mobx-react-lite";`,
   `import { reaction, autorun } from "mobx";`,
   `import styled from "styled-components";`,
@@ -336,7 +515,11 @@ export const IMPORT_LINE_POOL = [
   `import { useForm } from "react-hook-form";`,
   `import debounce from "lodash/debounce";`,
   `import { z } from "zod";`,
-  `import { forwardRef } from "react";`,
+  `import * as fuzzZod from "zod/v4"; const fuzzZodSchema = fuzzZod.object({ email: fuzzZod.string().email() }).strict();`,
+  `import { z as fuzzZodErrorCustomization } from "zod/v4"; const fuzzZodRequiredSchema = fuzzZodErrorCustomization.string("Required");`,
+  `import { ZodError as FuzzZodError } from "zod/v4"; const fuzzZodFlattenedError = new FuzzZodError([]).flatten();`,
+  `import { forwardRef } from "react";\nconst FuzzForwardRefComponent = forwardRef((props) => <button>{props.label}</button>);`,
+  `import FuzzMarkdown from "react-markdown";\nimport fuzzRehypeRaw from "rehype-raw";`,
 ] as const;
 
 // Filenames rotate per iteration because a large rule population is
@@ -362,6 +545,7 @@ export const FUZZ_FILENAME_POOL = [
   "src/fuzz-widget.server.tsx",
   "next.config.js",
   "src/utils/fuzz-helper.ts",
+  "packages/docs/archive/v1/static/docs.js",
 ] as const;
 
 // Identifiers rules key on by NAME (guard aliases, visibility gates,

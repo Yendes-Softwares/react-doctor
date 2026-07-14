@@ -1,9 +1,11 @@
 import { defineRule } from "../../utils/define-rule.js";
+import { LARGE_TEXT_OPTIMIZATION_THRESHOLD_CHARS } from "../../constants/thresholds.js";
 import { isComponentParameterSymbol } from "../../utils/is-component-parameter-symbol.js";
 import type { EsTreeNode } from "../../utils/es-tree-node.js";
 import type { RuleContext } from "../../utils/rule-context.js";
 import type { ScopeAnalysis, SymbolDescriptor } from "../../semantic/scope-analysis.js";
 import { findTransparentExpressionRoot } from "../../utils/find-transparent-expression-root.js";
+import { getDirectConstInitializer } from "../../utils/get-direct-const-initializer.js";
 import { isNodeOfType } from "../../utils/is-node-of-type.js";
 import { stripParenExpression } from "../../utils/strip-paren-expression.js";
 import type { EsTreeNodeOfType } from "../../utils/es-tree-node-of-type.js";
@@ -155,6 +157,62 @@ const guardsRenderShape = (comparison: EsTreeNode): boolean => {
   return false;
 };
 
+const isPropsChildrenLength = (node: EsTreeNode, scopes: ScopeAnalysis): boolean => {
+  const unwrappedNode = stripParenExpression(node);
+  return (
+    isNodeOfType(unwrappedNode, "MemberExpression") &&
+    !unwrappedNode.computed &&
+    isNodeOfType(unwrappedNode.property, "Identifier") &&
+    unwrappedNode.property.name === "length" &&
+    resolvesToPropsChildren(stripParenExpression(unwrappedNode.object), scopes)
+  );
+};
+
+const resolveStaticNumericValue = (
+  node: EsTreeNode,
+  scopes: ScopeAnalysis,
+  visitedSymbolIds: ReadonlySet<number> = new Set(),
+): number | null => {
+  const unwrappedNode = stripParenExpression(node);
+  if (isNodeOfType(unwrappedNode, "Literal") && typeof unwrappedNode.value === "number") {
+    return Number.isFinite(unwrappedNode.value) ? unwrappedNode.value : null;
+  }
+  if (!isNodeOfType(unwrappedNode, "Identifier")) return null;
+  const symbol = scopes.symbolFor(unwrappedNode);
+  if (!symbol || visitedSymbolIds.has(symbol.id)) return null;
+  const initializer = getDirectConstInitializer(symbol);
+  if (!initializer) return null;
+  return resolveStaticNumericValue(initializer, scopes, new Set(visitedSymbolIds).add(symbol.id));
+};
+
+const isLargeTextLengthComparison = (node: EsTreeNode, scopes: ScopeAnalysis): boolean => {
+  const unwrappedNode = stripParenExpression(node);
+  if (!isNodeOfType(unwrappedNode, "BinaryExpression")) return false;
+  const leftIsLength = isPropsChildrenLength(unwrappedNode.left, scopes);
+  const rightIsLength = isPropsChildrenLength(unwrappedNode.right, scopes);
+  const thresholdNode = leftIsLength ? unwrappedNode.right : unwrappedNode.left;
+  if (!leftIsLength && !rightIsLength) return false;
+  const thresholdValue = resolveStaticNumericValue(thresholdNode, scopes);
+  if (thresholdValue === null || thresholdValue < LARGE_TEXT_OPTIMIZATION_THRESHOLD_CHARS) {
+    return false;
+  }
+  return leftIsLength
+    ? unwrappedNode.operator === ">" || unwrappedNode.operator === ">="
+    : unwrappedNode.operator === "<" || unwrappedNode.operator === "<=";
+};
+
+const isLargeStringOptimizationGuard = (comparison: EsTreeNode, scopes: ScopeAnalysis): boolean => {
+  let current = findTransparentExpressionRoot(comparison);
+  while (current.parent) {
+    const parent = current.parent;
+    if (!isNodeOfType(parent, "LogicalExpression") || parent.operator !== "&&") return false;
+    const otherOperand = parent.left === current ? parent.right : parent.left;
+    if (isLargeTextLengthComparison(otherOperand, scopes)) return true;
+    current = findTransparentExpressionRoot(parent);
+  }
+  return false;
+};
+
 // HACK: `typeof children === "string"` (or `=== 'object'`) is a
 // polymorphic-children smell — the component switches behavior based on
 // what the consumer happened to pass. Better to expose explicit
@@ -184,6 +242,7 @@ export const noPolymorphicChildren = defineRule({
       if (!isStringLiteral(node.left) && !isStringLiteral(node.right)) return;
 
       if (!guardsRenderShape(node)) return;
+      if (isLargeStringOptimizationGuard(node, context.scopes)) return;
 
       context.report({
         node,

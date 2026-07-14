@@ -43,6 +43,7 @@ import type {
   ScoreResult,
 } from "@react-doctor/core";
 import { toForwardSlashes } from "./cli/utils/path-format.js";
+import { diagnosticIntersectsLineRanges } from "./cli/utils/diagnostic-intersects-line-ranges.js";
 import { makeNoopConsole } from "./cli/utils/noop-console.js";
 import { materializeBaselineFiles } from "./cli/utils/materialize-baseline-files.js";
 import { createSourceLineReader } from "./cli/utils/read-source-line.js";
@@ -114,8 +115,8 @@ const recordOnboardingCompletion = (options: ResolvedInspectOptions): void => {
 const formatCategorySelection = (categoryFilters: ReadonlySet<string>): string =>
   [...categoryFilters].join(", ");
 
-// Builds the `--scope lines` predicate: a diagnostic survives when its line
-// falls in a changed range of its file. `changedLineRanges` is keyed by paths
+// Builds the `--scope lines` predicate: a diagnostic survives when its source
+// span intersects a changed range of its file. `changedLineRanges` is keyed by paths
 // relative to `directory`; diagnostic paths are normalized the same way so
 // absolute and relative forms both match.
 const buildChangedLineMatcher = (
@@ -134,7 +135,7 @@ const buildChangedLineMatcher = (
     );
     const ranges = rangesByFile.get(relativePath);
     if (ranges === undefined) return false;
-    return ranges.some(([start, end]) => diagnostic.line >= start && diagnostic.line <= end);
+    return diagnosticIntersectsLineRanges(diagnostic, ranges);
   };
 };
 
@@ -741,7 +742,7 @@ const runInspectWithRuntime = async (
       baselineDelta = comparison.baselineDelta;
     }
   } else if (options.changedLineRanges !== null && isDiffMode) {
-    // `--scope lines`: keep only diagnostics on the lines the change touched.
+    // `--scope lines`: keep diagnostics whose source spans touch the change.
     // Runs at the same post-lint seam as baseline (the score is already
     // computed on the full head set), so the gate, summary, and inline
     // comments all narrow together.
@@ -772,6 +773,7 @@ const runInspectWithRuntime = async (
     directory: output.resolvedDirectory,
     scannedFileCount: output.scannedFileCount,
     scannedFilePaths: output.scannedFilePaths,
+    analyzedFiles: output.analyzedFiles,
     scanElapsedMilliseconds: output.scanElapsedMilliseconds,
     scanConcurrency: output.scanConcurrency,
     baselineDelta,
@@ -829,9 +831,12 @@ interface FinalizeInput {
   lintPartialFailures: ReadonlyArray<string>;
   didDeadCodeFail: boolean;
   deadCodeFailureReason: string | null;
+  supplyChainOverlapTimedOut: boolean;
+  securityScanFailed: boolean;
   directory: string;
   scannedFileCount: number;
   scannedFilePaths: ReadonlyArray<string>;
+  analyzedFiles: ReadonlyArray<string>;
   scanElapsedMilliseconds: number;
   lintCacheHitFileCount: number | null;
   lintCacheTotalFileCount: number | null;
@@ -934,9 +939,12 @@ const renderAndRecordScan = async (input: RenderAndRecordScanInput): Promise<Ins
     lintPartialFailures: input.payload.lintPartialFailures,
     didDeadCodeFail: input.payload.didDeadCodeFail,
     deadCodeFailureReason: input.payload.deadCodeFailureReason,
+    supplyChainOverlapTimedOut: input.payload.supplyChainOverlapTimedOut,
+    securityScanFailed: input.payload.securityScanFailed ?? false,
     directory: input.payload.directory,
     scannedFileCount: input.payload.scannedFileCount,
     scannedFilePaths: input.payload.scannedFilePaths,
+    analyzedFiles: input.payload.analyzedFiles ?? [],
     scanElapsedMilliseconds: input.payload.scanElapsedMilliseconds,
     lintCacheHitFileCount: input.lintCacheHitFileCount ?? null,
     lintCacheTotalFileCount: input.lintCacheTotalFileCount ?? null,
@@ -1012,9 +1020,12 @@ const finalizeAndRender = (input: FinalizeInput): Effect.Effect<InspectResult> =
       lintPartialFailures,
       didDeadCodeFail,
       deadCodeFailureReason,
+      supplyChainOverlapTimedOut,
+      securityScanFailed,
       directory,
       scannedFileCount,
       scannedFilePaths,
+      analyzedFiles,
       scanElapsedMilliseconds,
       lintCacheHitFileCount,
       lintCacheTotalFileCount,
@@ -1032,6 +1043,8 @@ const finalizeAndRender = (input: FinalizeInput): Effect.Effect<InspectResult> =
       lintPartialFailures,
       didDeadCodeFail,
       deadCodeFailureReason,
+      supplyChainOverlapTimedOut,
+      securityScanFailed,
     });
     const hasSkippedChecks = skippedChecks.length > 0;
 
@@ -1046,6 +1059,7 @@ const finalizeAndRender = (input: FinalizeInput): Effect.Effect<InspectResult> =
       elapsedMilliseconds,
       scannedFileCount,
       scannedFilePaths,
+      analyzedFiles,
       scanElapsedMilliseconds,
       ...(lintCacheTotalFileCount !== null
         ? { lintCacheHitFileCount, lintCacheTotalFileCount }

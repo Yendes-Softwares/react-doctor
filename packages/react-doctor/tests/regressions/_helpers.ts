@@ -115,7 +115,25 @@ export interface CollectRuleHitsOptions {
   framework?: ProjectInfo["framework"];
   hasReactCompiler?: boolean;
   hasTanStackQuery?: boolean;
+  hasSsrDependency?: boolean;
 }
+
+const DERIVED_STATE_SIBLING_RULE_IDS = [
+  "no-adjust-state-on-prop-change",
+  "no-derived-state",
+  "no-derived-state-effect",
+  "no-initialize-state",
+];
+
+export const buildIsolatedDerivedStateRuleConfig = (
+  ruleId: string,
+): Record<string, "off" | "warn"> =>
+  Object.fromEntries(
+    DERIVED_STATE_SIBLING_RULE_IDS.map((siblingRuleId) => [
+      `react-doctor/${siblingRuleId}`,
+      siblingRuleId === ruleId ? "warn" : "off",
+    ]),
+  );
 
 export interface BuildTestProjectOptions {
   rootDirectory: string;
@@ -165,6 +183,7 @@ export const buildTestProject = (options: BuildTestProjectOptions): ProjectInfo 
     hasTypeScript: options.hasTypeScript ?? true,
     hasReactCompiler: options.hasReactCompiler ?? false,
     hasTanStackQuery: options.hasTanStackQuery ?? false,
+    hasSsrDependency: options.hasSsrDependency ?? false,
     nextjsVersion,
     nextjsMajorVersion,
     hasReactNativeWorkspace: framework === "expo" || framework === "react-native",
@@ -197,13 +216,16 @@ export const collectRuleHits = async (
   options: CollectRuleHitsOptions = {},
 ): Promise<RuleHit[]> => {
   const project = buildTestProject({ rootDirectory: projectDir, ...options });
+  const isolatedSiblingRules = DERIVED_STATE_SIBLING_RULE_IDS.includes(ruleId)
+    ? buildIsolatedDerivedStateRuleConfig(ruleId)
+    : { [`react-doctor/${ruleId}`]: "warn" };
   const diagnostics = await runOxlint({
     rootDirectory: projectDir,
     project,
     // Force-enable the rule under test so default-disabled rules
     // (`defaultEnabled: false`) still produce hits here. Severity is
     // irrelevant — callers assert on file path and message, not severity.
-    userConfig: { rules: { [`react-doctor/${ruleId}`]: "warn" } },
+    userConfig: { rules: isolatedSiblingRules },
   });
   return diagnostics
     .filter((diagnostic) => diagnostic.rule === ruleId)

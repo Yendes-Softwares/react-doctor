@@ -68,6 +68,7 @@ const MUTATING_ARRAY_METHOD_NAMES = new Set([
 const TYPE_RESOLUTION_DEPTH_LIMIT = 4;
 
 const ARITHMETIC_KEY_OPERATORS = new Set(["+", "-", "*", "/", "%"]);
+const bindingMutationResultsByProgram = new WeakMap<EsTreeNode, Map<string, boolean>>();
 
 // The identifiers a key expression could get its value from — the bare
 // identifier, template-literal slots, `x.toString()`, `String(x)` /
@@ -188,6 +189,13 @@ const isArrayFromCall = (node: EsTreeNode | null | undefined): boolean => {
 const isBindingReassignedOrMutated = (referenceNode: EsTreeNode, bindingName: string): boolean => {
   const programRoot = findProgramRoot(referenceNode);
   if (!programRoot) return false;
+  let mutationResultsByBindingName = bindingMutationResultsByProgram.get(programRoot);
+  if (!mutationResultsByBindingName) {
+    mutationResultsByBindingName = new Map();
+    bindingMutationResultsByProgram.set(programRoot, mutationResultsByBindingName);
+  }
+  const cachedResult = mutationResultsByBindingName.get(bindingName);
+  if (cachedResult !== undefined) return cachedResult;
   let didFindWrite = false;
   walkAst(programRoot, (child: EsTreeNode): boolean | void => {
     if (didFindWrite) return false;
@@ -219,6 +227,7 @@ const isBindingReassignedOrMutated = (referenceNode: EsTreeNode, bindingName: st
       return false;
     }
   });
+  mutationResultsByBindingName.set(bindingName, didFindWrite);
   return didFindWrite;
 };
 
@@ -903,6 +912,23 @@ const templateHasOuterMemberIdentity = (
   return false;
 };
 
+const findBareItemNamesReferencedByTemplate = (
+  template: EsTreeNodeOfType<"TemplateLiteral">,
+  itemNames: ReadonlySet<string>,
+): Set<string> => {
+  const referencedItemNames = new Set<string>();
+  for (const expression of template.expressions ?? []) {
+    const unwrappedExpression = stripParenExpression(expression);
+    if (
+      isNodeOfType(unwrappedExpression, "Identifier") &&
+      itemNames.has(unwrappedExpression.name)
+    ) {
+      referencedItemNames.add(unwrappedExpression.name);
+    }
+  }
+  return referencedItemNames;
+};
+
 const forLoopTestReadsDataLength = (test: EsTreeNode): boolean => {
   let didFindLengthRead = false;
   walkAst(test, (child: EsTreeNode): boolean | void => {
@@ -1150,9 +1176,15 @@ export const noArrayIndexAsKey = defineRule({
             const jsxElement = openingElement.parent;
             if (jsxElement && isNodeOfType(jsxElement, "JSXElement")) {
               const isInlineTextRun = INLINE_TEXT_LEAF_TAGS.has(elementName.name);
+              const primitiveItemNames = keyTemplate
+                ? findBareItemNamesReferencedByTemplate(keyTemplate, itemNames)
+                : EMPTY_NAME_SET;
               const isStateful = containsStatefulDescendant(jsxElement as EsTreeNode, {
                 memberRootNames: isInlineTextRun ? itemNames : EMPTY_NAME_SET,
-                bareIdentifierNames: derivedNames,
+                bareIdentifierNames:
+                  primitiveItemNames.size > 0
+                    ? new Set([...derivedNames, ...primitiveItemNames])
+                    : derivedNames,
               });
               if (!isStateful) return;
             }

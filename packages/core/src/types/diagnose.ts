@@ -8,6 +8,7 @@ export interface DiagnoseOptions {
   /** See `ReactDoctorConfig.deadCode`. Ignored in diff mode. */
   deadCode?: boolean;
   verbose?: boolean;
+  /** Restrict linting to these supported JS/TS source files. */
   includePaths?: string[];
   /**
    * Per-call override for `ReactDoctorConfig.respectInlineDisables`.
@@ -33,6 +34,10 @@ export interface DiagnoseResult {
   skippedChecks: string[];
   /** See `InspectResult.skippedCheckReasons`. */
   skippedCheckReasons?: Record<string, string>;
+  /** See `InspectResult.analyzedFiles`. */
+  analyzedFiles?: ReadonlyArray<string>;
+  /** See `InspectResult.scannedFileCount`. */
+  scannedFileCount?: number;
   project: ProjectInfo;
   /**
    * Whether the scanned project resolved a React-compatible runtime (React

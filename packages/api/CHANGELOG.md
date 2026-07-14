@@ -1,5 +1,33 @@
 # @react-doctor/api
 
+## 0.7.8
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @react-doctor/core@0.7.8
+
+## 0.7.7
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @react-doctor/core@0.7.7
+
+## 0.7.6
+
+### Patch Changes
+
+- Updated dependencies [[`037bd56`](https://github.com/millionco/react-doctor/commit/037bd569eca61132deb581511d8893c05ee87bf6)]:
+  - @react-doctor/core@0.7.6
+
+## 0.7.5
+
+### Patch Changes
+
+- Updated dependencies [[`99ac4ff`](https://github.com/millionco/react-doctor/commit/99ac4ff842ea8819b4cfce2548bddf0f5b47e6df)]:
+  - @react-doctor/core@0.7.5
+
 ## 0.7.4
 
 ### Patch Changes

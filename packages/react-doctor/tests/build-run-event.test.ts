@@ -61,6 +61,7 @@ const buildResult = (overrides: Partial<InspectResult> = {}): InspectResult => (
   project: projectInfo,
   elapsedMilliseconds: 1200,
   scannedFileCount: 10,
+  analyzedFiles: Array.from({ length: 10 }, (_unused, index) => `src/${index}.tsx`),
   scanElapsedMilliseconds: 900,
   ...overrides,
 });
@@ -107,6 +108,22 @@ describe("buildRunEventAttributes", () => {
       if (previous === undefined) delete process.env[name];
       else process.env[name] = previous;
     }
+  });
+
+  it("records how many surfaced diagnostics span multiple lines", () => {
+    const attributes = buildRunEventAttributes(
+      baseInput({
+        result: buildResult({
+          diagnostics: [
+            buildDiagnostic({ line: 2, endLine: 5 }),
+            buildDiagnostic({ line: 8, endLine: 8 }),
+            buildDiagnostic({ line: 10 }),
+          ],
+        }),
+      }),
+    );
+
+    expect(attributes["scan.multilineDiagnosticCount"]).toBe(1);
   });
 
   it("records whether the dead-code pass overlapped lint, and drops it on the failure path", () => {
@@ -157,6 +174,70 @@ describe("buildRunEventAttributes", () => {
     // Nothing fired -> no migration bucket to report (dropped, not "null").
     expect(attributes["migration.largestRuleBucketFiles"]).toBeUndefined();
     expect(attributes["migration.largestRuleBucketRule"]).toBeUndefined();
+  });
+
+  it("records exact scan completeness as one low-cardinality outcome attribute", () => {
+    const completeAttributes = buildRunEventAttributes(
+      baseInput({
+        result: buildResult({
+          analyzedFiles: Array.from({ length: 10 }, (_unused, index) => `src/${index}.tsx`),
+        }),
+      }),
+    );
+    expect(completeAttributes["outcome.complete"]).toBe(true);
+    expect(completeAttributes["scan.complete"]).toBeUndefined();
+
+    const incompleteAttributes = buildRunEventAttributes(
+      baseInput({
+        result: buildResult({ analyzedFiles: ["src/0.tsx"] }),
+      }),
+    );
+    expect(incompleteAttributes["outcome.complete"]).toBe(false);
+    expect(incompleteAttributes["outcome.status"]).toBe("ok");
+    expect(incompleteAttributes["outcome.exitCode"]).toBe(0);
+    expect(incompleteAttributes["outcome.wouldBlock"]).toBe(false);
+    const partialCheckAttributes = buildRunEventAttributes(
+      baseInput({
+        result: buildResult({
+          analyzedFiles: Array.from({ length: 10 }, (_unused, index) => `src/${index}.tsx`),
+          skippedCheckReasons: {
+            "lint:partial": "React Hooks rules were skipped after their plugin failed to load.",
+          },
+        }),
+      }),
+    );
+    expect(partialCheckAttributes["outcome.complete"]).toBe(false);
+    expect(partialCheckAttributes["outcome.status"]).toBe("ok");
+    expect(partialCheckAttributes["outcome.exitCode"]).toBe(0);
+    expect(partialCheckAttributes["outcome.clean"]).toBe(false);
+    expect(
+      buildRunEventAttributes(baseInput({ error: new Error("boom") }))["outcome.complete"],
+    ).toBe(false);
+  });
+
+  it("mirrors the exit-code gate for a hard lint failure, including `blocking: none`", () => {
+    const hardFailedResult = buildResult({
+      analyzedFiles: [],
+      skippedChecks: ["lint"],
+      skippedCheckReasons: { lint: "Failed to parse oxlint output: Error running JS plugin." },
+    });
+
+    const hardFailureAttributes = buildRunEventAttributes(baseInput({ result: hardFailedResult }));
+    expect(hardFailureAttributes["outcome.complete"]).toBe(false);
+    expect(hardFailureAttributes["outcome.status"]).toBe("error");
+    expect(hardFailureAttributes["outcome.exitCode"]).toBe(1);
+    expect(hardFailureAttributes["outcome.wouldBlock"]).toBe(false);
+
+    const scoreOnlyAttributes = buildRunEventAttributes(
+      baseInput({ result: hardFailedResult, scoreOnly: true }),
+    );
+    expect(scoreOnlyAttributes["outcome.exitCode"]).toBe(1);
+
+    const advisoryAttributes = buildRunEventAttributes(
+      baseInput({ result: hardFailedResult, userConfig: { blocking: "none" } }),
+    );
+    expect(advisoryAttributes["outcome.status"]).toBe("error");
+    expect(advisoryAttributes["outcome.exitCode"]).toBe(0);
   });
 
   it("records the widest-blast-radius rule for migration-scale calibration", () => {
@@ -216,6 +297,28 @@ describe("buildRunEventAttributes", () => {
     expect(attributes["score.value"]).toBe(73);
     expect(attributes["score.label"]).toBe("Fair");
     expect(attributes["score.available"]).toBe(true);
+  });
+
+  it("counts retained findings beyond the first occurrence at one rule site", () => {
+    const result = buildResult({
+      diagnostics: [
+        buildDiagnostic({
+          rule: "exhaustive-deps",
+          message: "Cleanup may read a changed ref.",
+          line: 122,
+          column: 15,
+        }),
+        buildDiagnostic({
+          rule: "exhaustive-deps",
+          message: "The setter may loop without dependencies.",
+          line: 122,
+          column: 15,
+        }),
+        buildDiagnostic({ rule: "exhaustive-deps", line: 123, column: 15 }),
+      ],
+    });
+
+    expect(buildRunEventAttributes(baseInput({ result }))["diag.sameSiteOccurrences"]).toBe(1);
   });
 
   it("flags a blocking run when the action blocking gate would trip", () => {
@@ -538,6 +641,19 @@ describe("buildRunEventAttributes", () => {
     expect(attributes["scan.workerCount"]).toBeUndefined();
     expect(attributes["scan.fileCount"]).toBeUndefined();
     expect(attributes["timing.scanMs"]).toBeUndefined();
+  });
+
+  it("counts analyzed non-JSX source files for partial-scan coverage telemetry", () => {
+    const attributes = buildRunEventAttributes(
+      baseInput({
+        scope: "changed",
+        result: buildResult({
+          analyzedFiles: ["src/App.tsx", "src/hooks.ts", "src/runtime.mjs", "src/View.jsx"],
+          scannedFileCount: 4,
+        }),
+      }),
+    );
+    expect(attributes["scan.nonJsxFileCount"]).toBe(2);
   });
 
   it("records each scan phase's enabled state, including supply-chain", () => {

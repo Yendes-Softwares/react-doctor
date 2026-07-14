@@ -13,8 +13,16 @@ import {
 import { getImportSourceForName } from "../../utils/find-import-source-for-name.js";
 import { isFunctionLike } from "../../utils/is-function-like.js";
 import { isNonReactEffectEventCallee } from "../../utils/is-non-react-effect-event-callee.js";
+import { isNodeConditionallyExecuted } from "../../utils/is-node-conditionally-executed.js";
 import { symbolHasReactUseEffectEventOrigin } from "../../utils/symbol-has-react-use-effect-event-origin.js";
 import { isReactHocCallbackArgument } from "../../utils/is-react-hoc-callback-argument.js";
+import { getImportedName } from "../../utils/get-imported-name.js";
+import { getDestructuredBindingPropertyName } from "../../utils/get-destructured-binding-property-name.js";
+import { getStaticPropertyName } from "../../utils/get-static-property-name.js";
+import { hasPossibleStaticPropertyMutationOrEscape } from "../../utils/has-static-property-write-before.js";
+import { isReactNamespaceImport } from "../../utils/is-react-api-call.js";
+import { statementAlwaysExits } from "../../utils/statement-always-exits.js";
+import { stripParenExpression } from "../../utils/strip-paren-expression.js";
 import { walkAst } from "../../utils/walk-ast.js";
 import { isRulesOfHooksSuppressedAt } from "./rules-of-hooks-suppression.js";
 
@@ -368,6 +376,176 @@ const inferDestructureSourceKey = (bindingIdentifier: EsTreeNode): string | null
 // component / custom hook scope.
 const isReactUseHook = (hookName: string): boolean => hookName === "use";
 
+const isReactHookCapabilityValue = (
+  expression: EsTreeNode,
+  scopes: ScopeAnalysis,
+  visitedSymbolIds: Set<number> = new Set(),
+): boolean => {
+  const unwrappedExpression = stripParenExpression(expression);
+  if (isNodeOfType(unwrappedExpression, "Identifier")) {
+    const symbol = scopes.symbolFor(unwrappedExpression);
+    if (!symbol || visitedSymbolIds.has(symbol.id)) return false;
+    visitedSymbolIds.add(symbol.id);
+    if (symbol.kind === "import") {
+      return (
+        isReactImport(symbol) && isReactHookName(getImportedName(symbol.declarationNode) ?? "")
+      );
+    }
+    if (
+      symbol.kind !== "const" ||
+      !symbol.initializer ||
+      !isNodeOfType(symbol.declarationNode, "VariableDeclarator")
+    ) {
+      return false;
+    }
+    const destructuredPropertyName = getDestructuredBindingPropertyName(symbol.bindingIdentifier);
+    if (destructuredPropertyName) {
+      const namespaceExpression = stripParenExpression(symbol.initializer);
+      return (
+        isReactHookName(destructuredPropertyName) &&
+        isNodeOfType(namespaceExpression, "Identifier") &&
+        isReactNamespaceImport(namespaceExpression, scopes) &&
+        !hasPossibleStaticPropertyMutationOrEscape(
+          namespaceExpression,
+          destructuredPropertyName,
+          scopes,
+        )
+      );
+    }
+    if (symbol.declarationNode.id !== symbol.bindingIdentifier) return false;
+    return isReactHookCapabilityValue(symbol.initializer, scopes, visitedSymbolIds);
+  }
+  if (!isNodeOfType(unwrappedExpression, "MemberExpression")) return false;
+  const propertyName = getStaticPropertyName(unwrappedExpression);
+  if (!propertyName || !isReactHookName(propertyName)) return false;
+  const namespaceExpression = stripParenExpression(unwrappedExpression.object);
+  return (
+    isNodeOfType(namespaceExpression, "Identifier") &&
+    isReactNamespaceImport(namespaceExpression, scopes) &&
+    !hasPossibleStaticPropertyMutationOrEscape(namespaceExpression, propertyName, scopes)
+  );
+};
+
+const isReactHookCapabilityComparisonOperand = (
+  expression: EsTreeNode,
+  scopes: ScopeAnalysis,
+): boolean => {
+  const unwrappedExpression = stripParenExpression(expression);
+  if (isReactHookCapabilityValue(unwrappedExpression, scopes)) return true;
+  return (
+    isNodeOfType(unwrappedExpression, "UnaryExpression") &&
+    unwrappedExpression.operator === "typeof" &&
+    isReactHookCapabilityValue(unwrappedExpression.argument, scopes)
+  );
+};
+
+const isStaticCapabilityComparisonValue = (
+  expression: EsTreeNode,
+  scopes: ScopeAnalysis,
+): boolean => {
+  const unwrappedExpression = stripParenExpression(expression);
+  if (isNodeOfType(unwrappedExpression, "Literal")) return true;
+  return (
+    isNodeOfType(unwrappedExpression, "Identifier") &&
+    unwrappedExpression.name === "undefined" &&
+    scopes.isGlobalReference(unwrappedExpression)
+  );
+};
+
+const CAPABILITY_COMPARISON_OPERATORS: ReadonlySet<string> = new Set(["==", "!=", "===", "!=="]);
+
+const isInvariantReactHookCapabilityCondition = (
+  expression: EsTreeNode,
+  scopes: ScopeAnalysis,
+): boolean => {
+  const unwrappedExpression = stripParenExpression(expression);
+  if (isReactHookCapabilityValue(unwrappedExpression, scopes)) return true;
+  if (
+    isNodeOfType(unwrappedExpression, "UnaryExpression") &&
+    unwrappedExpression.operator === "!"
+  ) {
+    return isInvariantReactHookCapabilityCondition(unwrappedExpression.argument, scopes);
+  }
+  if (isNodeOfType(unwrappedExpression, "LogicalExpression")) {
+    return (
+      isInvariantReactHookCapabilityCondition(unwrappedExpression.left, scopes) &&
+      isInvariantReactHookCapabilityCondition(unwrappedExpression.right, scopes)
+    );
+  }
+  if (
+    !isNodeOfType(unwrappedExpression, "BinaryExpression") ||
+    !CAPABILITY_COMPARISON_OPERATORS.has(unwrappedExpression.operator)
+  ) {
+    return false;
+  }
+  return (
+    (isReactHookCapabilityComparisonOperand(unwrappedExpression.left, scopes) &&
+      isStaticCapabilityComparisonValue(unwrappedExpression.right, scopes)) ||
+    (isReactHookCapabilityComparisonOperand(unwrappedExpression.right, scopes) &&
+      isStaticCapabilityComparisonValue(unwrappedExpression.left, scopes))
+  );
+};
+
+const statementContainsOwnAbruptCompletion = (statement: EsTreeNode): boolean => {
+  let doesContainAbruptCompletion = false;
+  walkAst(statement, (child) => {
+    if (child !== statement && isFunctionLike(child)) return false;
+    if (isNodeOfType(child, "ReturnStatement") || isNodeOfType(child, "ThrowStatement")) {
+      doesContainAbruptCompletion = true;
+      return false;
+    }
+  });
+  return doesContainAbruptCompletion;
+};
+
+const isInvariantReactHookCapabilityExit = (
+  statement: EsTreeNode,
+  scopes: ScopeAnalysis,
+): boolean =>
+  isNodeOfType(statement, "IfStatement") &&
+  statement.alternate === null &&
+  statementAlwaysExits(statement.consequent) &&
+  isInvariantReactHookCapabilityCondition(statement.test, scopes);
+
+const isAfterOnlyInvariantReactHookCapabilityExits = (
+  node: EsTreeNode,
+  enclosingFunction: EsTreeNode,
+  scopes: ScopeAnalysis,
+): boolean => {
+  if (
+    !isFunctionLike(enclosingFunction) ||
+    !isNodeOfType(enclosingFunction.body, "BlockStatement")
+  ) {
+    return false;
+  }
+  let containingStatement = node;
+  while (containingStatement.parent && containingStatement.parent !== enclosingFunction.body) {
+    if (isFunctionLike(containingStatement.parent)) return false;
+    if (
+      isNodeOfType(containingStatement.parent, "IfStatement") ||
+      isNodeOfType(containingStatement.parent, "SwitchStatement") ||
+      isNodeOfType(containingStatement.parent, "SwitchCase") ||
+      isNodeOfType(containingStatement.parent, "ConditionalExpression") ||
+      isNodeOfType(containingStatement.parent, "LogicalExpression")
+    ) {
+      return false;
+    }
+    containingStatement = containingStatement.parent;
+  }
+  if (containingStatement.parent !== enclosingFunction.body) return false;
+  const statementIndex = enclosingFunction.body.body.findIndex(
+    (statement) => statement === containingStatement,
+  );
+  if (statementIndex <= 0) return false;
+  const bypassingStatements = enclosingFunction.body.body
+    .slice(0, statementIndex)
+    .filter((statement) => statementContainsOwnAbruptCompletion(statement));
+  return (
+    bypassingStatements.length > 0 &&
+    bypassingStatements.every((statement) => isInvariantReactHookCapabilityExit(statement, scopes))
+  );
+};
+
 interface FunctionInfo {
   node: EsTreeNode;
   // The name we'd display in error messages. Best-effort: the
@@ -635,62 +813,6 @@ const isInsideClassComponent = (node: EsTreeNode): boolean => {
     current = current.parent ?? null;
   }
   return false;
-};
-
-// True if any AST ancestor between `descendant` (exclusive) and
-// `ancestor` (exclusive) is a conditional / short-circuit expression
-// whose right-hand side encloses `descendant`.
-const hasShortCircuitAncestor = (descendant: EsTreeNode, ancestor: EsTreeNode): boolean => {
-  let current: EsTreeNode | null | undefined = descendant.parent;
-  while (current && current !== ancestor) {
-    if (
-      isNodeOfType(current, "ConditionalExpression") &&
-      (isWithinRange(descendant, current.consequent) ||
-        isWithinRange(descendant, current.alternate))
-    ) {
-      return true;
-    }
-    if (
-      isNodeOfType(current, "LogicalExpression") &&
-      (current.operator === "&&" || current.operator === "||" || current.operator === "??") &&
-      isWithinRange(descendant, current.right)
-    ) {
-      return true;
-    }
-    // Destructuring default (`const { id = useId() } = props`) only
-    // evaluates its right side when the property is undefined — a
-    // conditional hook call in disguise.
-    if (isNodeOfType(current, "AssignmentPattern") && isWithinRange(descendant, current.right)) {
-      return true;
-    }
-    current = current.parent ?? null;
-  }
-  return false;
-};
-
-interface NodeWithRange {
-  start?: number;
-  end?: number;
-}
-
-// HACK: walking the AST back from a parent into its own children to
-// find which side an expression sits on is awkward. Compare the start
-// / end ranges instead — a node is "within" a sibling's range iff its
-// span fits inside.
-const isWithinRange = (descendant: EsTreeNode, sibling: EsTreeNode): boolean => {
-  const descendantSpan = descendant as NodeWithRange;
-  const siblingSpan = sibling as NodeWithRange;
-  if (
-    typeof descendantSpan.start !== "number" ||
-    typeof siblingSpan.start !== "number" ||
-    typeof siblingSpan.end !== "number"
-  ) {
-    return false;
-  }
-  return (
-    descendantSpan.start >= siblingSpan.start &&
-    (descendantSpan.end ?? siblingSpan.end) <= siblingSpan.end
-  );
 };
 
 const isInsideTry = (descendant: EsTreeNode, ancestor: EsTreeNode): boolean => {
@@ -966,14 +1088,17 @@ export const rulesOfHooks = defineRule({
           return;
         }
 
-        if (hasShortCircuitAncestor(node, enclosing.node)) {
+        if (isNodeConditionallyExecuted(node, enclosing.node)) {
           context.report({ node: node.callee, message: buildConditionalMessage(hookName) });
           return;
         }
 
         // CFG-based check: catches early-return patterns and
         // if-statement bodies.
-        if (!context.cfg.isUnconditionalFromEntry(node)) {
+        if (
+          !context.cfg.isUnconditionalFromEntry(node) &&
+          !isAfterOnlyInvariantReactHookCapabilityExits(node, enclosing.node, context.scopes)
+        ) {
           context.report({ node: node.callee, message: buildConditionalMessage(hookName) });
         }
       },

@@ -5,18 +5,14 @@ import { isAstNode } from "../../../../utils/is-ast-node.js";
 import { isFunctionLike } from "../../../../utils/is-function-like.js";
 import { isNodeOfType } from "../../../../utils/is-node-of-type.js";
 import { TRANSPARENT_EXPRESSION_WRAPPER_TYPES } from "../../../../utils/strip-paren-expression.js";
+import { getAstChildKeys } from "./get-ast-child-keys.js";
 import { getScopeForNode, type ProgramAnalysis } from "./get-program-analysis.js";
-import { VISITOR_KEYS } from "./constants.js";
 
 // 1:1 port of upstream `src/util/ast.js` from
 // `eslint-plugin-react-you-might-not-need-an-effect`. Upstream uses
 // `context.sourceCode.getScope(node)` and `context.sourceCode.visitorKeys`.
 // We thread the cached `ProgramAnalysis` (eslint-scope ScopeManager)
-// through every helper and use `eslint-visitor-keys.KEYS` as the
-// static visitorKeys table.
-
-const getChildKeys = (node: EsTreeNode): ReadonlyArray<string> =>
-  VISITOR_KEYS[node.type] ?? Object.keys(node).filter((key) => key !== "parent");
+// through every helper and use Oxc's visitor keys for its AST.
 
 // A function-expression ARGUMENT of a binding's initializer call
 // (`const observer = new MutationObserver((m) => setN(m.length))`) is a
@@ -93,7 +89,7 @@ const descend = (
   visit(node);
   visited.add(node);
 
-  const keys = getChildKeys(node);
+  const keys = getAstChildKeys(node);
   const record = node as unknown as Record<string, unknown>;
   for (const key of keys) {
     const child = record[key];
@@ -136,20 +132,11 @@ export const findDownstreamNodes = (topNode: EsTreeNode, type: string): EsTreeNo
   return nodes;
 };
 
-// Reference identity is stable per analysis, so the scope + reference scan
-// runs once per identifier; `has()` distinguishes a cached null resolution
-// from a miss (same WeakMap shape as downstreamRefsCache below).
-const refByIdentifierCache = new WeakMap<ProgramAnalysis, WeakMap<EsTreeNode, Reference | null>>();
-
 export const getRef = (analysis: ProgramAnalysis, identifier: EsTreeNode): Reference | null => {
-  let refByIdentifier = refByIdentifierCache.get(analysis);
-  if (!refByIdentifier) {
-    refByIdentifier = new WeakMap();
-    refByIdentifierCache.set(analysis, refByIdentifier);
-  }
+  const refByIdentifier = analysis.referenceByIdentifier;
   if (refByIdentifier.has(identifier)) return refByIdentifier.get(identifier) ?? null;
   let resolvedReference: Reference | null = null;
-  const scope = getScopeForNode(identifier, analysis.scopeManager);
+  const scope = getScopeForNode(identifier, analysis);
   if (scope) {
     for (const reference of scope.references) {
       if (reference.identifier === identifier) {
@@ -270,6 +257,9 @@ const unwrapUseCallback = (node: EsTreeNode | null | undefined): EsTreeNode | nu
   return isUseCallbackCallee ? node.arguments?.[0] : node;
 };
 
+export const hasParameterDefinition = (ref: Reference): boolean =>
+  Boolean(ref.resolved?.defs.some((definition) => definition.type === "Parameter"));
+
 // Resolves a reference to the function-like node its first definition
 // denotes, unwrapping a `const fn = () => {}` declarator and a
 // `const fn = useCallback(() => {}, [])` wrapper. Returns null
@@ -282,7 +272,13 @@ export const resolveToFunction = (
   | EsTreeNodeOfType<"FunctionExpression">
   | EsTreeNodeOfType<"FunctionDeclaration">
   | null => {
-  const definitionNode = ref.resolved?.defs[0]?.node as unknown as EsTreeNode | undefined;
+  const definition = ref.resolved?.defs[0];
+  // A `Parameter` def points its `node` at the ENCLOSING function that
+  // declares the parameter, not at a function bound to the parameter — the
+  // binding holds a value, not a callable. Resolving it would mistake plain
+  // data arguments (`setRow(row)`) for the updater/callback function.
+  if (!definition || hasParameterDefinition(ref)) return null;
+  const definitionNode = definition.node as unknown as EsTreeNode | undefined;
   if (!definitionNode) return null;
   if (isFunctionLike(definitionNode)) return definitionNode;
   if (isNodeOfType(definitionNode, "VariableDeclarator")) {

@@ -299,7 +299,7 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     code: "function fmt(locale, n) { return new Intl.NumberFormat(locale).format(n); }",
   },
   "js-hoist-regexp": {
-    code: 'for (const line of lines) { const m = new RegExp("\\\\d+", "gi"); m.test(line); }',
+    code: 'for (const line of lines) { const m = new RegExp("\\\\d+", "i"); m.test(line); }',
   },
   "js-index-maps": {
     code: "function g(ids, users){ const out=[]; for(const id of ids){ out.push(users.find((u)=> u.id === id)); } return out; }",
@@ -308,10 +308,10 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     code: "function arraysEqual(a, b) {\n      return a.every((value, index) => value === b[index]);\n    }",
   },
   "js-min-max-loop": {
-    code: "const smallest = nums.sort((a, b) => a - b)[0];",
+    code: "const smallest = [3, 1, 2].sort((a, b) => a - b)[0];",
   },
   "js-set-map-lookups": {
-    code: "function f(users, roles){ const a=[]; for(const u of users){ if(roles.includes(u.role)) a.push(u);} return a; }",
+    code: "function f(users: Array<{ role: string }>, roles: string[]){ const a=[]; for(const u of users){ if(roles.includes(u.role)) a.push(u);} return a; }",
   },
   "js-tosorted-immutable": {
     code: "const arr = getItems();\nconst s = [...arr].sort();",
@@ -511,7 +511,7 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     filePath: "src/components/save-button.tsx",
   },
   "no-adjust-state-on-prop-change": {
-    code: "function FloatingSheet({ isOpen }) {\n        const [isClosing, setIsClosing] = useState(false);\n        const [isAnimating, setIsAnimating] = useState(false);\n        const [height, setHeight] = useState(0);\n        useEffect(() => {\n          if (isOpen) {\n            setIsClosing(false);\n            setIsAnimating(true);\n            setHeight(0);\n            setTimeout(() => setIsAnimating(false), 300);\n          }\n        }, [isOpen]);\n        return null;\n      }",
+    code: 'function Field({ value }) {\n        const [draft, setDraft] = useState("");\n        useEffect(() => {\n          setDraft(value);\n        }, [value]);\n        return <input value={draft} />;\n      }',
   },
   "no-aria-hidden-on-focusable": {
     code: 'export const A = () => <button aria-hidden={true} type="button">x</button>;',
@@ -530,9 +530,6 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
   },
   "no-call-component-as-function": {
     code: "\n      const Row = ({ item }) => <li>{item}</li>;\n      const List = ({ items }) => (\n        <ul>{items.map((item) => Row({ item }))}</ul>\n      );\n      ",
-  },
-  "no-cascading-set-state": {
-    code: '\n      import { useEffect, useState } from "react";\n      export const Init = ({ id }: { id: string }) => {\n        const [a, setA] = useState(0);\n        const [b, setB] = useState(0);\n        const [c, setC] = useState(0);\n        useEffect(() => {\n          setA(1);\n          setB(2);\n          setC(3);\n        }, [id]);\n        return <div>{a}{b}{c}</div>;\n      };\n    ',
   },
   "no-chain-state-updates": {
     code: 'export const Search = () => {\n        const [query, setQuery] = useState("");\n        const [highlighted, setHighlighted] = useState(-1);\n        const clearLater = () => {\n          setTimeout(() => setQuery(""), 5000);\n        };\n        const onChange = (event) => setQuery(event.target.value);\n        useEffect(() => {\n          setHighlighted(-1);\n        }, [query]);\n        return <input onChange={onChange} onBlur={clearLater} />;\n      };',
@@ -567,7 +564,7 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     code: "export const Link = (props) => <a {...props} />;\nLink.defaultProps = { appearance: 'default', size: 'regular', disabled: false };",
   },
   "no-derived-state": {
-    code: "const SearchField = forwardRef(({ searchValue, setSearchValue, ...rest }, ref) => {\n        const [search, setSearch] = useState(searchValue);\n        const { onChange, ...newProps } = rest;\n\n        const debouncing = useRef(false);\n        useEffect(() => {\n          debouncing.current = true;\n        }, [search]);\n\n        useEffect(() => {\n          if (!debouncing.current && searchValue === '' && search !== '') {\n            setSearch(searchValue);\n          }\n        }, [searchValue, search]);\n\n        useDebounce(\n          () => {\n            setSearchValue(search);\n            debouncing.current = false;\n          },\n          500,\n          [search]\n        );\n\n        const onChangeHandler = (e) => {\n          setSearch(e.target.value);\n          if (onChange) {\n            onChange(e);\n          }\n        };\n\n        return <input value={search} onChange={onChangeHandler} {...newProps} ref={ref} />;\n      });",
+    code: 'function Profile({ firstName, lastName }) {\n        const [fullName, setFullName] = useState("");\n        useEffect(() => {\n          setFullName(`${firstName} ${lastName}`);\n        }, [firstName, lastName]);\n        return <p>{fullName}</p>;\n      }',
   },
   "no-derived-state-effect": {
     code: "function Field({ value }) {\n        const [draft, setDraft] = useState(value);\n        useEffect(() => { setDraft(value); }, [value]);\n        return <input value={draft} />;\n      }",
@@ -652,6 +649,10 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
   "no-gray-on-colored-background": {
     code: 'const C = () => <div className="bg-blue-600 text-gray-400">Hi</div>;',
   },
+  "no-hydration-branch-on-browser-global": {
+    code: '"use client";\nexport const Page = () => typeof window === "undefined" ? <Server /> : <Client />;',
+    filePath: "app/page.tsx",
+  },
   "no-img-lazy-with-high-fetchpriority": {
     code: 'const Hero = () => <img src="/a.png" loading="lazy" fetchPriority="high" />;',
   },
@@ -659,7 +660,7 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     code: 'const Checkbox = () => <input type="checkbox" indeterminate />;',
   },
   "no-initialize-state": {
-    code: "function C() {\n        const [count, setCount] = useState(null);\n        useEffect(() => {\n          const initial = 42;\n          setCount(initial);\n          return () => console.log(initial);\n        }, []);\n        return null;\n      }",
+    code: "function Counter({ initialCount }) {\n        const [count, setCount] = useState(null);\n        useEffect(() => {\n          setCount(initialCount);\n        }, []);\n        return <output>{count}</output>;\n      }",
   },
   "no-inline-bounce-easing": {
     code: 'const C = () => <div className="animate-bounce" />;',
@@ -681,6 +682,17 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
   "no-json-parse-stringify-clone": {
     code: "const copy = JSON.parse(JSON.stringify(state));",
   },
+  "no-impure-state-updater": {
+    code: `import { useState } from "react";
+      const Counter = () => {
+        const [count, setCount] = useState(0);
+        const increment = () => setCount((previousCount) => {
+          localStorage.setItem("count", String(previousCount + 1));
+          return previousCount + 1;
+        });
+        return <button onClick={increment}>{count}</button>;
+      };`,
+  },
   "no-jsx-element-type": {
     code: "\n      function App(): JSX.Element {\n        return <div />;\n      }\n    ",
   },
@@ -700,7 +712,7 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     code: 'import { Component } from "react";\nclass Board extends Component {\n  componentWillMount() {}\n  render() { return null; }\n}',
   },
   "no-legacy-context-api": {
-    code: 'class ColorProvider extends React.Component {\n  static childContextTypes = { color: PropTypes.string };\n  getChildContext() {\n    return { color: "red" };\n  }\n  render() {\n    return <div>{this.props.children}</div>;\n  }\n}',
+    code: 'import React from "react";\nclass ColorProvider extends React.Component {\n  static childContextTypes = { color: PropTypes.string };\n  getChildContext() {\n    return { color: "red" };\n  }\n  render() {\n    return <div>{this.props.children}</div>;\n  }\n}',
   },
   "no-locale-format-in-render": {
     code: '"use client";\nexport const Timestamp = ({ value }) => <time>{new Date(value).toLocaleString()}</time>;',
@@ -767,8 +779,24 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
   "no-prop-callback-in-effect": {
     code: "\n      const Image = ({ thing, property, onError, onSave, maxSize }: Props) => {\n        const values = useProperty({ thing, property, type: 'url' });\n        const { value, error: thingError } = values;\n        let valueError;\n        if (!value) {\n          valueError = new Error('No value found for property.');\n        }\n        const [error, setError] = useState(thingError ?? valueError);\n\n        useEffect(() => {\n          if (error) {\n            if (onError) {\n              onError(error);\n            }\n          }\n        }, [error, onError]);\n\n        const handleDelete = async () => {\n          try {\n            await deleteImage(value);\n          } catch (deleteError) {\n            setError(deleteError);\n          }\n        };\n\n        const handleChange = async (input) => {\n          const fileSelected = input.files && input.files[0];\n          try {\n            await saveImage(fileSelected);\n            if (onSave) {\n              onSave();\n            }\n          } catch (saveError) {\n            setError(saveError);\n          }\n        };\n\n        return (\n          <div>\n            <input onChange={(event) => handleChange(event.target)} />\n            <button onClick={handleDelete}>Delete</button>\n          </div>\n        );\n      };\n      ",
   },
+  "no-prop-callback-in-render": {
+    code: `
+      const Image = ({ error, onError }) => {
+        if (error) onError(error);
+        return null;
+      };
+    `,
+  },
+  "no-ref-current-in-render": {
+    code: `import { useRef } from "react";
+      const Panel = ({ value }) => {
+        const latestValueRef = useRef(value);
+        latestValueRef.current = value;
+        return null;
+      };`,
+  },
   "no-prop-types": {
-    code: 'import PropTypes from "prop-types";\nconst Foo = () => null;\nFoo.propTypes = { name: PropTypes.string };',
+    code: 'import PropTypes from "prop-types";\nconst Foo = ({ name }) => <div>{name}</div>;\nFoo.propTypes = { name: PropTypes.string };',
   },
   "no-pure-black-background": {
     code: 'const El = () => <div className="bg-black" />;',
@@ -784,7 +812,7 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     code: 'import { render } from "react-dom";\nrender(null, document.getElementById("root"));',
   },
   "no-react19-deprecated-apis": {
-    code: 'import * as React from "react";\nimport * as AlertDialogPrimitive from "@radix-ui/react-alert-dialog";\n\nconst AlertDialogOverlay = React.forwardRef((props, ref) => (\n  <AlertDialogPrimitive.Overlay {...props} ref={ref} />\n));\nconst AlertDialogContent = React.forwardRef((props, ref) => (\n  <AlertDialogPrimitive.Content {...props} ref={ref} />\n));\nconst AlertDialogTitle = React.forwardRef((props, ref) => (\n  <AlertDialogPrimitive.Title {...props} ref={ref} />\n));\n',
+    code: 'import * as React from "react";\nconst Button = React.createFactory("button");\nvoid Button;',
   },
   "no-redundant-roles": {
     code: 'const Nav = () => <nav role="navigation" />;',
@@ -858,6 +886,10 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     code: 'export default function Field({ text }) { return <input type="text" value={text} />; }',
     filePath: "app/field.tsx",
   },
+  "no-unguarded-browser-global-in-render-or-hook-init": {
+    code: '"use client";\nexport const Page = () => <main>{window.innerWidth}</main>;',
+    filePath: "app/page.tsx",
+  },
   "no-undeferred-third-party": {
     code: 'const W = () => <script src="https://cdn.example.com/w.js" />;',
   },
@@ -898,7 +930,7 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     filePath: "src/server/db/users.ts",
   },
   "only-export-components": {
-    code: "export const foo = () => {}; export const Bar = () => {};",
+    code: "export const foo = () => 'label'; export const Bar = () => <div />;",
     forceJsx: true,
   },
   "package-metadata-secret": {
@@ -985,7 +1017,7 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     code: 'const posts = useQuery({ queryKey: ["posts"], queryFn: fetchPosts });\n      useMutation({ mutationFn: deletePost });',
   },
   "query-no-query-in-effect": {
-    code: "function Dashboard() { useEffect(() => { refetch(); }, [dep]); return null; }",
+    code: 'import { useQuery } from "@tanstack/react-query"; function Dashboard() { const query = useQuery({ queryKey: ["item"] }); useEffect(() => { query.refetch(); }, [query]); return null; }',
   },
   "query-no-rest-destructuring": {
     code: 'import { useQuery } from "@tanstack/react-query"; const { data, ...rest } = useQuery({ queryKey: ["x"] });',
@@ -1009,6 +1041,10 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
   "react-in-jsx-scope": {
     code: "var App, a = <App />;",
     forceJsx: true,
+  },
+  "react-markdown-unsanitized-raw-html": {
+    code: 'import Markdown from "react-markdown";\nimport raw from "rehype-raw";\nexport const Preview = ({ content }) => <Markdown rehypePlugins={[raw]}>{content}</Markdown>;',
+    filePath: "src/preview.tsx",
   },
   "redux-useselector-inline-derivation": {
     code: '\n      import { useSelector } from "react-redux";\n\n      const activeUsers = useSelector((state) =>\n        state.users.filter((user) => new Date(user.loginDate).getFullYear() === 2023),\n      );\n    ',

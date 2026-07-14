@@ -4,6 +4,7 @@ import * as path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vite-plus/test";
 import {
   CROSS_FILE_DEPENDENCY_COLLECTORS,
+  UNBOUNDED_CROSS_FILE_RULE_IDS,
   collectCrossFileDependencyProbes,
 } from "./cross-file-dependencies.js";
 import { CROSS_FILE_RULE_IDS } from "./constants/cross-file-rule-ids.js";
@@ -207,6 +208,123 @@ describe("no-mutating-reducer-state collector", () => {
   });
 });
 
+describe("effect value helper collectors", () => {
+  const affectedRuleIds = [
+    "client-passive-event-listeners",
+    "no-adjust-state-on-prop-change",
+    "no-derived-state",
+    "no-derived-state-effect",
+    "no-event-handler",
+    "no-initialize-state",
+  ];
+
+  it("records imported helper content for every affected rule and replays cached parse probes", () => {
+    writeFixtureFile(
+      "src/derive-visible.ts",
+      "export const deriveVisible = (items) => items.filter((item) => item.visible);\n",
+    );
+    const appPath = writeFixtureFile(
+      "src/App.tsx",
+      `import { deriveVisible as selectVisible } from "./derive-visible";
+export const App = ({ items }) => {
+  const [visible, setVisible] = useState([]);
+  useEffect(() => setVisible(selectVisible(items)), [items]);
+  return visible.length;
+};\n`,
+    );
+    const firstTrace = collectFor(appPath, affectedRuleIds);
+    const repeatTrace = collectFor(appPath, affectedRuleIds);
+    for (const trace of [firstTrace, repeatTrace]) {
+      expect(trace?.contentPaths.has(fixturePath("src/derive-visible.ts"))).toBe(true);
+    }
+  });
+
+  it("records alias manifests and every renamed re-export target on cached collections", () => {
+    writeFixtureFile("tsconfig.json", `{ "extends": "./tsconfig.base.json" }\n`);
+    writeFixtureFile(
+      "tsconfig.base.json",
+      `{ "compilerOptions": { "baseUrl": ".", "paths": { "@helpers": ["src/index"] } } }\n`,
+    );
+    writeFixtureFile(
+      "src/derive-visible.ts",
+      "export const internalVisible = (items) => items.filter((item) => item.visible);\n",
+    );
+    writeFixtureFile(
+      "src/index.ts",
+      `export { internalVisible as deriveVisible } from "./derive-visible";\n`,
+    );
+    const appPath = writeFixtureFile(
+      "src/App.tsx",
+      `import { deriveVisible } from "@helpers";
+export const App = ({ items }) => {
+  const [visible, setVisible] = useState([]);
+  useEffect(() => setVisible(deriveVisible(items)), [items]);
+  return visible.length;
+};\n`,
+    );
+    const expectedContentPaths = [
+      fixturePath("tsconfig.json"),
+      fixturePath("tsconfig.base.json"),
+      fixturePath("src/index.ts"),
+      fixturePath("src/derive-visible.ts"),
+    ];
+    for (const trace of [
+      collectFor(appPath, affectedRuleIds),
+      collectFor(appPath, affectedRuleIds),
+    ]) {
+      for (const expectedPath of expectedContentPaths) {
+        expect(trace?.contentPaths.has(expectedPath)).toBe(true);
+      }
+    }
+  });
+});
+
+describe("forwarded Hook dependency collectors", () => {
+  const affectedRuleIds = [
+    "exhaustive-deps",
+    "no-effect-with-fresh-deps",
+    "rerender-memo-with-default-value",
+  ];
+
+  it("records direct and nested imported Hook modules for every affected rule", () => {
+    writeFixtureFile(
+      "src/use-inner.ts",
+      `import { useEffect } from "react";\nexport const useInner = (dependencies) => useEffect(() => {}, dependencies);\n`,
+    );
+    writeFixtureFile(
+      "src/use-outer.ts",
+      `import { useInner } from "./use-inner";\nexport const useOuter = (dependencies) => useInner(dependencies);\n`,
+    );
+    const appPath = writeFixtureFile(
+      "src/App.tsx",
+      `import { useOuter } from "./use-outer";\nexport const App = () => { useOuter([]); return null; };\n`,
+    );
+
+    const trace = collectFor(appPath, affectedRuleIds);
+    expect(trace?.contentPaths.has(fixturePath("src/use-outer.ts"))).toBe(true);
+    expect(trace?.contentPaths.has(fixturePath("src/use-inner.ts"))).toBe(true);
+  });
+
+  it("records conditional imported Hook aliases used by a reached module", () => {
+    writeFixtureFile(
+      "src/use-isomorphic-layout-effect.ts",
+      `import { useEffect, useLayoutEffect } from "react";\nexport const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;\n`,
+    );
+    writeFixtureFile(
+      "src/use-document-events.ts",
+      `import { useIsomorphicLayoutEffect } from "./use-isomorphic-layout-effect";\nexport const useDocumentEvents = (dependencies) => useIsomorphicLayoutEffect(() => {}, dependencies);\n`,
+    );
+    const appPath = writeFixtureFile(
+      "src/App.tsx",
+      `import { useDocumentEvents } from "./use-document-events";\nexport const App = () => { useDocumentEvents([]); return null; };\n`,
+    );
+
+    const trace = collectFor(appPath, affectedRuleIds);
+    expect(trace?.contentPaths.has(fixturePath("src/use-document-events.ts"))).toBe(true);
+    expect(trace?.contentPaths.has(fixturePath("src/use-isomorphic-layout-effect.ts"))).toBe(true);
+  });
+});
+
 describe("nextjs collectors", () => {
   it("records ancestor layout probes for a page file only", () => {
     writeFixtureFile("app/layout.tsx", "export default ({ children }) => children;\n");
@@ -272,9 +390,9 @@ describe("react-native collectors", () => {
 });
 
 describe("collector registry", () => {
-  it("ships a collector for every cross-file rule (none unbounded today)", () => {
-    expect([...CROSS_FILE_DEPENDENCY_COLLECTORS.keys()].sort()).toEqual(
-      [...CROSS_FILE_RULE_IDS].sort(),
-    );
+  it("classifies every cross-file rule as bounded or unbounded", () => {
+    expect(
+      [...CROSS_FILE_DEPENDENCY_COLLECTORS.keys(), ...UNBOUNDED_CROSS_FILE_RULE_IDS].sort(),
+    ).toEqual([...CROSS_FILE_RULE_IDS].sort());
   });
 });

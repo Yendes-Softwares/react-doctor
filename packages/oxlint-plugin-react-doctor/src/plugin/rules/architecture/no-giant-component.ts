@@ -22,14 +22,10 @@ export const noGiantComponent = defineRule({
       return lineCount > GIANT_COMPONENT_LINE_THRESHOLD ? lineCount : null;
     };
 
-    const reportOversizedComponent = (
-      nameNode: EsTreeNode,
-      componentName: string,
-      lineCount: number,
-    ): void => {
+    const reportOversizedComponent = (nameNode: EsTreeNode, componentName: string): void => {
       context.report({
         node: nameNode,
-        message: `Component "${componentName}" is ${lineCount} lines long, which is hard to read & change. Split it into a few smaller components.`,
+        message: `Component "${componentName}" is over ${GIANT_COMPONENT_LINE_THRESHOLD} lines long, which is hard to read & change. Split it into a few smaller components.`,
       });
     };
 
@@ -38,8 +34,8 @@ export const noGiantComponent = defineRule({
         if (!node.id?.name || !isUppercaseName(node.id.name)) return;
         const lineCount = getOversizedComponentLineCount(node);
         if (lineCount === null) return;
-        if (!functionContainsReactRenderOutput(node, context.scopes)) return;
-        reportOversizedComponent(node.id, node.id.name, lineCount);
+        if (!functionContainsReactRenderOutput(node, context.scopes, context.cfg)) return;
+        reportOversizedComponent(node.id, node.id.name);
       },
       VariableDeclarator(node: EsTreeNodeOfType<"VariableDeclarator">) {
         if (!isNodeOfType(node.id, "Identifier") || !isUppercaseName(node.id.name)) return;
@@ -47,8 +43,8 @@ export const noGiantComponent = defineRule({
         if (!functionNode) return;
         const lineCount = getOversizedComponentLineCount(functionNode);
         if (lineCount === null) return;
-        if (!functionContainsReactRenderOutput(functionNode, context.scopes)) return;
-        reportOversizedComponent(node.id, node.id.name, lineCount);
+        if (!functionContainsReactRenderOutput(functionNode, context.scopes, context.cfg)) return;
+        reportOversizedComponent(node.id, node.id.name);
       },
     };
   },

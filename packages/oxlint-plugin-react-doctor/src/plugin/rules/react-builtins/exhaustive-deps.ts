@@ -8,12 +8,14 @@ import { isDescendantScope } from "../../semantic/scope-analysis.js";
 import { defineRule } from "../../utils/define-rule.js";
 import type { EsTreeNode } from "../../utils/es-tree-node.js";
 import type { EsTreeNodeOfType } from "../../utils/es-tree-node-of-type.js";
+import { findForwardedFreshHookDependencies } from "../../utils/find-forwarded-fresh-hook-dependencies.js";
 import { getStaticTemplateLiteralValue } from "../../utils/get-static-template-literal-value.js";
 import { isAstNode } from "../../utils/is-ast-node.js";
 import { isReactComponentOrHookName } from "../../utils/is-react-component-or-hook-name.js";
+import { isReactApiCall } from "../../utils/is-react-api-call.js";
 import { isReactHocCallbackArgument } from "../../utils/is-react-hoc-callback-argument.js";
 import { isNodeOfType } from "../../utils/is-node-of-type.js";
-import { REACT_HOC_NAMES } from "../../constants/react.js";
+import { EFFECT_HOOK_NAMES, REACT_HOC_NAMES } from "../../constants/react.js";
 import {
   getHookName,
   isOutsideAllFunctions,
@@ -26,6 +28,7 @@ import {
   buildComplexDepMessage,
   buildDuplicateDepMessage,
   buildEffectEventDepMessage,
+  buildForwardedUnstableDepMessage,
   buildLiteralDepMessage,
   buildMissingCallbackMessage,
   buildMissingDepArrayMessage,
@@ -41,6 +44,7 @@ import {
   buildUnstableDepMessage,
 } from "./exhaustive-deps-messages.js";
 import { resolveExhaustiveDepsSettings } from "./exhaustive-deps-settings.js";
+import { isSoleWriterEffectGuardCapture } from "./exhaustive-deps-sole-writer-guard.js";
 import { isExhaustiveDepsSuppressedAt } from "./exhaustive-deps-suppression.js";
 import {
   getFunctionValueNode,
@@ -78,6 +82,8 @@ const EFFECT_HOOKS_ALLOWING_EXTRA_REACTIVE_DEPS: ReadonlySet<string> = new Set([
   "useLayoutEffect",
   "useInsertionEffect",
 ]);
+
+const SOLE_WRITER_GUARD_HOOKS: ReadonlySet<string> = new Set(["useEffect", "useLayoutEffect"]);
 
 const buildAdditionalHooksRegex = (additional: string): RegExp | null => {
   if (!additional) return null;
@@ -339,7 +345,12 @@ interface CaptureCollection {
 
 // Walks captures grouping by "dep key" (the canonical name of the
 // outermost member-expression chain).
-const collectCaptureDepKeys = (callback: EsTreeNode, scopes: ScopeAnalysis): CaptureCollection => {
+const collectCaptureDepKeys = (
+  callback: EsTreeNode,
+  scopes: ScopeAnalysis,
+  declaredExactBindingKeys?: ReadonlySet<string>,
+  allowSoleWriterEffectGuards = false,
+): CaptureCollection => {
   const keys = new Set<string>();
   const stableCapturedNames = new Set<string>();
   const moduleScopeCapturedNames = new Set<string>();
@@ -352,6 +363,10 @@ const collectCaptureDepKeys = (callback: EsTreeNode, scopes: ScopeAnalysis): Cap
     const symbol = reference.resolvedSymbol;
     if (!symbol) continue;
     if (isRecursiveInitializerCapture(symbol, callback)) continue;
+    if (allowSoleWriterEffectGuards && isSoleWriterEffectGuardCapture(symbol, callback, scopes)) {
+      stableCapturedNames.add(symbol.name);
+      continue;
+    }
     if (symbolHasStableValue(symbol, scopes)) {
       stableCapturedNames.add(symbol.name);
       continue;
@@ -372,9 +387,21 @@ const collectCaptureDepKeys = (callback: EsTreeNode, scopes: ScopeAnalysis): Cap
     }
     const depKey = computeDepKey(reference);
     if (!depKey) continue;
-    if (isStableRefContainerCapture(symbol, depKey)) {
+    if (isStableRefContainerCapture(symbol, depKey, scopes)) {
       stableCapturedNames.add(depKey);
       continue;
+    }
+    if (depKey === symbol.name) {
+      if (declaredExactBindingKeys?.has(depKey)) {
+        keys.add(depKey);
+        continue;
+      }
+      const identitySourceKeys = resolveReactiveIdentitySourceKeys(symbol, scopes);
+      if (identitySourceKeys) {
+        if (identitySourceKeys.size === 0) stableCapturedNames.add(depKey);
+        for (const identitySourceKey of identitySourceKeys) keys.add(identitySourceKey);
+        continue;
+      }
     }
     keys.add(depKey);
   }
@@ -424,6 +451,107 @@ const hasComputedMemberExpression = (node: EsTreeNode): boolean => {
   return hasComputedMemberExpression(stripped.object);
 };
 
+const mergeIdentitySourceKeys = (
+  expressions: ReadonlyArray<EsTreeNode>,
+  scopes: ScopeAnalysis,
+  visitedSymbolIds: Set<number>,
+): Set<string> | null => {
+  const identitySourceKeys = new Set<string>();
+  for (const expression of expressions) {
+    const expressionSourceKeys = resolveIdentitySourceKeysFromExpression(
+      expression,
+      scopes,
+      visitedSymbolIds,
+    );
+    if (!expressionSourceKeys) return null;
+    for (const expressionSourceKey of expressionSourceKeys) {
+      identitySourceKeys.add(expressionSourceKey);
+    }
+  }
+  return identitySourceKeys;
+};
+
+const resolveIdentitySourceKeysFromExpression = (
+  expression: EsTreeNode,
+  scopes: ScopeAnalysis,
+  visitedSymbolIds: Set<number>,
+): Set<string> | null => {
+  const stripped = unwrapExpression(expression);
+  if (
+    (isNodeOfType(stripped, "Literal") &&
+      (stripped.value === null ||
+        typeof stripped.value === "string" ||
+        typeof stripped.value === "number" ||
+        typeof stripped.value === "boolean")) ||
+    (isNodeOfType(stripped, "TemplateLiteral") && getStaticTemplateLiteralValue(stripped) !== null)
+  ) {
+    return new Set();
+  }
+  if (isNodeOfType(stripped, "Identifier")) {
+    const sourceSymbol = scopes.symbolFor(stripped);
+    if (!sourceSymbol) return null;
+    if (isOutsideAllFunctions(sourceSymbol) || symbolHasStableValue(sourceSymbol, scopes)) {
+      return new Set();
+    }
+    if (
+      sourceSymbol.kind === "const" &&
+      sourceSymbol.initializer &&
+      isNodeOfType(sourceSymbol.declarationNode, "VariableDeclarator") &&
+      sourceSymbol.declarationNode.id === sourceSymbol.bindingIdentifier &&
+      sourceSymbol.references.every((reference) => reference.flag === "read")
+    ) {
+      if (visitedSymbolIds.has(sourceSymbol.id)) return null;
+      visitedSymbolIds.add(sourceSymbol.id);
+      const sourceKeys = resolveIdentitySourceKeysFromExpression(
+        sourceSymbol.initializer,
+        scopes,
+        visitedSymbolIds,
+      );
+      visitedSymbolIds.delete(sourceSymbol.id);
+      if (sourceKeys) return sourceKeys;
+    }
+    return new Set([sourceSymbol.name]);
+  }
+  if (isNodeOfType(stripped, "MemberExpression")) {
+    if (hasComputedMemberExpression(stripped)) return null;
+    const sourceKey = stringifyMemberChain(stripped);
+    const rootIdentifier = getMemberRootIdentifier(stripped);
+    const rootSymbol = rootIdentifier ? scopes.symbolFor(rootIdentifier) : null;
+    if (!sourceKey || !rootSymbol) return null;
+    if (isOutsideAllFunctions(rootSymbol)) return new Set();
+    if (isStableRefContainerCapture(rootSymbol, sourceKey, scopes)) return new Set();
+    if (symbolHasStableValue(rootSymbol, scopes)) return new Set();
+    return new Set([sourceKey]);
+  }
+  if (isNodeOfType(stripped, "LogicalExpression")) {
+    return mergeIdentitySourceKeys([stripped.left, stripped.right], scopes, visitedSymbolIds);
+  }
+  if (isNodeOfType(stripped, "ConditionalExpression")) {
+    return mergeIdentitySourceKeys(
+      [stripped.test, stripped.consequent, stripped.alternate],
+      scopes,
+      visitedSymbolIds,
+    );
+  }
+  return null;
+};
+
+const resolveReactiveIdentitySourceKeys = (
+  symbol: SymbolDescriptor,
+  scopes: ScopeAnalysis,
+): Set<string> | null => {
+  if (
+    symbol.kind !== "const" ||
+    !symbol.initializer ||
+    !isNodeOfType(symbol.declarationNode, "VariableDeclarator") ||
+    symbol.declarationNode.id !== symbol.bindingIdentifier ||
+    symbol.references.some((reference) => reference.flag !== "read")
+  ) {
+    return null;
+  }
+  return resolveIdentitySourceKeysFromExpression(symbol.initializer, scopes, new Set([symbol.id]));
+};
+
 // Extra (unused) deps in effect hooks are allowed as intentional
 // re-run triggers (upstream blesses `useEffect(() => scrollTo(0, 0),
 // [activeTab])`). A `useCallback(...)` binding is the one shape that
@@ -437,11 +565,11 @@ const isUseCallbackResultDep = (node: EsTreeNode, scopes: ScopeAnalysis): boolea
   return Boolean(
     initializer &&
     isNodeOfType(initializer, "CallExpression") &&
-    getHookName(initializer.callee) === "useCallback",
+    getHookName(initializer.callee, scopes) === "useCallback",
   );
 };
 
-const isExtraEffectDepAllowed = (node: EsTreeNode, scopes: ScopeAnalysis): boolean => {
+const isExtraReactiveDepAllowed = (node: EsTreeNode, scopes: ScopeAnalysis): boolean => {
   const rootIdentifier = getMemberRootIdentifier(node);
   if (!rootIdentifier) return false;
   const symbol = scopes.symbolFor(rootIdentifier);
@@ -471,25 +599,77 @@ const isRegExpLiteral = (node: EsTreeNode): boolean => {
   return Boolean((node as { regex?: unknown }).regex);
 };
 
-const isUnstableInitializer = (node: EsTreeNode | null): boolean => {
+const isUnstableInitializer = (node: EsTreeNode | null, isNestedInitializer = false): boolean => {
   if (!node) return false;
   const stripped = unwrapExpression(node);
   if (isRegExpLiteral(stripped)) return true;
   if (isNodeOfType(stripped, "ConditionalExpression")) {
-    return isUnstableInitializer(stripped.consequent) || isUnstableInitializer(stripped.alternate);
+    return (
+      isUnstableInitializer(stripped.consequent, true) ||
+      isUnstableInitializer(stripped.alternate, true)
+    );
   }
   if (isNodeOfType(stripped, "LogicalExpression")) {
-    return isUnstableInitializer(stripped.left) || isUnstableInitializer(stripped.right);
+    return (
+      isUnstableInitializer(stripped.left, true) || isUnstableInitializer(stripped.right, true)
+    );
   }
   return (
     isNodeOfType(stripped, "ObjectExpression") ||
     isNodeOfType(stripped, "ArrayExpression") ||
+    (isNestedInitializer &&
+      (isNodeOfType(stripped, "ArrowFunctionExpression") ||
+        isNodeOfType(stripped, "FunctionExpression"))) ||
     isNodeOfType(stripped, "ClassExpression") ||
     isNodeOfType(stripped, "ClassDeclaration") ||
     isNodeOfType(stripped, "JSXElement") ||
     isNodeOfType(stripped, "JSXFragment") ||
     isNodeOfType(stripped, "AssignmentExpression") ||
     isNodeOfType(stripped, "NewExpression")
+  );
+};
+
+const isPotentiallyFreshComparedValue = (
+  node: EsTreeNode,
+  scopes: ScopeAnalysis,
+  visitedSymbolIds: Set<number> = new Set(),
+): boolean => {
+  const candidate = unwrapExpression(node);
+  if (isUnstableInitializer(candidate)) return true;
+  if (isNodeOfType(candidate, "ConditionalExpression")) {
+    return (
+      isPotentiallyFreshComparedValue(candidate.consequent, scopes, visitedSymbolIds) ||
+      isPotentiallyFreshComparedValue(candidate.alternate, scopes, visitedSymbolIds)
+    );
+  }
+  if (isNodeOfType(candidate, "LogicalExpression")) {
+    return (
+      isPotentiallyFreshComparedValue(candidate.left, scopes, visitedSymbolIds) ||
+      isPotentiallyFreshComparedValue(candidate.right, scopes, visitedSymbolIds)
+    );
+  }
+  if (!isNodeOfType(candidate, "Identifier")) return false;
+  const symbol = scopes.symbolFor(candidate);
+  if (!symbol || visitedSymbolIds.has(symbol.id)) return false;
+  if (symbol.kind === "let" || symbol.kind === "var") return true;
+  if (symbol.kind !== "const" || !symbol.initializer) return false;
+  visitedSymbolIds.add(symbol.id);
+  return isPotentiallyFreshComparedValue(symbol.initializer, scopes, visitedSymbolIds);
+};
+
+const isExtraDepAllowedForHook = (
+  hookName: string,
+  node: EsTreeNode,
+  scopes: ScopeAnalysis,
+): boolean => {
+  if (!isExtraReactiveDepAllowed(node, scopes)) return false;
+  if (EFFECT_HOOKS_ALLOWING_EXTRA_REACTIVE_DEPS.has(hookName)) return true;
+  if (hookName !== "useMemo") return false;
+  const rootSymbol = getRootSymbol(node, scopes);
+  return Boolean(
+    rootSymbol &&
+    !symbolHasStableValue(rootSymbol, scopes) &&
+    !isUnstableInitializer(rootSymbol.initializer),
   );
 };
 
@@ -501,16 +681,333 @@ const hasDirectIdentifierDeclarator = (symbol: SymbolDescriptor): boolean =>
 const isFunctionValueSymbol = (symbol: SymbolDescriptor): boolean =>
   getFunctionValueNode(symbol) !== null;
 
-const isStableSetterLikeSymbol = (symbol: SymbolDescriptor): boolean => {
-  if (!symbolHasStableHookOrigin(symbol)) return false;
+interface StateSetterDescriptor {
+  setterSymbol: SymbolDescriptor;
+  stateSymbol: SymbolDescriptor | null;
+}
+
+const FRESH_STATE_CONSTRUCTOR_NAMES: ReadonlySet<string> = new Set([
+  "Array",
+  "Date",
+  "Error",
+  "Map",
+  "Object",
+  "RegExp",
+  "Set",
+  "WeakMap",
+  "WeakSet",
+]);
+
+const getBindingIdentifier = (node: EsTreeNode | null | undefined): EsTreeNode | null => {
+  if (!node) return null;
+  const candidate = isNodeOfType(node, "AssignmentPattern") ? node.left : node;
+  return isNodeOfType(candidate, "Identifier") ? candidate : null;
+};
+
+const resolveStateSetterSymbol = (
+  identifier: EsTreeNode,
+  scopes: ScopeAnalysis,
+): SymbolDescriptor | null => {
+  const visitedSymbolIds = new Set<number>();
+  let symbol = scopes.symbolFor(identifier);
+  while (
+    symbol?.kind === "const" &&
+    isNodeOfType(symbol.declarationNode, "VariableDeclarator") &&
+    symbol.declarationNode.id === symbol.bindingIdentifier &&
+    symbol.initializer
+  ) {
+    if (visitedSymbolIds.has(symbol.id)) return null;
+    visitedSymbolIds.add(symbol.id);
+    const initializer = unwrapExpression(symbol.initializer);
+    if (!isNodeOfType(initializer, "Identifier")) return symbol;
+    symbol = scopes.symbolFor(initializer);
+  }
+  return symbol;
+};
+
+const getStateSetterDescriptor = (
+  identifier: EsTreeNode,
+  scopes: ScopeAnalysis,
+): StateSetterDescriptor | null => {
+  const setterSymbol = resolveStateSetterSymbol(identifier, scopes);
+  if (!setterSymbol || !isNodeOfType(setterSymbol.declarationNode, "VariableDeclarator")) {
+    return null;
+  }
+  const declarator = setterSymbol.declarationNode;
+  if (!isNodeOfType(declarator.id, "ArrayPattern")) return null;
+  const setterElement = declarator.id.elements?.[1];
+  const setterBinding = isAstNode(setterElement) ? getBindingIdentifier(setterElement) : null;
+  if (!setterBinding || setterBinding !== setterSymbol.bindingIdentifier) return null;
+  const initializer = declarator.init ? unwrapExpression(declarator.init) : null;
+  if (
+    !initializer ||
+    !isNodeOfType(initializer, "CallExpression") ||
+    !isReactApiCall(initializer, "useState", scopes, {
+      allowGlobalReactNamespace: true,
+      allowUnboundBareCalls: true,
+      resolveNamedAliases: true,
+    })
+  ) {
+    return null;
+  }
+  const stateElement = declarator.id.elements?.[0];
+  const stateBinding = isAstNode(stateElement) ? getBindingIdentifier(stateElement) : null;
+  return {
+    setterSymbol,
+    stateSymbol: stateBinding ? scopes.symbolFor(stateBinding) : null,
+  };
+};
+
+const expressionReadsSymbol = (
+  node: EsTreeNode,
+  symbol: SymbolDescriptor | null,
+  scopes: ScopeAnalysis,
+  visitedSymbolIds: ReadonlySet<number> = new Set(),
+): boolean => {
+  if (!symbol) return false;
+  const candidate = unwrapExpression(node);
+  if (isNodeOfType(candidate, "Identifier")) {
+    const reference = scopes.referenceFor(candidate);
+    if (reference?.flag !== "write" && reference?.resolvedSymbol?.id === symbol.id) return true;
+    const candidateSymbol = reference?.resolvedSymbol;
+    if (
+      candidateSymbol?.kind === "const" &&
+      candidateSymbol.initializer &&
+      !isOutsideAllFunctions(candidateSymbol) &&
+      !visitedSymbolIds.has(candidateSymbol.id)
+    ) {
+      const nextVisitedSymbolIds = new Set(visitedSymbolIds);
+      nextVisitedSymbolIds.add(candidateSymbol.id);
+      return expressionReadsSymbol(
+        candidateSymbol.initializer,
+        symbol,
+        scopes,
+        nextVisitedSymbolIds,
+      );
+    }
+    return false;
+  }
+  const record = candidate as unknown as Record<string, unknown>;
+  for (const key of Object.keys(record)) {
+    if (key === "parent") continue;
+    const child = record[key];
+    if (Array.isArray(child)) {
+      if (child.some((item) => isAstNode(item) && expressionReadsSymbol(item, symbol, scopes))) {
+        return true;
+      }
+    } else if (isAstNode(child) && expressionReadsSymbol(child, symbol, scopes)) {
+      return true;
+    }
+  }
+  return false;
+};
+
+const isGuaranteedFreshStateValue = (
+  node: EsTreeNode,
+  scopes: ScopeAnalysis,
+  visitedSymbolIds: ReadonlySet<number> = new Set(),
+): boolean => {
+  const candidate = unwrapExpression(node);
+  if (
+    isNodeOfType(candidate, "ObjectExpression") ||
+    isNodeOfType(candidate, "ArrayExpression") ||
+    isNodeOfType(candidate, "JSXElement") ||
+    isNodeOfType(candidate, "JSXFragment") ||
+    isRegExpLiteral(candidate)
+  ) {
+    return true;
+  }
+  if (isNodeOfType(candidate, "SequenceExpression")) {
+    const finalExpression = candidate.expressions.at(-1);
+    return Boolean(finalExpression && isGuaranteedFreshStateValue(finalExpression, scopes));
+  }
+  if (isNodeOfType(candidate, "ConditionalExpression")) {
+    return (
+      isGuaranteedFreshStateValue(candidate.consequent, scopes, visitedSymbolIds) &&
+      isGuaranteedFreshStateValue(candidate.alternate, scopes, visitedSymbolIds)
+    );
+  }
+  if (isNodeOfType(candidate, "LogicalExpression")) {
+    return (
+      isGuaranteedFreshStateValue(candidate.left, scopes, visitedSymbolIds) &&
+      isGuaranteedFreshStateValue(candidate.right, scopes, visitedSymbolIds)
+    );
+  }
+  if (isNodeOfType(candidate, "CallExpression")) {
+    const callee = unwrapExpression(candidate.callee);
+    return (
+      isNodeOfType(callee, "Identifier") &&
+      scopes.isGlobalReference(callee) &&
+      (callee.name === "Array" || callee.name === "Object") &&
+      (callee.name === "Array" || candidate.arguments.length === 0)
+    );
+  }
+  if (isNodeOfType(candidate, "NewExpression")) {
+    const callee = unwrapExpression(candidate.callee);
+    return (
+      isNodeOfType(callee, "Identifier") &&
+      scopes.isGlobalReference(callee) &&
+      FRESH_STATE_CONSTRUCTOR_NAMES.has(callee.name) &&
+      (callee.name !== "Object" || candidate.arguments.length === 0)
+    );
+  }
+  if (!isNodeOfType(candidate, "Identifier")) return false;
+  const symbol = scopes.symbolFor(candidate);
+  if (
+    !symbol ||
+    symbol.kind !== "const" ||
+    !symbol.initializer ||
+    isOutsideAllFunctions(symbol) ||
+    visitedSymbolIds.has(symbol.id)
+  ) {
+    return false;
+  }
+  const nextVisitedSymbolIds = new Set(visitedSymbolIds);
+  nextVisitedSymbolIds.add(symbol.id);
+  return isGuaranteedFreshStateValue(symbol.initializer, scopes, nextVisitedSymbolIds);
+};
+
+const isNonZeroLiteral = (node: EsTreeNode): boolean => {
+  const candidate = unwrapExpression(node);
   return (
-    symbol.name.startsWith("set") ||
-    symbol.name.startsWith("dispatch") ||
-    symbol.name.startsWith("startTransition")
+    isNodeOfType(candidate, "Literal") &&
+    ((typeof candidate.value === "number" && candidate.value !== 0) ||
+      (typeof candidate.value === "bigint" && candidate.value !== 0n) ||
+      (typeof candidate.value === "string" && candidate.value.length > 0))
   );
 };
 
-const findStableSetterReference = (node: EsTreeNode, scopes: ScopeAnalysis): string | null => {
+const isProvablyChangingExpression = (
+  node: EsTreeNode,
+  previousValueSymbol: SymbolDescriptor | null,
+  scopes: ScopeAnalysis,
+): boolean => {
+  const candidate = unwrapExpression(node);
+  if (isGuaranteedFreshStateValue(candidate, scopes)) return true;
+  if (isNodeOfType(candidate, "ConditionalExpression")) {
+    const isConsequentChanging = isProvablyChangingExpression(
+      candidate.consequent,
+      previousValueSymbol,
+      scopes,
+    );
+    const isAlternateChanging = isProvablyChangingExpression(
+      candidate.alternate,
+      previousValueSymbol,
+      scopes,
+    );
+    return expressionReadsSymbol(candidate.test, previousValueSymbol, scopes)
+      ? isConsequentChanging && isAlternateChanging
+      : isConsequentChanging || isAlternateChanging;
+  }
+  if (!expressionReadsSymbol(candidate, previousValueSymbol, scopes)) return false;
+  if (isNodeOfType(candidate, "UnaryExpression")) return candidate.operator === "!";
+  if (isNodeOfType(candidate, "UpdateExpression")) return true;
+  if (!isNodeOfType(candidate, "BinaryExpression")) return false;
+  return (
+    (candidate.operator === "+" || candidate.operator === "-") &&
+    expressionReadsSymbol(candidate.left, previousValueSymbol, scopes) &&
+    isNonZeroLiteral(candidate.right)
+  );
+};
+
+const isFreshEqualityGuardUpdater = (
+  node: EsTreeNode,
+  previousValueSymbol: SymbolDescriptor | null,
+  scopes: ScopeAnalysis,
+): boolean => {
+  const candidate = unwrapExpression(node);
+  if (!isNodeOfType(candidate, "ConditionalExpression")) return false;
+  const test = unwrapExpression(candidate.test);
+  if (
+    !isNodeOfType(test, "BinaryExpression") ||
+    !["===", "!==", "==", "!="].includes(test.operator)
+  ) {
+    return false;
+  }
+  const isPreviousValue = (expression: EsTreeNode): boolean => {
+    const expressionCandidate = unwrapExpression(expression);
+    return (
+      isNodeOfType(expressionCandidate, "Identifier") &&
+      scopes.symbolFor(expressionCandidate)?.id === previousValueSymbol?.id
+    );
+  };
+  let comparedValue: EsTreeNode | null = null;
+  if (isPreviousValue(test.left)) comparedValue = test.right;
+  if (isPreviousValue(test.right)) comparedValue = test.left;
+  if (!comparedValue || !isPotentiallyFreshComparedValue(comparedValue, scopes)) return false;
+  const isComparedValue = (expression: EsTreeNode): boolean => {
+    const expressionCandidate = unwrapExpression(expression);
+    const comparedCandidate = unwrapExpression(comparedValue);
+    if (isNodeOfType(expressionCandidate, "Identifier")) {
+      return (
+        isNodeOfType(comparedCandidate, "Identifier") &&
+        scopes.symbolFor(expressionCandidate)?.id === scopes.symbolFor(comparedCandidate)?.id
+      );
+    }
+    return (
+      isNodeOfType(expressionCandidate, "Literal") &&
+      isNodeOfType(comparedCandidate, "Literal") &&
+      expressionCandidate.value === comparedCandidate.value
+    );
+  };
+  const equalityTest = test.operator === "===" || test.operator === "==";
+  return equalityTest
+    ? isPreviousValue(candidate.consequent) && isComparedValue(candidate.alternate)
+    : isComparedValue(candidate.consequent) && isPreviousValue(candidate.alternate);
+};
+
+const isProvablyChangingFunctionalUpdater = (node: EsTreeNode, scopes: ScopeAnalysis): boolean => {
+  const updater = unwrapExpression(node);
+  if (
+    !isNodeOfType(updater, "ArrowFunctionExpression") &&
+    !isNodeOfType(updater, "FunctionExpression")
+  ) {
+    return false;
+  }
+  const previousValueParameter = updater.params?.[0];
+  if (!previousValueParameter || !isNodeOfType(previousValueParameter, "Identifier")) return false;
+  const previousValueSymbol = scopes.symbolFor(previousValueParameter);
+  if (!isNodeOfType(updater.body, "BlockStatement")) {
+    return (
+      isFreshEqualityGuardUpdater(updater.body, previousValueSymbol, scopes) ||
+      isProvablyChangingExpression(updater.body, previousValueSymbol, scopes)
+    );
+  }
+  if (updater.body.body.length !== 1) return false;
+  const soleStatement = updater.body.body[0];
+  if (!isNodeOfType(soleStatement, "ReturnStatement") || !isAstNode(soleStatement.argument)) {
+    return false;
+  }
+  return (
+    isFreshEqualityGuardUpdater(soleStatement.argument, previousValueSymbol, scopes) ||
+    isProvablyChangingExpression(soleStatement.argument, previousValueSymbol, scopes)
+  );
+};
+
+const isProvablyRenderChangingSetterCall = (
+  identifier: EsTreeNode,
+  scopes: ScopeAnalysis,
+): boolean => {
+  const setterCall = identifier.parent;
+  if (
+    !setterCall ||
+    !isNodeOfType(setterCall, "CallExpression") ||
+    setterCall.callee !== identifier
+  ) {
+    return false;
+  }
+  const descriptor = getStateSetterDescriptor(identifier, scopes);
+  const writtenValue = setterCall.arguments?.[0];
+  if (!descriptor || !writtenValue || !isAstNode(writtenValue)) return false;
+  return isProvablyChangingFunctionalUpdater(writtenValue, scopes)
+    ? true
+    : isProvablyChangingExpression(writtenValue, descriptor.stateSymbol, scopes);
+};
+
+const findRenderChangingStateSetterName = (
+  node: EsTreeNode,
+  scopes: ScopeAnalysis,
+): string | null => {
   let setterName: string | null = null;
   const visit = (current: EsTreeNode): void => {
     if (setterName) return;
@@ -523,10 +1020,9 @@ const findStableSetterReference = (node: EsTreeNode, scopes: ScopeAnalysis): str
       return;
     }
     if (isNodeOfType(current, "Identifier")) {
-      const reference = scopes.referenceFor(current);
-      const symbol = reference?.resolvedSymbol;
-      if (symbol && isStableSetterLikeSymbol(symbol)) {
-        setterName = symbol.name;
+      const descriptor = getStateSetterDescriptor(current, scopes);
+      if (descriptor && isProvablyRenderChangingSetterCall(current, scopes)) {
+        setterName = descriptor.setterSymbol.name;
         return;
       }
     }
@@ -693,11 +1189,14 @@ const hasRefCurrentAssignmentInComponent = (refSymbol: SymbolDescriptor | null):
 // React-rendered DOM node — the "cleanup may read the wrong node"
 // warning doesn't apply. `useRef()` / `useRef(null)` stay eligible:
 // that's the DOM-ref idiom the warning exists for.
-const isSeededDataRefSymbol = (refSymbol: SymbolDescriptor | null): boolean => {
+const isSeededDataRefSymbol = (
+  refSymbol: SymbolDescriptor | null,
+  scopes: ScopeAnalysis,
+): boolean => {
   if (!refSymbol) return false;
   const initializer = refSymbol.initializer ? unwrapExpression(refSymbol.initializer) : null;
   if (!initializer || !isNodeOfType(initializer, "CallExpression")) return false;
-  if (getHookName(initializer.callee) !== "useRef") return false;
+  if (getHookName(initializer.callee, scopes) !== "useRef") return false;
   const firstArgument = initializer.arguments[0];
   if (!firstArgument || !isAstNode(firstArgument)) return false;
   const strippedArgument = unwrapExpression(firstArgument);
@@ -756,7 +1255,15 @@ const isOuterFunctionScopeDep = (
   return Boolean(componentOrHookScope && !isDescendantScope(symbol.scope, componentOrHookScope));
 };
 
-const hasMemberCallForRoot = (node: EsTreeNode, rootName: string): boolean => {
+const hasMemberCallForRoot = (
+  node: EsTreeNode,
+  rootName: string,
+  scopes: ScopeAnalysis,
+): boolean => {
+  const rootSymbol =
+    closureCaptures(node, scopes).find((reference) => reference.resolvedSymbol?.name === rootName)
+      ?.resolvedSymbol ?? null;
+  if (!rootSymbol) return false;
   let didFindMemberCall = false;
   const visit = (current: EsTreeNode): void => {
     if (didFindMemberCall) return;
@@ -779,7 +1286,8 @@ const hasMemberCallForRoot = (node: EsTreeNode, rootName: string): boolean => {
           !doesChainPassThroughCurrent &&
           chainObject &&
           isNodeOfType(chainObject, "Identifier") &&
-          chainObject.name === rootName
+          chainObject.name === rootName &&
+          scopes.symbolFor(chainObject) === rootSymbol
         ) {
           didFindMemberCall = true;
           return;
@@ -805,12 +1313,16 @@ const addAggregatePropsDependency = (
   captureKeys: Set<string>,
   declaredKeys: ReadonlySet<string>,
   callback: EsTreeNode,
+  scopes: ScopeAnalysis,
 ): void => {
-  const propsCaptureCount = [...captureKeys].filter((captureKey) =>
-    captureKey.startsWith("props."),
-  ).length;
+  const propsCaptureKeys = [...captureKeys].filter((captureKey) => captureKey.startsWith("props."));
+  const propsCaptureCount = propsCaptureKeys.length;
   if (propsCaptureCount < 2 || declaredKeys.has("props")) return;
-  if (hasMemberCallForRoot(callback, "props")) captureKeys.add("props");
+  const areAllPropsCapturesCovered = propsCaptureKeys.every((captureKey) =>
+    [...declaredKeys].some((declaredKey) => isMatchingDepOrPrefix(declaredKey, captureKey)),
+  );
+  if (areAllPropsCapturesCovered) return;
+  if (hasMemberCallForRoot(callback, "props", scopes)) captureKeys.add("props");
 };
 
 export const exhaustiveDeps = defineRule({
@@ -877,8 +1389,29 @@ If the missing value is recreated every render, move it inside the hook or stabi
 
     return {
       CallExpression(node: EsTreeNodeOfType<"CallExpression">) {
-        const hookName = getHookName(node.callee);
+        for (const finding of findForwardedFreshHookDependencies(
+          node,
+          context,
+          EFFECT_HOOK_NAMES,
+        )) {
+          context.report({
+            node: finding.reportNode,
+            message: buildForwardedUnstableDepMessage(finding.bindingName),
+          });
+        }
+
+        const hookName = getHookName(node.callee, context.scopes);
         if (!hookName || !isHookOfInterest(hookName, node.callee)) return;
+        if (
+          HOOKS_REQUIRING_DEPS_MATCH.has(hookName) &&
+          !isReactApiCall(node, HOOKS_REQUIRING_DEPS_MATCH, context.scopes, {
+            allowGlobalReactNamespace: true,
+            allowUnboundBareCalls: true,
+            resolveNamedAliases: true,
+          })
+        ) {
+          return;
+        }
 
         const callbackArgumentIndex = getCallbackArgumentIndex(hookName);
         const depsArgumentIndex = getDepsArgumentIndex(hookName);
@@ -964,7 +1497,7 @@ If the missing value is recreated every render, move it inside the hook or stabi
             shouldCheckRefCleanup &&
             !hasRefCurrentAssignment(callbackToAnalyze, refCurrentInCleanup.refCurrentName) &&
             !hasRefCurrentAssignmentInComponent(refCurrentInCleanup.refSymbol) &&
-            !isSeededDataRefSymbol(refCurrentInCleanup.refSymbol)
+            !isSeededDataRefSymbol(refCurrentInCleanup.refSymbol, context.scopes)
           ) {
             context.report({
               node: callbackToAnalyze,
@@ -975,7 +1508,7 @@ If the missing value is recreated every render, move it inside the hook or stabi
 
         if (!depsArgumentRaw) {
           if (callbackToAnalyze && EFFECT_HOOKS_ALLOWING_EXTRA_REACTIVE_DEPS.has(hookName)) {
-            const setterName = findStableSetterReference(callbackToAnalyze, context.scopes);
+            const setterName = findRenderChangingStateSetterName(callbackToAnalyze, context.scopes);
             if (setterName) {
               context.report({
                 node: callbackToAnalyze,
@@ -1045,14 +1578,6 @@ If the missing value is recreated every render, move it inside the hook or stabi
           return;
         }
 
-        const {
-          keys: captureKeys,
-          stableCapturedNames,
-          moduleScopeCapturedNames,
-          outerFunctionCapturedNames,
-        } = collectCaptureDepKeys(callbackToAnalyze ?? callbackArgument, context.scopes);
-        for (const forcedCaptureKey of forcedCaptureKeys) captureKeys.add(forcedCaptureKey);
-
         // Pre-scan: emit a single "literal deps" warning when the
         // deps array contains a non-string-literal value (numeric /
         // boolean / null / bigint). String-literal deps are usually
@@ -1073,6 +1598,7 @@ If the missing value is recreated every render, move it inside the hook or stabi
         }
 
         const declaredKeys = new Set<string>();
+        const declaredExactBindingKeys = new Set<string>();
         const declaredKeyToReportNode = new Map<string, EsTreeNode>();
         const seenDeclaredKeys = new Set<string>();
         let didReportRefCurrentDep = false;
@@ -1116,7 +1642,7 @@ If the missing value is recreated every render, move it inside the hook or stabi
             isNodeOfType(stripped.object, "Identifier")
           ) {
             const refSymbol = context.scopes.symbolFor(stripped.object);
-            if (refSymbol && symbolHasStableHookOrigin(refSymbol)) {
+            if (refSymbol && symbolHasStableHookOrigin(refSymbol, context.scopes)) {
               if (!didReportRefCurrentDep) {
                 context.report({
                   node: elementNode,
@@ -1147,12 +1673,26 @@ If the missing value is recreated every render, move it inside the hook or stabi
           }
           seenDeclaredKeys.add(key);
           declaredKeys.add(key);
+          if (isNodeOfType(stripped, "Identifier")) declaredExactBindingKeys.add(key);
           declaredKeyToReportNode.set(key, elementNode);
         }
+        const {
+          keys: captureKeys,
+          stableCapturedNames,
+          moduleScopeCapturedNames,
+          outerFunctionCapturedNames,
+        } = collectCaptureDepKeys(
+          callbackToAnalyze ?? callbackArgument,
+          context.scopes,
+          declaredExactBindingKeys,
+          SOLE_WRITER_GUARD_HOOKS.has(hookName),
+        );
+        for (const forcedCaptureKey of forcedCaptureKeys) captureKeys.add(forcedCaptureKey);
         addAggregatePropsDependency(
           captureKeys,
           declaredKeys,
           callbackToAnalyze ?? callbackArgument,
+          context.scopes,
         );
 
         const missingCaptureKeys: string[] = [];
@@ -1287,10 +1827,7 @@ If the missing value is recreated every render, move it inside the hook or stabi
           if (stableCapturedNames.has(rootName) || stableCapturedNames.has(declaredKey)) continue;
           if (outerFunctionCapturedNames.has(rootName)) continue;
           const reportNode = declaredKeyToReportNode.get(declaredKey) ?? depsArgument;
-          if (
-            EFFECT_HOOKS_ALLOWING_EXTRA_REACTIVE_DEPS.has(hookName) &&
-            isExtraEffectDepAllowed(reportNode, context.scopes)
-          ) {
+          if (isExtraDepAllowedForHook(hookName, reportNode, context.scopes)) {
             continue;
           }
           if (

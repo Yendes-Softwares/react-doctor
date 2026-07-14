@@ -24,6 +24,10 @@ export const SPREAD_KEY_RESOLUTION_DEPTH = 3;
 // or-fewer literals twice is trivial cost, the rewrite is pure
 // ceremony at this scale.
 export const SMALL_LITERAL_ARRAY_MAX_ELEMENTS = 8;
+// `Math.min(...array)` passes one call argument per element and engines
+// cap argument counts (the smallest common limits are in the tens of
+// thousands); 1024 keeps the suggested rewrite far under any of them.
+export const MATH_EXTREMUM_SPREAD_MAX_ELEMENT_COUNT = 1024;
 
 // Materiality gate for `rendering-svg-precision`: a single stray
 // over-precise coordinate in a one-off hand-written glyph saves only a
@@ -41,6 +45,7 @@ export const MIN_OVERPRECISE_SVG_TOKEN_OCCURRENCES = 2;
 // giving up.
 export const CROSS_FILE_PARSE_MAX_BYTES = 2_000_000;
 export const CROSS_FILE_BARREL_FOLLOW_DEPTH = 4;
+export const CUSTOM_HOOK_DEPENDENCY_FORWARD_DEPTH = 4;
 
 // Bounds for upward directory walks used by cross-file resolvers:
 // `CROSS_FILE_DIRECTORY_WALK_MAX_LEVELS` caps how many parent
@@ -57,3 +62,5 @@ export const TSCONFIG_EXTENDS_MAX_DEPTH = 8;
 // cap a deeply-branched reducer would blow up time + memory. Bailing is
 // safe — it can only cause missed diagnostics, never false positives.
 export const REDUCER_PATH_STATE_LIMIT = 1000;
+export const MAX_MEMO_COMPARATOR_SYMBOLIC_ATOM_COUNT = 8;
+export const LARGE_TEXT_OPTIMIZATION_THRESHOLD_CHARS = 1000;

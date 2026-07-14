@@ -20,6 +20,43 @@ export const NODE_ARGUMENT_COUNT = 2;
 export const REACT_DOCTOR_CONFIG_PROJECT_NAME = "react-doctor";
 
 export const STAGED_FILES_TEMP_DIR_PREFIX = "react-doctor-staged-";
+export const STAGED_SNAPSHOT_ADDITIONAL_CONFIG_FILENAMES = [
+  ".babelrc",
+  ".babelrc.json",
+  ".eslintignore",
+  ".eslintrc.json",
+  ".oxlintignore",
+  "app.config.cjs",
+  "app.config.js",
+  "app.config.json",
+  "app.config.mjs",
+  "app.config.ts",
+  "app.json",
+  "babel.config.cjs",
+  "babel.config.js",
+  "babel.config.json",
+  "babel.config.mjs",
+  "eslint.config.cjs",
+  "eslint.config.cts",
+  "eslint.config.js",
+  "eslint.config.mjs",
+  "eslint.config.mts",
+  "eslint.config.ts",
+  "next.config.cjs",
+  "next.config.js",
+  "next.config.mjs",
+  "next.config.ts",
+  "oxlint.config.json",
+  "react-doctor.config.json",
+  "vite.config.cjs",
+  "vite.config.cts",
+  "vite.config.js",
+  "vite.config.mjs",
+  "vite.config.mts",
+  "vite.config.ts",
+  "vitest.config.js",
+  "vitest.config.ts",
+] as const;
 export const BASELINE_FILES_TEMP_DIR_PREFIX = "react-doctor-baseline-";
 // Bump on any breaking change to `CachedScanPayload`'s shape so a stale on-disk
 // cache (missing a newly-required field) is discarded wholesale by
@@ -29,7 +66,7 @@ export const BASELINE_FILES_TEMP_DIR_PREFIX = "react-doctor-baseline-";
 // Bumped to 3: gained the required `suppressedRuleCounts` field (suppression telemetry).
 // Bumped to 4: gained the `manifestContentHash` replay guard, which every
 // `lookup` verifies — pre-bump entries without it would never hit again.
-export const SCAN_RESULT_CACHE_SCHEMA_VERSION = 4;
+export const SCAN_RESULT_CACHE_SCHEMA_VERSION = 5;
 export const SCAN_RESULT_CACHE_MAX_ENTRY_COUNT = 20;
 export const SCAN_RESULT_CACHE_FILENAME = "scan-cache.json";
 // The dirty-worktree cache-key fingerprint content-hashes every path `git
@@ -124,7 +161,7 @@ export const MINIMUM_VTE_VERSION_FOR_HYPERLINKS = 5000;
 // Last-resort fallback when buildJsonReportError itself throws — keeps
 // stdout valid JSON so downstream parsers don't see a half-written report.
 export const INTERNAL_ERROR_JSON_FALLBACK =
-  '{"schemaVersion":1,"ok":false,"error":{"message":"Internal error","name":"Error","chain":[]}}\n';
+  '{"schemaVersion":3,"version":"unknown","ok":false,"directory":"","mode":"full","diff":null,"projects":[],"diagnostics":[],"summary":{"errorCount":0,"warningCount":0,"affectedFileCount":0,"totalDiagnosticCount":0,"score":null,"scoreLabel":null},"elapsedMilliseconds":0,"error":{"message":"Internal error","name":"Error","chain":[]}}\n';
 
 // Sentry DSN for CLI crash reporting. Public by design (DSNs are safe to
 // embed in client-side code) and only used by the CLI application entry,
@@ -176,6 +213,7 @@ export const METRIC = {
   cliInvoked: "cli.invoked",
   cliError: "cli.error",
   cliEnvironmentError: "cli.env_error",
+  stagedSnapshotDivergence: "staged.snapshot_divergence",
   projectDetected: "project.detected",
   projectPathSelected: "project.path_selected",
   projectConfigSelected: "project.config_selected",

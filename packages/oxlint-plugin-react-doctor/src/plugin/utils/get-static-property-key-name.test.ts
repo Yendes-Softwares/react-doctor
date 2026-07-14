@@ -93,4 +93,45 @@ describe("getStaticPropertyKeyName", () => {
       expect(getStaticPropertyKeyName(requireProperty(properties, 4), testCase.options)).toBe(null);
     });
   }
+
+  it("reads class method keys", () => {
+    const parsed = parseFixture(`
+      class Helper {
+        clear() {}
+        ["computed"]() {}
+      }
+    `);
+    expect(parsed.errors).toEqual([]);
+    const methods: EsTreeNode[] = [];
+    walkAst(parsed.program, (node: EsTreeNode) => {
+      if (isNodeOfType(node, "MethodDefinition")) methods.push(node);
+    });
+    const clearMethod = methods[0];
+    const computedMethod = methods[1];
+    if (!clearMethod || !computedMethod) throw new Error("fixture class methods were not parsed");
+    expect(getStaticPropertyKeyName(clearMethod)).toBe("clear");
+    expect(getStaticPropertyKeyName(computedMethod)).toBe(null);
+    expect(getStaticPropertyKeyName(computedMethod, { allowComputedString: true })).toBe(
+      "computed",
+    );
+  });
+
+  it("reads static member keys including no-substitution templates", () => {
+    const parsed = parseFixture(`
+      object.plain;
+      object["computed"];
+      object[\`templated\`];
+      object[\`dynamic-\${suffix}\`];
+    `);
+    expect(parsed.errors).toEqual([]);
+    const members: EsTreeNode[] = [];
+    walkAst(parsed.program, (node: EsTreeNode) => {
+      if (isNodeOfType(node, "MemberExpression")) members.push(node);
+    });
+    expect(getStaticPropertyKeyName(members[0]!)).toBe("plain");
+    expect(getStaticPropertyKeyName(members[1]!)).toBe(null);
+    expect(getStaticPropertyKeyName(members[1]!, { allowComputedString: true })).toBe("computed");
+    expect(getStaticPropertyKeyName(members[2]!, { allowComputedString: true })).toBe("templated");
+    expect(getStaticPropertyKeyName(members[3]!, { allowComputedString: true })).toBe(null);
+  });
 });

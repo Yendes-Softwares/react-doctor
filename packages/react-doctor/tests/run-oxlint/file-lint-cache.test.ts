@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import os from "node:os";
 import * as path from "node:path";
 import { afterAll, describe, expect, it } from "vite-plus/test";
-import type { Diagnostic } from "@react-doctor/core";
+import type { Diagnostic, RunOxlintFileCoverage } from "@react-doctor/core";
 import { buildDiagnosticIdentity, runOxlint } from "@react-doctor/core";
 import { buildTestProject, setupReactProject, writeFile } from "../regressions/_helpers.js";
 
@@ -39,6 +39,7 @@ interface ScanOptions {
   hasReactCompiler?: boolean;
   includePaths?: string[];
   onCacheStats?: (cacheHitFileCount: number, totalConsideredFileCount: number) => void;
+  onFileCoverage?: (coverage: RunOxlintFileCoverage) => void;
 }
 
 const setupFixture = (caseId: string, indexSource: string): string => {
@@ -70,6 +71,7 @@ const scan = (projectDir: string, options: ScanOptions = {}): Promise<Diagnostic
     respectInlineDisables: options.respectInlineDisables,
     perFileLintCacheEnabled: options.perFileLintCacheEnabled,
     onCacheStats: options.onCacheStats,
+    onFileCoverage: options.onFileCoverage,
   });
 
 // Deterministic serialization of a diagnostic set for byte-identical
@@ -134,6 +136,24 @@ describe("per-file lint cache", () => {
     expect(warmTotal).toBe(coldTotal);
   });
 
+  it("reports complete structural coverage on cold and warm scans", async () => {
+    const projectDir = setupFixture("file-coverage", BARREL_INDEX);
+    const coverageSnapshots: RunOxlintFileCoverage[] = [];
+    const onFileCoverage = (coverage: RunOxlintFileCoverage): void => {
+      coverageSnapshots.push(coverage);
+    };
+
+    await scan(projectDir, { perFileLintCacheEnabled: true, onFileCoverage });
+    await scan(projectDir, { perFileLintCacheEnabled: true, onFileCoverage });
+
+    expect(coverageSnapshots).toHaveLength(2);
+    for (const coverage of coverageSnapshots) {
+      expect([...coverage.analyzedFiles].sort()).toEqual(
+        [...new Set(coverage.candidateFiles)].sort(),
+      );
+    }
+  });
+
   it("invalidates a file when its OWN content changes (content-addressed)", async () => {
     const projectDir = setupFixture("content-change", BARREL_INDEX);
     await scan(projectDir, { perFileLintCacheEnabled: true }); // populate
@@ -176,20 +196,48 @@ export const App = () => <div><Button /></div>;
     expect(noBarrelHitsOnApp(afterDepChangeCacheOn)).toBe(0);
   });
 
-  it("bypasses the cache in audit mode (respectInlineDisables: false)", async () => {
-    const projectDir = setupFixture("audit-bypass", BARREL_INDEX);
-    let cacheStatsCalled = false;
-    const diagnostics = await scan(projectDir, {
+  it("uses the cache in audit mode, byte-identically (respectInlineDisables: false)", async () => {
+    // Audit mode neutralizes disable directives on disk BEFORE the content is
+    // hashed, so the per-file key reflects exactly what oxlint saw; the cache is
+    // used (not bypassed) and `respectInlineDisables` namespaces it away from
+    // default mode (see compute-ruleset-hash.test.ts). Cold populates with zero
+    // hits, a warm rescan replays every file, and both match a cache-off scan.
+    const projectDir = setupFixture("audit-cache", BARREL_INDEX);
+    let coldHits: number | null = null;
+    let coldTotal: number | null = null;
+    let warmHits: number | null = null;
+    let warmTotal: number | null = null;
+
+    const withCacheOff = await scan(projectDir, {
+      perFileLintCacheEnabled: false,
+      respectInlineDisables: false,
+    });
+    const cold = await scan(projectDir, {
       perFileLintCacheEnabled: true,
       respectInlineDisables: false,
-      onCacheStats: () => {
-        cacheStatsCalled = true;
+      onCacheStats: (hits, total) => {
+        coldHits = hits;
+        coldTotal = total;
       },
     });
-    // Audit mode mutates files in place, so the cache must be bypassed entirely
-    // (onCacheStats never fires) while diagnostics are still produced.
-    expect(cacheStatsCalled).toBe(false);
-    expect(diagnostics.some((diagnostic) => diagnostic.rule === "no-barrel-import")).toBe(true);
+    const warm = await scan(projectDir, {
+      perFileLintCacheEnabled: true,
+      respectInlineDisables: false,
+      onCacheStats: (hits, total) => {
+        warmHits = hits;
+        warmTotal = total;
+      },
+    });
+
+    // The cache runs (onCacheStats fires): cold is all misses, warm all hits.
+    expect(coldHits).toBe(0);
+    expect(coldTotal).toBeGreaterThan(0);
+    expect(warmHits).toBe(warmTotal);
+    expect(warmTotal).toBe(coldTotal);
+    // ...and the cached diagnostics are byte-identical to a from-scratch scan.
+    expect(serialize(cold)).toBe(serialize(withCacheOff));
+    expect(serialize(warm)).toBe(serialize(withCacheOff));
+    expect(withCacheOff.some((diagnostic) => diagnostic.rule === "no-barrel-import")).toBe(true);
   });
 
   it("dedupes the merged result when includePaths repeats a file (matches cache-off)", async () => {

@@ -1,15 +1,11 @@
 import type { EsTreeNode } from "../../../utils/es-tree-node.js";
 import type { EsTreeNodeOfType } from "../../../utils/es-tree-node-of-type.js";
 import { findVariableInitializer } from "../../../utils/find-variable-initializer.js";
+import { getStaticPropertyName } from "../../../utils/get-static-property-name.js";
 import { isNodeOfType } from "../../../utils/is-node-of-type.js";
 import { stripParenExpression } from "../../../utils/strip-paren-expression.js";
 
-const ZOD_MODULE = "zod";
-
-// Every zod detection below bottoms out in `getImportInfoForIdentifier`,
-// which requires an import whose source is exactly `ZOD_MODULE` — so a file
-// with no such import can never report, and rules gate their visitors on it.
-export const ZOD_MODULE_SOURCES: ReadonlyArray<string> = [ZOD_MODULE];
+export const ZOD_MODULE_SOURCES: ReadonlyArray<string> = ["zod", "zod/v4"];
 
 interface ZodImportInfo {
   imported: string | null;
@@ -22,16 +18,7 @@ interface MethodCall {
   receiver: EsTreeNode;
 }
 
-export const getStaticPropertyName = (
-  member: EsTreeNodeOfType<"MemberExpression">,
-): string | null => {
-  const property = member.property as EsTreeNode;
-  if (!member.computed && isNodeOfType(property, "Identifier")) return property.name;
-  if (member.computed && isNodeOfType(property, "Literal") && typeof property.value === "string") {
-    return property.value;
-  }
-  return null;
-};
+export { getStaticPropertyName } from "../../../utils/get-static-property-name.js";
 
 // The classification is a pure function of the identifier node within its
 // (immutable) file, and every zod rule re-queries the same identifiers —
@@ -57,7 +44,7 @@ const computeImportInfoForIdentifier = (
   const declaration = specifier.parent;
   if (!declaration || !isNodeOfType(declaration, "ImportDeclaration")) return null;
   const source = declaration.source?.value;
-  if (source !== ZOD_MODULE) return null;
+  if (typeof source !== "string" || !ZOD_MODULE_SOURCES.includes(source)) return null;
 
   if (isNodeOfType(specifier, "ImportNamespaceSpecifier")) {
     return { imported: null, isDefault: false, isNamespace: true };

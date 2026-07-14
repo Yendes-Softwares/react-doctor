@@ -34,6 +34,12 @@ export interface InspectResult {
    */
   scannedFilePaths?: ReadonlyArray<string>;
   /**
+   * Sorted, deduplicated project-relative POSIX paths whose lint analysis
+   * completed successfully. Empty when lint did not run or failed before any
+   * file completed.
+   */
+  analyzedFiles?: ReadonlyArray<string>;
+  /**
    * Wall-clock duration of the scan phase, in milliseconds. Distinct
    * from `elapsedMilliseconds` (which spans the full `inspect()` call
    * including score fetch + rendering). Used by the multi-project
@@ -42,9 +48,9 @@ export interface InspectResult {
   scanElapsedMilliseconds?: number;
   /**
    * Per-file lint cache outcome: files served from cache, and total files
-   * considered. Both absent when the cache was off or bypassed (audit mode,
-   * adopted `extends`, user plugins). The CLI projects these onto the Sentry
-   * wide event as `lint.cacheHitRatio`.
+   * considered. Both absent when the cache was off or bypassed (adopted
+   * `extends`, user plugins, React Compiler). The CLI projects these onto the
+   * Sentry wide event as `lint.cacheHitRatio`.
    */
   lintCacheHitFileCount?: number | null;
   lintCacheTotalFileCount?: number | null;
@@ -119,6 +125,7 @@ export interface InspectOptions {
    * precedence over per-project config on every scan, like `lint`/`deadCode`.
    */
   supplyChain?: boolean;
+  /** Restrict linting to these supported JS/TS source files. */
   includePaths?: string[];
   configOverride?: ReactDoctorConfig | null;
   /**
@@ -149,8 +156,8 @@ export interface InspectOptions {
    */
   baseline?: { ref: string };
   /**
-   * Restrict reported diagnostics to those landing on the lines the change
-   * touched (`--scope lines`). Each entry is one changed file with the
+   * Restrict reported diagnostics to those whose source spans intersect the
+   * lines the change touched (`--scope lines`). Each entry is one changed file with the
    * inclusive 1-based `[start, end]` line ranges the diff added/modified,
    * keyed by a path relative to the scanned directory (forward slashes).
    * Applied at the same post-lint seam as `baseline` — the score is still
@@ -306,13 +313,35 @@ export interface JsonReportProjectEntry {
   skippedCheckReasons?: Record<string, string>;
   /**
    * Number of source files this scan's linter examined. In diff / changed
-   * mode it's the count of changed React-eligible files (`.tsx`/`.jsx` plus
-   * framework entry files); in a full scan it's the whole source tree. `0`
-   * in a diff scan means the changed files held nothing React Doctor lints —
+   * mode it's the count of changed supported JS/TS source files; in a full
+   * scan it's the whole source tree. `0` in a diff scan means the changed
+   * files held nothing React Doctor lints —
    * the GitHub Action reads that as "nothing to report" (skips the PR comment;
    * the commit status says "skipped"). Optional: absent on reports from
    * constructors that don't track it (e.g. `toJsonReport`).
    */
+  scannedFileCount?: number;
+  elapsedMilliseconds: number;
+}
+
+export interface JsonReportDiagnosticV3 extends Diagnostic {
+  id: string;
+  normalizedFilePath: string;
+  tags: string[];
+}
+
+export interface JsonReportProjectEntryV3 {
+  directory: string;
+  packageRoot: string;
+  framework: ProjectInfo["framework"];
+  project: ProjectInfo;
+  diagnostics: JsonReportDiagnosticV3[];
+  score: ScoreResult | null;
+  skippedChecks: string[];
+  skippedCheckReasons?: Record<string, string>;
+  analyzedFiles: string[];
+  analyzedFileCount: number;
+  complete: boolean;
   scannedFileCount?: number;
   elapsedMilliseconds: number;
 }
@@ -345,6 +374,7 @@ export interface JsonReportV1 {
   ok: boolean;
   directory: string;
   mode: JsonReportMode;
+  baselineDegraded?: boolean;
   /**
    * Whether any scanned project resolved a React-compatible runtime (React
    * or Preact). `false` means every React-runtime rule family was gated off,
@@ -376,9 +406,19 @@ export interface JsonReportV1 {
  * are the *introduced* findings only; `summary.score` is still the head
  * scan's project-health score. New consumers branch on `schemaVersion === 2`.
  */
-export interface JsonReportV2 extends Omit<JsonReportV1, "schemaVersion"> {
+export interface JsonReportV2 extends Omit<JsonReportV1, "schemaVersion" | "baselineDegraded"> {
   schemaVersion: 2;
   baseline: JsonReportBaselineInfo;
 }
 
-export type JsonReport = JsonReportV1 | JsonReportV2;
+export interface JsonReportV3 extends Omit<
+  JsonReportV1,
+  "schemaVersion" | "projects" | "diagnostics"
+> {
+  schemaVersion: 3;
+  baseline?: JsonReportBaselineInfo;
+  projects: JsonReportProjectEntryV3[];
+  diagnostics: JsonReportDiagnosticV3[];
+}
+
+export type JsonReport = JsonReportV1 | JsonReportV2 | JsonReportV3;

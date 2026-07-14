@@ -7,6 +7,33 @@ import { exhaustiveDeps } from "./exhaustive-deps.js";
 import { clearExhaustiveDepsSuppressionCache } from "./exhaustive-deps-suppression.js";
 
 describe("react-builtins/exhaustive-deps — regressions", () => {
+  it.each([
+    [
+      "a shadowing local",
+      `import { useEffect } from "react";
+      const C = ({ value }) => {
+        const useEffect = (callback) => callback();
+        useEffect(() => consume(value), []);
+      };`,
+    ],
+    [
+      "a function parameter",
+      `const C = ({ value, useEffect }) => {
+        useEffect(() => consume(value), []);
+      };`,
+    ],
+    [
+      "an arbitrary object method",
+      `const C = ({ value, engine }) => {
+        engine.useEffect(() => consume(value), []);
+      };`,
+    ],
+  ])("does not treat %s as a React effect", (_name, code) => {
+    const result = runRule(exhaustiveDeps, code);
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toHaveLength(0);
+  });
+
   // A module-scope constant used only as a parameter default is stable
   // across renders, so it must NOT be reported as a missing dependency.
   // Previously a manual (unfiltered) param-default walk added it
@@ -946,17 +973,921 @@ describe("react-builtins/exhaustive-deps — regressions", () => {
     expect(result.diagnostics).toEqual([]);
   });
 
-  it("still flags a dep the callback truly never reads", () => {
+  it("still flags an extra reactive dependency in useCallback", () => {
     const code = `
       function MyComponent({ value, unrelated }) {
-        const doubled = useMemo(() => value * 2, [value, unrelated]);
-        return doubled;
+        const getValue = useCallback(() => value, [value, unrelated]);
+        return getValue;
       }
     `;
     const result = runRule(exhaustiveDeps, code);
     expect(result.parseErrors).toEqual([]);
     const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
     expect(messages).toContain("unrelated");
+  });
+
+  it("ignores a userland function named useCallback", () => {
+    const code = `
+      const useCallback = (callback, dependencies) => ({ callback, dependencies });
+      function Cell({ direct, fallback }) {
+        const effectiveCallback = direct ?? fallback;
+        return useCallback(() => effectiveCallback?.(), []);
+      }
+    `;
+    const result = runRule(exhaustiveDeps, code);
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("does not report state read only by its sole writer effect's equality guard", () => {
+    const code = `
+      function Candidate({ source }) {
+        const [snapshot, setSnapshot] = useState(source);
+        useEffect(() => {
+          if (!Object.is(snapshot, source)) setSnapshot(source);
+        }, [source]);
+        return snapshot;
+      }
+    `;
+    const result = runRule(exhaustiveDeps, code);
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it.each([
+    `if (snapshot !== source) setSnapshot(source);`,
+    `if (!Object.is(snapshot, source)) setSnapshot(source);`,
+    `if (Object.is(snapshot, source)) return; setSnapshot(source);`,
+    `if (snapshot === source) return; setSnapshot(source);`,
+    `if (snapshot === source) consume(source); else setSnapshot(source);`,
+    `if (Object.is(snapshot, source)) consume(source); else setSnapshot(source);`,
+    `if (!!(snapshot !== source)) setSnapshot(source);`,
+    `if (ready && snapshot !== source) setSnapshot(source);`,
+    `if (!ready || snapshot === source) return; setSnapshot(source);`,
+    `const nextSnapshot = source; const aliasedSnapshot = nextSnapshot; if (snapshot !== source) setSnapshot(aliasedSnapshot);`,
+    `const nextSnapshot = source; if (snapshot !== nextSnapshot) setSnapshot(source);`,
+  ])("accepts a sole-writer state equality guard: %s", (effectBody) => {
+    const code = `
+      function Candidate({ source }) {
+        const [snapshot, setSnapshot] = useState(source);
+        useEffect(() => { ${effectBody} }, [source]);
+        return snapshot;
+      }
+    `;
+    const result = runRule(exhaustiveDeps, code);
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("accepts a local source derivation used by both the guard and setter", () => {
+    const code = `
+      function Candidate({ enabled, source }) {
+        const [snapshot, setSnapshot] = useState(false);
+        useEffect(() => {
+          const nextSnapshot = enabled && computeSnapshot(source);
+          if (snapshot !== nextSnapshot) setSnapshot(nextSnapshot);
+        }, [enabled, source]);
+        return snapshot;
+      }
+    `;
+    const result = runRule(exhaustiveDeps, code);
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it.each([
+    `void source; if (!Object.is(snapshot, 0)) setSnapshot(0);`,
+    `void source; if (!Object.is(snapshot, NaN)) setSnapshot(NaN);`,
+  ])("uses Object.is semantics for exact primitive writes: %s", (effectBody) => {
+    const code = `
+      function Candidate({ source }) {
+        const [snapshot, setSnapshot] = useState(source);
+        useEffect(() => { ${effectBody} }, [source]);
+        return snapshot;
+      }
+    `;
+    const result = runRule(exhaustiveDeps, code);
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("keeps a complete sole-writer state dependency valid", () => {
+    const code = `
+      function Candidate({ source }) {
+        const [snapshot, setSnapshot] = useState(source);
+        useEffect(() => {
+          if (!Object.is(snapshot, source)) setSnapshot(source);
+        }, [snapshot, source]);
+        return snapshot;
+      }
+    `;
+    const result = runRule(exhaustiveDeps, code);
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("accepts the same guard in a layout effect through a named hook alias", () => {
+    const code = `
+      import { useLayoutEffect, useState as useLocalState } from "react";
+      function Candidate({ source }) {
+        const [snapshot, setSnapshot] = useLocalState(source);
+        useLayoutEffect(() => {
+          if ((snapshot!) !== source) (setSnapshot)(source);
+        }, [source]);
+        return snapshot;
+      }
+    `;
+    const result = runRule(exhaustiveDeps, code, { filename: "fixture.tsx" });
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it("accepts the same guard through the React namespace", () => {
+    const code = `
+      import * as React from "react";
+      function Candidate({ source }) {
+        const [snapshot, setSnapshot] = React.useState(source);
+        React.useEffect(() => {
+          if (!Object.is(snapshot, source)) setSnapshot(source);
+        }, [source]);
+        return snapshot;
+      }
+    `;
+    const result = runRule(exhaustiveDeps, code);
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics).toEqual([]);
+  });
+
+  it.each([
+    `useEffect(() => { if (!Object.is(snapshot, source)) setSnapshot(source); }, [source]); return <button onClick={() => setSnapshot("external")}>{snapshot}</button>;`,
+    `useEffect(() => { if (!Object.is(snapshot, source)) setSnapshot(source); }, [source]); useEffect(() => { setSnapshot("external"); }, []); return snapshot;`,
+    `useEffect(() => { if (!Object.is(snapshot, source)) setSnapshot(source); }, [source]); const update = setSnapshot; return <button onClick={() => update("external")}>{snapshot}</button>;`,
+    `useEffect(() => { const update = () => setSnapshot(source); if (!Object.is(snapshot, source)) update(); }, [source]); return snapshot;`,
+    `useEffect(() => { if (!Object.is(snapshot, source)) { setSnapshot(source); setSnapshot(source); } }, [source]); return snapshot;`,
+    `useEffect(() => { if (!Object.is(snapshot, source)) setSnapshot(source); consume(snapshot); }, [source]); return snapshot;`,
+    `useEffect(() => { if (!Object.is(snapshot, source)) consume(source); setSnapshot(source); }, [source]); return snapshot;`,
+    `const Object = { is: () => false }; useEffect(() => { if (!Object.is(snapshot, source)) setSnapshot(source); }, [source]); return snapshot;`,
+    `const equal = () => false; useEffect(() => { if (!equal(snapshot, source)) setSnapshot(source); }, [source]); return snapshot;`,
+    `const notEqual = () => true; useEffect(() => { if (notEqual(snapshot, source)) setSnapshot(source); }, [source]); return snapshot;`,
+    `const compare = { equal: () => false }; useEffect(() => { if (!compare.equal(snapshot, source)) setSnapshot(source); }, [source]); return snapshot;`,
+    `useInsertionEffect(() => { if (!Object.is(snapshot, source)) setSnapshot(source); }, [source]); return snapshot;`,
+    `useEffect(() => { if (snapshot.value !== source.value) setSnapshot(source); }, [source]); return snapshot.value;`,
+  ])("reports when sole-writer ownership or guard role is not proven: %s", (componentBody) => {
+    const code = `
+      function Candidate({ source }) {
+        const [snapshot, setSnapshot] = useState(source);
+        ${componentBody}
+      }
+    `;
+    const result = runRule(exhaustiveDeps, code);
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics.length).toBeGreaterThan(0);
+  });
+
+  it("does not apply the exemption to a userland useState tuple", () => {
+    const code = `
+      const useState = (value) => [value, consume];
+      function Candidate({ source }) {
+        const [snapshot, setSnapshot] = useState(source);
+        useEffect(() => {
+          if (!Object.is(snapshot, source)) setSnapshot(source);
+        }, [source]);
+        return snapshot;
+      }
+    `;
+    const result = runRule(exhaustiveDeps, code);
+    expect(result.parseErrors).toEqual([]);
+    expect(result.diagnostics.length).toBeGreaterThan(0);
+  });
+
+  it.each([
+    {
+      effectBody: `if (snapshot === source) setSnapshot(Math.random());`,
+      dependencies: `[source]`,
+    },
+    {
+      effectBody: `if (snapshot === source) setSnapshot(source);`,
+      dependencies: `[source]`,
+    },
+    {
+      effectBody: `if (Object.is(snapshot, source)) setSnapshot(source);`,
+      dependencies: `[source]`,
+    },
+    {
+      effectBody: `if (!(snapshot !== source)) setSnapshot(source);`,
+      dependencies: `[source]`,
+    },
+    {
+      effectBody: `if (ready || snapshot !== source) setSnapshot(source);`,
+      dependencies: `[ready, source]`,
+    },
+    {
+      effectBody: `if (ready && snapshot === source) return; setSnapshot(source);`,
+      dependencies: `[ready, source]`,
+    },
+    {
+      effectBody: `if (snapshot !== source) consume(source); else setSnapshot(source);`,
+      dependencies: `[source]`,
+    },
+    {
+      effectBody: `if (snapshot !== source) setSnapshot(other);`,
+      dependencies: `[source, other]`,
+    },
+    {
+      effectBody: `if (Object.is(snapshot, source)) setSnapshot(other);`,
+      dependencies: `[source, other]`,
+    },
+    {
+      effectBody: `if (normalize(snapshot) !== source) setSnapshot(source);`,
+      dependencies: `[source]`,
+    },
+    {
+      effectBody: `if (snapshot !== source) setSnapshot(source);`,
+      dependencies: `[]`,
+    },
+    {
+      effectBody: `if (snapshot != source) setSnapshot(source);`,
+      dependencies: `[source]`,
+    },
+    {
+      effectBody: `if (snapshot !== 0) setSnapshot(-0);`,
+      dependencies: `[source]`,
+    },
+    {
+      effectBody: `void source; if (!Object.is(snapshot, 0)) setSnapshot(-0);`,
+      dependencies: `[source]`,
+    },
+    {
+      effectBody: `if (snapshot !== NaN) setSnapshot(NaN);`,
+      dependencies: `[source]`,
+    },
+  ])(
+    "reports snapshot when the guard/write/source proof fails: $effectBody $dependencies",
+    ({ effectBody, dependencies }) => {
+      const code = `
+        function Candidate({ other, ready, source }) {
+          const [snapshot, setSnapshot] = useState(source);
+          useEffect(() => { ${effectBody} }, ${dependencies});
+          return snapshot;
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("snapshot");
+    },
+  );
+
+  describe("bounded identity source resolution", () => {
+    it("accepts the exact derived callback dependency", () => {
+      const code = `
+        function Cell({ onMouseDownCell }) {
+          const contextCallbacks = useContext(CellCallbacksContext);
+          const effectiveOnMouseDownCell =
+            onMouseDownCell ?? contextCallbacks.onMouseDownCell;
+          return useCallback(
+            (event) => effectiveOnMouseDownCell?.(event),
+            [effectiveOnMouseDownCell],
+          );
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toEqual([]);
+    });
+
+    it("does not treat a call dependency as the exact derived binding", () => {
+      const code = `
+        function Cell({ direct, fallback }) {
+          const effectiveCallback = direct ?? fallback;
+          return useCallback(() => effectiveCallback?.(), [effectiveCallback()]);
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("direct, fallback");
+    });
+
+    const authenticCellFixtures = [
+      [
+        "564623E direct-first whole-context callbacks",
+        `function Cell({ value, stringify, renderCellContent, onMouseDownCell, onDoubleClickCell, onKeyDownCell }) {
+          const contextStringify = useContext(StringifyContext);
+          const contextRenderCellContent = useContext(RenderCellContentContext);
+          const contextCallbacks = useContext(CellCallbacksContext);
+          const stringifyCell = stringify ?? contextStringify;
+          const renderContent = renderCellContent ?? contextRenderCellContent;
+          const onMouseDown = onMouseDownCell ?? contextCallbacks.onMouseDownCell;
+          const onDoubleClick = onDoubleClickCell ?? contextCallbacks.onDoubleClickCell;
+          const onKeyDown = onKeyDownCell ?? contextCallbacks.onKeyDownCell;
+          useMemo(() => stringifyCell(value), [stringifyCell, value]);
+          useMemo(() => renderContent?.({ value, stringify: stringifyCell }), [renderContent, stringifyCell, value]);
+          useCallback(() => onMouseDown?.(), [onMouseDown]);
+          useCallback(() => onDoubleClick?.(), [onDoubleClick]);
+          useCallback(() => onKeyDown?.(), [onKeyDown]);
+        }`,
+      ],
+      [
+        "nkHS2Qe context-first whole-context callbacks",
+        `function Cell({ value, stringify, renderCellContent, onMouseDownCell, onDoubleClickCell, onKeyDownCell }) {
+          const stringifyFromContext = useContext(StringifyContext);
+          const renderCellContentFromContext = useContext(RenderCellContentContext);
+          const callbacks = useContext(CellCallbacksContext);
+          const stringifyFunction = stringify ?? stringifyFromContext;
+          const renderCellContentFunction = renderCellContent ?? renderCellContentFromContext;
+          const onMouseDown = callbacks.onMouseDownCell ?? onMouseDownCell;
+          const onDoubleClick = callbacks.onDoubleClickCell ?? onDoubleClickCell;
+          const onKeyDown = callbacks.onKeyDownCell ?? onKeyDownCell;
+          useMemo(() => stringifyFunction(value), [stringifyFunction, value]);
+          useMemo(() => renderCellContentFunction?.({ value, stringify: stringifyFunction }), [renderCellContentFunction, stringifyFunction, value]);
+          useCallback(() => onMouseDown?.(), [onMouseDown]);
+          useCallback(() => onDoubleClick?.(), [onDoubleClick]);
+          useCallback(() => onKeyDown?.(), [onKeyDown]);
+        }`,
+      ],
+      [
+        "EiAdw4h renamed destructured props",
+        `function Cell({ value, stringify: stringifyProp, renderCellContent: renderCellContentProp, onMouseDownCell: onMouseDownCellProp, onDoubleClickCell: onDoubleClickCellProp, onKeyDownCell: onKeyDownCellProp }) {
+          const stringifyFromContext = useContext(StringifyContext);
+          const renderCellContentFromContext = useContext(RenderCellContentContext);
+          const callbacks = useContext(CellCallbacksContext);
+          const stringify = stringifyProp ?? stringifyFromContext;
+          const renderCellContent = renderCellContentProp ?? renderCellContentFromContext;
+          const onMouseDownCell = onMouseDownCellProp ?? callbacks.onMouseDownCell;
+          const onDoubleClickCell = onDoubleClickCellProp ?? callbacks.onDoubleClickCell;
+          const onKeyDownCell = onKeyDownCellProp ?? callbacks.onKeyDownCell;
+          useMemo(() => stringify(value), [stringify, value]);
+          useMemo(() => renderCellContent?.({ value, stringify }), [renderCellContent, stringify, value]);
+          useCallback(() => onMouseDownCell?.(), [onMouseDownCell]);
+          useCallback(() => onDoubleClickCell?.(), [onDoubleClickCell]);
+          useCallback(() => onKeyDownCell?.(), [onKeyDownCell]);
+        }`,
+      ],
+      [
+        "ERLwxXr destructured context members",
+        `function Cell({ value, stringify: directStringify, renderCellContent: directRenderCellContent, onMouseDownCell: directOnMouseDownCell, onDoubleClickCell: directOnDoubleClickCell, onKeyDownCell: directOnKeyDownCell }) {
+          const { onMouseDownCell: contextOnMouseDownCell, onDoubleClickCell: contextOnDoubleClickCell, onKeyDownCell: contextOnKeyDownCell } = useContext(CellCallbacksContext);
+          const contextStringify = useContext(StringifyContext);
+          const contextRenderCellContent = useContext(RenderCellContentContext);
+          const stringify = directStringify ?? contextStringify;
+          const renderCellContent = directRenderCellContent ?? contextRenderCellContent;
+          const onMouseDownCell = directOnMouseDownCell ?? contextOnMouseDownCell;
+          const onDoubleClickCell = directOnDoubleClickCell ?? contextOnDoubleClickCell;
+          const onKeyDownCell = directOnKeyDownCell ?? contextOnKeyDownCell;
+          useMemo(() => stringify(value), [stringify, value]);
+          useMemo(() => renderCellContent?.({ value, stringify }), [renderCellContent, stringify, value]);
+          useCallback(() => onMouseDownCell?.(), [onMouseDownCell]);
+          useCallback(() => onDoubleClickCell?.(), [onDoubleClickCell]);
+          useCallback(() => onKeyDownCell?.(), [onKeyDownCell]);
+        }`,
+      ],
+      [
+        "wJWmEDA resolved binding names",
+        `function Cell({ value, stringify, renderCellContent, onMouseDownCell, onDoubleClickCell, onKeyDownCell }) {
+          const contextStringify = useContext(StringifyContext);
+          const contextRenderCellContent = useContext(RenderCellContentContext);
+          const contextCallbacks = useContext(CellCallbacksContext);
+          const resolvedStringify = stringify ?? contextStringify;
+          const resolvedRenderCellContent = renderCellContent ?? contextRenderCellContent;
+          const resolvedOnMouseDownCell = onMouseDownCell ?? contextCallbacks.onMouseDownCell;
+          const resolvedOnDoubleClickCell = onDoubleClickCell ?? contextCallbacks.onDoubleClickCell;
+          const resolvedOnKeyDownCell = onKeyDownCell ?? contextCallbacks.onKeyDownCell;
+          useMemo(() => resolvedStringify(value), [resolvedStringify, value]);
+          useMemo(() => resolvedRenderCellContent?.({ value, stringify: resolvedStringify }), [resolvedRenderCellContent, resolvedStringify, value]);
+          useCallback(() => resolvedOnMouseDownCell?.(), [resolvedOnMouseDownCell]);
+          useCallback(() => resolvedOnDoubleClickCell?.(), [resolvedOnDoubleClickCell]);
+          useCallback(() => resolvedOnKeyDownCell?.(), [resolvedOnKeyDownCell]);
+        }`,
+      ],
+      [
+        "359ukck independently named context bindings",
+        `function Cell({ value, stringify: stringifyProp, renderCellContent: renderCellContentProp, onMouseDownCell: onMouseDownCellProp, onDoubleClickCell: onDoubleClickCellProp, onKeyDownCell: onKeyDownCellProp }) {
+          const stringifyContext = useContext(StringifyContext);
+          const renderCellContentContext = useContext(RenderCellContentContext);
+          const cellCallbacks = useContext(CellCallbacksContext);
+          const stringify = stringifyProp ?? stringifyContext;
+          const renderCellContent = renderCellContentProp ?? renderCellContentContext;
+          const onMouseDownCell = onMouseDownCellProp ?? cellCallbacks.onMouseDownCell;
+          const onDoubleClickCell = onDoubleClickCellProp ?? cellCallbacks.onDoubleClickCell;
+          const onKeyDownCell = onKeyDownCellProp ?? cellCallbacks.onKeyDownCell;
+          useMemo(() => stringify(value), [stringify, value]);
+          useMemo(() => renderCellContent?.({ value, stringify }), [renderCellContent, stringify, value]);
+          useCallback(() => onMouseDownCell?.(), [onMouseDownCell]);
+          useCallback(() => onDoubleClickCell?.(), [onDoubleClickCell]);
+          useCallback(() => onKeyDownCell?.(), [onKeyDownCell]);
+        }`,
+      ],
+    ] as const;
+
+    for (const [fixtureName, code] of authenticCellFixtures) {
+      it(`accepts all five exact derived dependencies from ${fixtureName}`, () => {
+        const result = runRule(exhaustiveDeps, code);
+        expect(result.parseErrors).toEqual([]);
+        expect(result.diagnostics).toEqual([]);
+      });
+    }
+
+    it("accepts exact conditional and logical derived dependencies", () => {
+      const code = `
+        function Cell({ direct, fallback, preferDirect }) {
+          const conditionalCallback = preferDirect ? direct : fallback;
+          const logicalCallback = direct || fallback;
+          useCallback(() => conditionalCallback?.(), [conditionalCallback]);
+          useEffect(() => logicalCallback?.(), [logicalCallback]);
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toEqual([]);
+    });
+
+    it("reports an omitted derived dependency", () => {
+      const code = `
+        function Cell({ direct, fallback }) {
+          const effectiveCallback = direct ?? fallback;
+          return useCallback(() => effectiveCallback?.(), []);
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("direct, fallback");
+    });
+
+    it("reports every omitted initializer source when one source is listed", () => {
+      const code = `
+        function Cell({ direct, fallback }) {
+          const effectiveCallback = direct ?? fallback;
+          return useCallback(() => effectiveCallback?.(), [direct]);
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("fallback");
+    });
+
+    it("reports initializer inputs read directly by the hook closure", () => {
+      const code = `
+        function Cell({ direct, fallback }) {
+          const effectiveCallback = direct ?? fallback;
+          return useCallback(() => {
+            direct?.();
+            fallback?.();
+          }, [effectiveCallback]);
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("direct, fallback");
+    });
+
+    it("accepts an exact dependency on a chained const derived binding", () => {
+      const code = `
+        function Cell({ direct, fallback, override }) {
+          const baseCallback = direct ?? fallback;
+          const effectiveCallback = override ?? baseCallback;
+          return useCallback(() => effectiveCallback?.(), [effectiveCallback]);
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toEqual([]);
+    });
+
+    it("accepts an exact dependency on a reassigned derived binding", () => {
+      const code = `
+        function Cell({ direct, fallback, override }) {
+          let effectiveCallback = direct ?? fallback;
+          effectiveCallback = override ?? effectiveCallback;
+          return useCallback(() => effectiveCallback?.(), [effectiveCallback]);
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toEqual([]);
+    });
+
+    it("reports an omitted reassigned derived binding", () => {
+      const code = `
+        function Cell({ direct, fallback, override }) {
+          let effectiveCallback = direct ?? fallback;
+          effectiveCallback = override ?? effectiveCallback;
+          return useCallback(() => effectiveCallback?.(), []);
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("effectiveCallback");
+    });
+
+    it("still reports an exact derived dependency with a fresh fallback as unstable", () => {
+      const code = `
+        function Cell({ direct }) {
+          const effectiveCallback = direct ?? (() => {});
+          return useCallback(() => effectiveCallback(), [effectiveCallback]);
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("effectiveCallback");
+      expect(messages).toContain("rebuilt every render");
+    });
+
+    it("still reports an exact derived dependency with a fresh ternary branch as unstable", () => {
+      const code = `
+        function Cell({ direct, preferDirect }) {
+          const effectiveCallback = preferDirect ? direct : (() => {});
+          return useCallback(() => effectiveCallback(), [effectiveCallback]);
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("effectiveCallback");
+      expect(messages).toContain("rebuilt every render");
+    });
+
+    it("does not let a narrower member satisfy an exact derived binding", () => {
+      const code = `
+        function Cell({ direct, fallback }) {
+          const effectiveCallback = direct ?? fallback;
+          return useCallback(() => consume(effectiveCallback), [effectiveCallback.current]);
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("direct, fallback");
+    });
+
+    it("treats an immutable local alias of an imported function as stable", () => {
+      const code = `
+        import { setConnectionStatus } from "./connection-status";
+        function StatusPanel({ status }) {
+          const setStatus = setConnectionStatus;
+          useEffect(() => {
+            setStatus(status);
+          }, [status]);
+          return null;
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toEqual([]);
+    });
+
+    it("treats a transitive immutable alias of an imported function as stable", () => {
+      const code = `
+        import { setConnectionStatus } from "./connection-status";
+        function StatusPanel({ status }) {
+          const setStatus = setConnectionStatus;
+          const updateStatus = (nextStatus) => setStatus(nextStatus);
+          useEffect(() => {
+            updateStatus(status);
+          }, [status]);
+          return null;
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toEqual([]);
+    });
+
+    it("resolves renamed and immutable aliases of React hooks", () => {
+      const code = `
+        import { useEffect as runEffect, useRef as createRef } from "react";
+        function StatusPanel({ status }) {
+          const invokeEffect = runEffect as typeof runEffect;
+          const statusRef = createRef(status);
+          (invokeEffect as typeof invokeEffect)(() => {
+            consumeStatus(status, statusRef.current);
+          }, []);
+          return null;
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("status");
+      expect(messages).not.toContain("statusRef");
+    });
+
+    it("does not resolve a shadowed React hook import alias", () => {
+      const code = `
+        import { useMemo as memoize } from "react";
+        function StatusPanel({ status }) {
+          const run = (memoize) => memoize(() => status, []);
+          return run;
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toEqual([]);
+    });
+
+    it("accepts every reactive identity source of a ref alias with a stable fallback", () => {
+      const code = `
+        function EditorSurface({ text, pendingMappingOperationsRef }) {
+          const noopPendingMappingOperationsRef = useRef([]);
+          const pendingOpsRef =
+            pendingMappingOperationsRef ?? noopPendingMappingOperationsRef;
+          useLayoutEffect(() => {
+            consumeOperations(pendingOpsRef.current);
+          }, [text, pendingMappingOperationsRef]);
+          return null;
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toEqual([]);
+    });
+
+    it("accepts a stable object ref member as a ref alias fallback", () => {
+      const code = `
+        function EditorSurface({ pendingMappingOperationsRef }) {
+          const fallbackRefs = { operations: useRef([]) };
+          const pendingOpsRef = pendingMappingOperationsRef ?? fallbackRefs.operations;
+          useLayoutEffect(() => {
+            consumeOperations(pendingOpsRef.current);
+          }, [pendingMappingOperationsRef]);
+          return null;
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toEqual([]);
+    });
+
+    it("keeps reactive identity sources beside a stable member fallback", () => {
+      const code = `
+        function EditorSurface({ pendingMappingOperationsRef }) {
+          const stableRefs = useMemo(() => ({ operations: null }), []);
+          const pendingOpsRef = stableRefs.operations ?? pendingMappingOperationsRef;
+          useLayoutEffect(() => {
+            consumeOperations(pendingOpsRef.current);
+          }, []);
+          return null;
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toHaveLength(1);
+      expect(result.diagnostics[0]?.message).toContain("pendingMappingOperationsRef");
+      expect(result.diagnostics[0]?.message).not.toContain("pendingOpsRef");
+    });
+
+    it("resolves wrapped optional member identity sources", () => {
+      const code = `
+        function EditorSurface(props) {
+          const fallbackOperationsRef = useRef([]);
+          const pendingOpsRef =
+            (props?.pendingMappingOperationsRef as React.RefObject<unknown[]>) ??
+            fallbackOperationsRef;
+          useLayoutEffect(() => {
+            consumeOperations(pendingOpsRef.current);
+          }, [props.pendingMappingOperationsRef]);
+          return null;
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toEqual([]);
+    });
+
+    it("does not synthesize whole props when declared members cover every props capture", () => {
+      const code = `
+        function Settings(props) {
+          return useMemo(
+            () =>
+              props.apiKeys.filter(
+                (apiKey) => apiKey.organizationId === props.user.organizationId,
+              ),
+            [props.apiKeys, props.user.organizationId],
+          );
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toEqual([]);
+    });
+
+    it("does not synthesize whole props from a shadowed callback parameter", () => {
+      const code = `
+        function Settings(props) {
+          return useMemo(
+            () => [
+              props.firstValue,
+              props.secondValue,
+              ...props.items.map((props) => props.format()),
+            ],
+            [props.firstValue, props.items],
+          );
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("props.secondValue");
+      expect(messages).not.toMatch(/dependencies?: `props`(?:,|\.|$)/);
+    });
+
+    it("allows an extra reactive useMemo dependency as an invalidation token", () => {
+      const code = `
+        function Slice({ rows, cacheRevision }) {
+          const cacheRef = useRef(new Map());
+          return useMemo(
+            () => readRows(cacheRef.current, rows),
+            [rows, cacheRevision],
+          );
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toEqual([]);
+    });
+
+    it("allows reactive invalidation parameters on a generic useMemo call", () => {
+      const code = `
+        function usePosition(chart, chartWidth, chartHeight) {
+          return useMemo<Position>(
+            () => readPosition(chart),
+            [chart, chartWidth, chartHeight],
+          );
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toEqual([]);
+    });
+
+    it("flags an unused useMemo dependency derived from a nested fresh fallback", () => {
+      const code = `
+        function Cell({ direct, other }) {
+          const derivedCallback = direct ?? (() => {});
+          return useMemo(() => other, [derivedCallback, other]);
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("`derivedCallback` changes even though it never uses it");
+    });
+
+    it("allows an unused useMemo dependency derived from reactive sources", () => {
+      const code = `
+        function Cell({ direct, fallback, other }) {
+          const derivedCallback = direct ?? fallback;
+          return useMemo(() => other, [derivedCallback, other]);
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toEqual([]);
+    });
+
+    it("still flags a fresh useMemo dependency that invalidates every render", () => {
+      const code = `
+        function Slice({ rows }) {
+          const freshInvalidationToken = {};
+          return useMemo(
+            () => readRows(rows),
+            [rows, freshInvalidationToken],
+          );
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("freshInvalidationToken");
+    });
+
+    it("still flags a stable useMemo dependency that cannot invalidate the memo", () => {
+      const code = `
+        function Slice({ rows }) {
+          const cacheRef = useRef(new Map());
+          return useMemo(
+            () => readRows(rows),
+            [rows, cacheRef],
+          );
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("cacheRef");
+    });
+
+    it("does not treat a mutable imported-function alias as stable", () => {
+      const code = `
+        import { setConnectionStatus } from "./connection-status";
+        function StatusPanel({ status, overrideStatus }) {
+          let setStatus = setConnectionStatus;
+          setStatus = overrideStatus ?? setStatus;
+          useEffect(() => {
+            setStatus(status);
+          }, [status]);
+          return null;
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("setStatus");
+    });
+
+    it("does not treat a render-local closure as an imported-function alias", () => {
+      const code = `
+        import { setConnectionStatus } from "./connection-status";
+        function StatusPanel({ status }) {
+          const setStatus = (nextStatus) => setConnectionStatus(nextStatus);
+          useEffect(() => {
+            setStatus(status);
+          }, [status, setStatus]);
+          return null;
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("setStatus");
+      expect(messages).toContain("rebuilt every render");
+    });
+
+    it("does not resolve an alias with a fresh fallback", () => {
+      const code = `
+        function EditorSurface({ pendingMappingOperationsRef }) {
+          const pendingOpsRef = pendingMappingOperationsRef ?? { current: [] };
+          useLayoutEffect(() => {
+            consumeOperations(pendingOpsRef.current);
+          }, [pendingMappingOperationsRef]);
+          return null;
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("pendingOpsRef");
+    });
+
+    it("reports every missing reactive identity source", () => {
+      const code = `
+        function EditorSurface({ primaryOperationsRef, secondaryOperationsRef }) {
+          const fallbackOperationsRef = useRef([]);
+          const pendingOpsRef =
+            primaryOperationsRef ?? secondaryOperationsRef ?? fallbackOperationsRef;
+          useLayoutEffect(() => {
+            consumeOperations(pendingOpsRef.current);
+          }, [primaryOperationsRef]);
+          return null;
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("secondaryOperationsRef");
+      expect(messages).not.toContain("`pendingOpsRef`");
+    });
+
+    it("does not resolve computed-member identity sources", () => {
+      const code = `
+        function EditorSurface({ operationRefs, operationKind }) {
+          const fallbackOperationsRef = useRef([]);
+          const pendingOpsRef =
+            operationRefs[operationKind] ?? fallbackOperationsRef;
+          useLayoutEffect(() => {
+            consumeOperations(pendingOpsRef.current);
+          }, [operationRefs, operationKind]);
+          return null;
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("pendingOpsRef");
+    });
+
+    it("does not let a narrower member dependency cover an identity source", () => {
+      const code = `
+        function EditorSurface(props) {
+          const fallbackOperationsRef = useRef([]);
+          const pendingOpsRef =
+            props.pendingMappingOperationsRef ?? fallbackOperationsRef;
+          useLayoutEffect(() => {
+            consumeOperations(pendingOpsRef.current);
+          }, [props.pendingMappingOperationsRef.current]);
+          return null;
+        }
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("props.pendingMappingOperationsRef");
+    });
   });
 });
 
@@ -1005,6 +1936,69 @@ describe("react-builtins/exhaustive-deps — upstream disable-comment suppressio
       "  }, []);",
       "}",
     ].join("\n");
+    withTempFile(code, (filename) => {
+      const result = runRule(exhaustiveDeps, code, { filename });
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toEqual([]);
+    });
+  });
+
+  it("honors an explicitly annotated session snapshot", () => {
+    const code = `
+      interface User { role: "user" | "admin" }
+      declare const warmupRouteChunks: (role: User["role"], sessionKey: string) => void;
+
+      function IntentionalSessionSnapshot({ sessionKey, user }: { sessionKey: string; user: User }) {
+        useEffect(() => {
+          const role = user.role;
+          warmupRouteChunks(role, sessionKey);
+          // eslint-disable-next-line react-hooks/exhaustive-deps -- role is intentionally snapshotted for this session
+        }, [sessionKey]);
+      }
+    `;
+    withTempFile(code, (filename) => {
+      const result = runRule(exhaustiveDeps, code, { filename });
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toEqual([]);
+    });
+  });
+
+  it("retains the syntax-identical unmarked live-role warning", () => {
+    const code = `
+      interface User { role: "user" | "admin" }
+      declare const warmupRouteChunks: (role: User["role"], sessionKey: string) => void;
+
+      function LiveRole({ sessionKey, user }: { sessionKey: string; user: User }) {
+        useEffect(() => {
+          const role = user.role;
+          warmupRouteChunks(role, sessionKey);
+        }, [sessionKey]);
+      }
+    `;
+    withTempFile(code, (filename) => {
+      const result = runRule(exhaustiveDeps, code, { filename });
+      expect(result.parseErrors).toEqual([]);
+      expect(result.diagnostics).toHaveLength(1);
+      expect(result.diagnostics[0]?.message).toContain("user.role");
+    });
+  });
+
+  it("accepts the explicit session-object encoding", () => {
+    const code = `
+      interface User { role: "user" | "admin" }
+      declare const warmupRouteChunks: (role: User["role"], sessionKey: string) => void;
+
+      function ExplicitSessionSnapshot({ sessionKey, user }: { sessionKey: string; user: User }) {
+        const sessionRef = useRef<{ key: string; role: User["role"] } | null>(null);
+        if (sessionRef.current?.key !== sessionKey) {
+          sessionRef.current = { key: sessionKey, role: user.role };
+        }
+        const session = sessionRef.current;
+        useEffect(() => {
+          warmupRouteChunks(session.role, session.key);
+        }, [session]);
+      }
+    `;
     withTempFile(code, (filename) => {
       const result = runRule(exhaustiveDeps, code, { filename });
       expect(result.parseErrors).toEqual([]);
@@ -1069,6 +2063,52 @@ describe("react-builtins/exhaustive-deps — upstream disable-comment suppressio
         import { useEffect, useEffectEvent } from "react";
         export const TickPanel = ({ value }) => {
           const onTick = useEffectEvent(() => value);
+          useEffect(() => { onTick(); }, [onTick]);
+          return null;
+        };
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("useEffectEvent");
+    });
+
+    it("still flags a renamed React useEffectEvent import listed in deps", () => {
+      const code = `
+        import { useEffect, useEffectEvent as useStableEvent } from "react";
+        export const TickPanel = ({ value }) => {
+          const onTick = useStableEvent(() => value);
+          useEffect(() => { onTick(); }, [onTick]);
+          return null;
+        };
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("useEffectEvent");
+    });
+
+    it("still flags useEffectEvent from a wrapped React namespace listed in deps", () => {
+      const code = `
+        import React, { useEffect } from "react";
+        export const TickPanel = ({ value }) => {
+          const onTick = (React as typeof React).useEffectEvent(() => value);
+          useEffect(() => { onTick(); }, [onTick]);
+          return null;
+        };
+      `;
+      const result = runRule(exhaustiveDeps, code);
+      expect(result.parseErrors).toEqual([]);
+      const messages = result.diagnostics.map((diagnostic) => diagnostic.message).join("\n");
+      expect(messages).toContain("useEffectEvent");
+    });
+
+    it("still flags useEffectEvent through an immutable React default-import alias", () => {
+      const code = `
+        import React, { useEffect } from "react";
+        const ReactAlias = React;
+        export const TickPanel = ({ value }) => {
+          const onTick = ReactAlias.useEffectEvent(() => value);
           useEffect(() => { onTick(); }, [onTick]);
           return null;
         };
