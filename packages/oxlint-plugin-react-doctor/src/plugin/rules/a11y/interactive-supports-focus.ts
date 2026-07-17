@@ -1,5 +1,6 @@
 import { ALL_EVENT_HANDLERS_LOWER } from "../../constants/event-handlers.js";
 import { HTML_TAGS } from "../../constants/html-tags.js";
+import { canContentEditableBeTabbable } from "../../utils/can-content-editable-be-tabbable.js";
 import { defineRule } from "../../utils/define-rule.js";
 import type { EsTreeNodeOfType } from "../../utils/es-tree-node-of-type.js";
 import { getElementType } from "../../utils/get-element-type.js";
@@ -12,6 +13,7 @@ import { isDisabledElement } from "../../utils/is-disabled-element.js";
 import { isHiddenFromScreenReader } from "../../utils/is-hidden-from-screen-reader.js";
 import { isInteractiveElement } from "../../utils/is-interactive-element.js";
 import { isInteractiveRole } from "../../utils/is-interactive-role.js";
+import { isLocalTestScaffoldJsx } from "../../utils/is-local-test-scaffold-jsx.js";
 import { isNonInteractiveElement } from "../../utils/is-non-interactive-element.js";
 import { isNonInteractiveRole } from "../../utils/is-non-interactive-role.js";
 import { isPresentationRole } from "../../utils/is-presentation-role.js";
@@ -93,6 +95,7 @@ export const interactiveSupportsFocus = defineRule({
     const tabbableSet = new Set(settings.tabbable);
     return {
       JSXOpeningElement(node: EsTreeNodeOfType<"JSXOpeningElement">) {
+        if (isLocalTestScaffoldJsx(node, context)) return;
         if (node.attributes.length === 0) return;
         // A spread (`{...props}`) can carry `tabIndex`, so focus support is indeterminate.
         if (hasJsxSpreadAttribute(node.attributes)) return;
@@ -122,6 +125,7 @@ export const interactiveSupportsFocus = defineRule({
         // already handles focus correctly.
         if (!HTML_TAGS.has(elementType)) return;
         if (
+          canContentEditableBeTabbable(node, context.scopes, context.settings) ||
           isDisabledElement(node) ||
           isHiddenFromScreenReader(node, context.settings) ||
           isPresentationRole(node)

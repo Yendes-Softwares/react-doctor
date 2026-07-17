@@ -11,6 +11,7 @@ import { getJsxPropStaticStringValues } from "../../utils/get-jsx-prop-static-st
 import { hasJsxPropIgnoreCase } from "../../utils/has-jsx-prop-ignore-case.js";
 import { isNodeOfType } from "../../utils/is-node-of-type.js";
 import { isNullishExpression } from "../../utils/is-nullish-expression.js";
+import { isLocalTestScaffoldJsx } from "../../utils/is-local-test-scaffold-jsx.js";
 
 const buildMessageDefault = (roles: ReadonlyArray<string>, propName: string): string => {
   const roleList = roles.map((role) => `\`${role}\``).join(" / ");
@@ -32,6 +33,7 @@ export const roleSupportsAriaProps = defineRule({
   category: "Accessibility",
   create: (context) => ({
     JSXOpeningElement(node: EsTreeNodeOfType<"JSXOpeningElement">) {
+      if (isLocalTestScaffoldJsx(node, context)) return;
       let ariaAttributes: Array<{ attribute: EsTreeNode; propName: string }> | null = null;
       for (const attribute of node.attributes) {
         if (!isNodeOfType(attribute as EsTreeNode, "JSXAttribute")) continue;
@@ -66,7 +68,9 @@ export const roleSupportsAriaProps = defineRule({
       // roles have to be known and all have to lack support for the prop.
       const roleCandidates = roleAttribute
         ? getJsxPropStaticStringValues(roleAttribute, context.scopes)
-        : [getImplicitRole(node, elementType)].filter((role): role is string => role !== null);
+        : [getImplicitRole(node, elementType, context.scopes)].filter(
+            (role): role is string => role !== null,
+          );
       if (roleCandidates === null || roleCandidates.length === 0) return;
       const supportedSets: Array<ReadonlySet<string>> = [];
       for (const role of roleCandidates) {

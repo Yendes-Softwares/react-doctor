@@ -12,6 +12,7 @@ import {
 } from "../../constants/data-sink-method-names.js";
 import { getCallMethodName } from "../../utils/get-call-method-name.js";
 import { getDestructuredBindingPropertyName } from "../../utils/get-destructured-binding-property-name.js";
+import { getStaticPropertyKeyName } from "../../utils/get-static-property-key-name.js";
 import type { RuleContext } from "../../utils/rule-context.js";
 import { isComponentFunction } from "../../utils/is-component-function.js";
 import { isFunctionLike } from "../../utils/is-function-like.js";
@@ -428,6 +429,7 @@ const getCallbackRefProvenance = (
   effectCall: EsTreeNode,
   callExpression: EsTreeNodeOfType<"CallExpression">,
   isReactUseRefCall: (node: EsTreeNode) => boolean,
+  isReactUseEffectCall: (node: EsTreeNode) => boolean,
 ): CallbackRefProvenance | null => {
   const callee = stripParenExpression(callExpression.callee as EsTreeNode);
   if (
@@ -450,7 +452,19 @@ const getCallbackRefProvenance = (
   ) {
     return null;
   }
-  if (!getDirectComponentBodyStatement(effectCall, componentFunction.body)) return null;
+  const notificationEffectStatement = getDirectComponentBodyStatement(
+    effectCall,
+    componentFunction.body,
+  );
+  const notificationEffectRoot = findTransparentExpressionRoot(effectCall);
+  if (
+    !notificationEffectStatement ||
+    !isNodeOfType(notificationEffectStatement, "ExpressionStatement") ||
+    notificationEffectRoot.parent !== notificationEffectStatement ||
+    !isReactUseEffectCall(effectCall)
+  ) {
+    return null;
+  }
 
   const callbackPropNames = new Set<string>();
   const initializer = refCall.arguments?.[0] as EsTreeNode | undefined;
@@ -487,8 +501,7 @@ const getCallbackRefProvenance = (
       if (
         assignment.operator !== "=" ||
         !assignmentStatement ||
-        !isNodeOfType(assignmentStatement, "ExpressionStatement") ||
-        assignmentStatement.parent !== componentFunction.body
+        !isNodeOfType(assignmentStatement, "ExpressionStatement")
       ) {
         return null;
       }
@@ -497,11 +510,355 @@ const getCallbackRefProvenance = (
         assignment.right as EsTreeNode,
       );
       if (!assignedCallbackName) return null;
+      if (assignmentStatement.parent !== componentFunction.body) {
+        if (!initializerCallbackName || assignedCallbackName !== initializerCallbackName) {
+          return null;
+        }
+        const assignmentEffectBody = assignmentStatement.parent;
+        if (!assignmentEffectBody || !isNodeOfType(assignmentEffectBody, "BlockStatement")) {
+          return null;
+        }
+        const assignmentEffectFunction = assignmentEffectBody.parent;
+        if (
+          !assignmentEffectFunction ||
+          !isFunctionLike(assignmentEffectFunction) ||
+          assignmentEffectFunction.body !== assignmentEffectBody
+        ) {
+          return null;
+        }
+        const assignmentEffectFunctionRoot =
+          findTransparentExpressionRoot(assignmentEffectFunction);
+        const assignmentEffectCall = assignmentEffectFunctionRoot.parent;
+        if (
+          !assignmentEffectCall ||
+          !isNodeOfType(assignmentEffectCall, "CallExpression") ||
+          !isReactUseEffectCall(assignmentEffectCall) ||
+          getEffectFn(analysis, assignmentEffectCall) !== assignmentEffectFunction
+        ) {
+          return null;
+        }
+        const assignmentEffectStatement = getDirectComponentBodyStatement(
+          assignmentEffectCall,
+          componentFunction.body,
+        );
+        if (
+          !assignmentEffectStatement ||
+          !isNodeOfType(assignmentEffectStatement, "ExpressionStatement") ||
+          assignmentEffectCall.parent !== assignmentEffectStatement ||
+          assignmentEffectStatement.range[0] >= notificationEffectStatement.range[0]
+        ) {
+          return null;
+        }
+      }
       callbackPropNames.add(assignedCallbackName);
     }
   }
 
   return callbackPropNames.size > 0 ? { callbackPropNames } : null;
+};
+
+const isParentPropsContextMerge = (analysis: ProgramAnalysis, expression: EsTreeNode): boolean => {
+  let currentExpression = stripParenExpression(expression);
+  const visitedVariables = new Set<NonNullable<Reference["resolved"]>>();
+  while (isNodeOfType(currentExpression, "Identifier")) {
+    const currentReference = getRef(analysis, currentExpression);
+    const currentVariable = currentReference?.resolved;
+    if (
+      !currentReference ||
+      !currentVariable ||
+      visitedVariables.has(currentVariable) ||
+      hasMutableBindingWrite(currentReference)
+    ) {
+      return false;
+    }
+    visitedVariables.add(currentVariable);
+    const definitions = currentVariable.defs.filter((definition) =>
+      isNodeOfType(definition.node as unknown as EsTreeNode, "VariableDeclarator"),
+    );
+    if (definitions.length !== 1) return false;
+    const declarator = definitions[0]?.node as unknown as EsTreeNode | undefined;
+    if (
+      !declarator ||
+      !isNodeOfType(declarator, "VariableDeclarator") ||
+      getDeclarationKind(declarator) !== "const" ||
+      !declarator.init
+    ) {
+      return false;
+    }
+    currentExpression = stripParenExpression(declarator.init as EsTreeNode);
+  }
+  if (!isNodeOfType(currentExpression, "ObjectExpression")) return false;
+  const [contextSpread, propsSpread] = currentExpression.properties ?? [];
+  if (
+    currentExpression.properties?.length !== 2 ||
+    !contextSpread ||
+    !propsSpread ||
+    !isNodeOfType(contextSpread, "SpreadElement") ||
+    !isNodeOfType(propsSpread, "SpreadElement")
+  ) {
+    return false;
+  }
+  const propsExpression = stripParenExpression(propsSpread.argument as EsTreeNode);
+  if (!isNodeOfType(propsExpression, "Identifier")) return false;
+  const propsReference = getRef(analysis, propsExpression);
+  if (
+    !propsReference?.resolved ||
+    !isWholePropsObjectReference(analysis, propsReference) ||
+    hasMutableBindingWrite(propsReference) ||
+    propsReference.resolved.references.some(
+      (candidateReference) => candidateReference !== propsReference,
+    )
+  ) {
+    return false;
+  }
+  const contextExpression = stripParenExpression(contextSpread.argument as EsTreeNode);
+  if (!isNodeOfType(contextExpression, "Identifier")) return false;
+  const contextReference = getRef(analysis, contextExpression);
+  if (
+    !contextReference?.resolved ||
+    hasMutableBindingWrite(contextReference) ||
+    contextReference.resolved.references.some(
+      (candidateReference) => !candidateReference.init && candidateReference !== contextReference,
+    )
+  ) {
+    return false;
+  }
+  const contextInitializer = contextReference.resolved?.defs
+    .map((definition) => definition.node as unknown as EsTreeNode)
+    .find((definitionNode) => isNodeOfType(definitionNode, "VariableDeclarator"));
+  if (
+    !contextInitializer ||
+    !isNodeOfType(contextInitializer, "VariableDeclarator") ||
+    getDeclarationKind(contextInitializer) !== "const" ||
+    !contextInitializer.init ||
+    !isNodeOfType(contextInitializer.init, "CallExpression")
+  ) {
+    return false;
+  }
+  const contextHook = stripParenExpression(contextInitializer.init.callee as EsTreeNode);
+  if (!isNodeOfType(contextHook, "Identifier") || !/^use[A-Z].*Context$/.test(contextHook.name)) {
+    return false;
+  }
+  const contextHookReference = getRef(analysis, contextHook);
+  return Boolean(
+    contextHookReference?.resolved?.defs.some((definition) => definition.type === "ImportBinding"),
+  );
+};
+
+const getImmutableParentCallbackPropName = (
+  analysis: ProgramAnalysis,
+  expression: EsTreeNode,
+): string | null => {
+  let currentExpression = stripParenExpression(expression);
+  const visitedVariables = new Set<NonNullable<Reference["resolved"]>>();
+  while (isNodeOfType(currentExpression, "Identifier")) {
+    const currentReference = getRef(analysis, currentExpression);
+    const currentVariable = currentReference?.resolved;
+    if (
+      !currentReference ||
+      !currentVariable ||
+      visitedVariables.has(currentVariable) ||
+      hasMutableBindingWrite(currentReference)
+    ) {
+      return null;
+    }
+    visitedVariables.add(currentVariable);
+    const definition = currentVariable.defs.length === 1 ? currentVariable.defs[0] : null;
+    const bindingIdentifier = definition?.name as unknown as EsTreeNode | undefined;
+    if (bindingIdentifier && isNodeOfType(bindingIdentifier.parent, "AssignmentPattern")) {
+      return null;
+    }
+    const definitionNode = definition?.node as unknown as EsTreeNode | undefined;
+    if (!definitionNode || !isNodeOfType(definitionNode, "VariableDeclarator")) {
+      return getParentCallbackPropName(analysis, currentExpression);
+    }
+    if (getDeclarationKind(definitionNode) !== "const" || !definitionNode.init) return null;
+    if (isNodeOfType(definitionNode.id, "ObjectPattern")) {
+      return (
+        getParentCallbackPropName(analysis, currentExpression) ??
+        (isParentPropsContextMerge(analysis, definitionNode.init as EsTreeNode)
+          ? getDestructuredBindingPropertyName(bindingIdentifier ?? currentExpression)
+          : null)
+      );
+    }
+    if (!isNodeOfType(definitionNode.id, "Identifier")) return null;
+    currentExpression = stripParenExpression(definitionNode.init as EsTreeNode);
+    if (
+      !isNodeOfType(currentExpression, "Identifier") &&
+      !isNodeOfType(currentExpression, "MemberExpression")
+    ) {
+      return null;
+    }
+  }
+  return null;
+};
+
+const objectExpressionPreservesCallbackProperty = (
+  analysis: ProgramAnalysis,
+  expression: EsTreeNode,
+  propertyName: string,
+): boolean => {
+  const unwrappedExpression = stripParenExpression(expression);
+  if (!isNodeOfType(unwrappedExpression, "ObjectExpression")) return false;
+  let callbackSourceName: string | null = null;
+  for (const property of unwrappedExpression.properties ?? []) {
+    if (!isNodeOfType(property, "Property")) return false;
+    const candidatePropertyName = getStaticPropertyKeyName(property, {
+      allowComputedString: true,
+    });
+    if (candidatePropertyName === null) return false;
+    if (candidatePropertyName !== propertyName) continue;
+    if (callbackSourceName || property.kind !== "init") return false;
+    if (!isNodeOfType(stripParenExpression(property.value as EsTreeNode), "Identifier")) {
+      return false;
+    }
+    callbackSourceName = getImmutableParentCallbackPropName(analysis, property.value as EsTreeNode);
+    if (!callbackSourceName) return false;
+  }
+  return callbackSourceName === propertyName;
+};
+
+const refCurrentObjectPreservesCallbackProperty = (
+  analysis: ProgramAnalysis,
+  expression: EsTreeNode,
+  propertyName: string,
+  isReactUseRefCall: (node: EsTreeNode) => boolean,
+): boolean => {
+  const unwrappedExpression = stripParenExpression(expression);
+  if (
+    !isNodeOfType(unwrappedExpression, "MemberExpression") ||
+    getStaticMemberPropertyName(unwrappedExpression) !== "current"
+  ) {
+    return false;
+  }
+  const bindingProvenance = getRefBindingProvenance(
+    analysis,
+    stripParenExpression(unwrappedExpression.object),
+    isReactUseRefCall,
+  );
+  if (!bindingProvenance) return false;
+  const initializer = bindingProvenance.refCall.arguments?.[0] as EsTreeNode | undefined;
+  if (
+    !initializer ||
+    !objectExpressionPreservesCallbackProperty(analysis, initializer, propertyName)
+  ) {
+    return false;
+  }
+  for (const variable of bindingProvenance.variables) {
+    for (const candidateReference of variable.references) {
+      if (candidateReference.init) continue;
+      const identifier = candidateReference.identifier as unknown as EsTreeNode;
+      if (getRefAliasDeclarator(identifier)) continue;
+      const currentMember = getRefMember(identifier);
+      if (!currentMember || getStaticMemberPropertyName(currentMember) !== "current") return false;
+      const currentAssignment = getRefMemberAssignment(identifier);
+      if (currentAssignment) {
+        if (
+          currentAssignment.operator !== "=" ||
+          !objectExpressionPreservesCallbackProperty(
+            analysis,
+            currentAssignment.right as EsTreeNode,
+            propertyName,
+          )
+        ) {
+          return false;
+        }
+        continue;
+      }
+      const currentRoot = findTransparentExpressionRoot(currentMember);
+      const currentParent = currentRoot.parent;
+      if (
+        currentParent &&
+        isNodeOfType(currentParent, "VariableDeclarator") &&
+        currentParent.init === (currentRoot as unknown as typeof currentParent.init) &&
+        isNodeOfType(currentParent.id, "ObjectPattern")
+      ) {
+        continue;
+      }
+      if (
+        currentParent &&
+        isNodeOfType(currentParent, "MemberExpression") &&
+        currentParent.object === (currentRoot as unknown as typeof currentParent.object) &&
+        getStaticMemberPropertyName(currentParent) === propertyName
+      ) {
+        const propertyRoot = findTransparentExpressionRoot(currentParent);
+        const propertyParent = propertyRoot.parent;
+        if (!propertyParent || !isNodeOfType(propertyParent, "VariableDeclarator")) {
+          return false;
+        }
+        continue;
+      }
+      return false;
+    }
+  }
+  return true;
+};
+
+const getCommandCallbackPropName = (
+  analysis: ProgramAnalysis,
+  expression: EsTreeNode,
+  isReactUseRefCall: (node: EsTreeNode) => boolean,
+): string | null => {
+  const directCallbackName = getImmutableParentCallbackPropName(analysis, expression);
+  if (directCallbackName && COMMAND_PROP_NAME_PATTERN.test(directCallbackName)) {
+    return directCallbackName;
+  }
+  let currentExpression = stripParenExpression(expression);
+  const visitedVariables = new Set<NonNullable<Reference["resolved"]>>();
+  while (isNodeOfType(currentExpression, "Identifier")) {
+    const callbackReference = getRef(analysis, currentExpression);
+    const callbackVariable = callbackReference?.resolved;
+    if (
+      !callbackReference ||
+      !callbackVariable ||
+      visitedVariables.has(callbackVariable) ||
+      hasMutableBindingWrite(callbackReference)
+    ) {
+      return null;
+    }
+    visitedVariables.add(callbackVariable);
+    const definition = callbackVariable.defs.length === 1 ? callbackVariable.defs[0] : null;
+    const declarator = definition?.node as unknown as EsTreeNode | undefined;
+    if (
+      !declarator ||
+      !isNodeOfType(declarator, "VariableDeclarator") ||
+      getDeclarationKind(declarator) !== "const" ||
+      !declarator.init
+    ) {
+      return null;
+    }
+    const bindingIdentifier = definition?.name as unknown as EsTreeNode | undefined;
+    if (bindingIdentifier && isNodeOfType(bindingIdentifier.parent, "AssignmentPattern")) {
+      return null;
+    }
+    if (isNodeOfType(declarator.id, "ObjectPattern")) {
+      const propertyName = bindingIdentifier
+        ? getDestructuredBindingPropertyName(bindingIdentifier)
+        : null;
+      if (!propertyName || !COMMAND_PROP_NAME_PATTERN.test(propertyName)) return null;
+      return refCurrentObjectPreservesCallbackProperty(
+        analysis,
+        declarator.init as EsTreeNode,
+        propertyName,
+        isReactUseRefCall,
+      )
+        ? propertyName
+        : null;
+    }
+    if (!isNodeOfType(declarator.id, "Identifier")) return null;
+    currentExpression = stripParenExpression(declarator.init as EsTreeNode);
+  }
+  if (!isNodeOfType(currentExpression, "MemberExpression")) return null;
+  const propertyName = getStaticMemberPropertyName(currentExpression);
+  if (!propertyName || !COMMAND_PROP_NAME_PATTERN.test(propertyName)) return null;
+  return refCurrentObjectPreservesCallbackProperty(
+    analysis,
+    currentExpression.object as EsTreeNode,
+    propertyName,
+    isReactUseRefCall,
+  )
+    ? propertyName
+    : null;
 };
 
 // The wrapper hides the data hand-off inside the wrapped body
@@ -670,6 +1027,11 @@ export const noPassDataToParent = defineRule({
         allowGlobalReactNamespace: true,
         allowUnboundBareCalls: true,
       });
+    const isReactUseEffectCall = (node: EsTreeNode): boolean =>
+      isReactApiCall(node, "useEffect", context.scopes, {
+        allowGlobalReactNamespace: true,
+        allowUnboundBareCalls: true,
+      });
     return {
       CallExpression(node: EsTreeNodeOfType<"CallExpression">) {
         if (!isUseEffect(node)) return;
@@ -689,6 +1051,7 @@ export const noPassDataToParent = defineRule({
             node,
             callExpr,
             isReactUseRefCall,
+            isReactUseEffectCall,
           );
           if (isRefCall(analysis, ref) && !callbackRefProvenance) continue;
           if (!isSynchronous(ref.identifier as unknown as EsTreeNode, effectFn)) continue;
@@ -708,6 +1071,14 @@ export const noPassDataToParent = defineRule({
             // Bare form: `onChange(data)` — callee must BE a prop (or a
             // plain alias of one), not a local function that eventually
             // mentions a prop.
+            const callbackPropName = getCommandCallbackPropName(
+              analysis,
+              identifier,
+              isReactUseRefCall,
+            );
+            if (callbackPropName && COMMAND_PROP_NAME_PATTERN.test(callbackPropName)) {
+              continue;
+            }
             if (!isDirectParentCallbackRef(analysis, ref)) continue;
             if (
               isNodeOfType(identifier, "Identifier") &&

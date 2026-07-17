@@ -43,6 +43,7 @@ import { isFunctionLike } from "../../utils/is-function-like.js";
 import { isNodeOfType } from "../../utils/is-node-of-type.js";
 import { isNodeReachableWithinFunction } from "../../utils/is-node-reachable-within-function.js";
 import type { EsTreeNodeOfType } from "../../utils/es-tree-node-of-type.js";
+import type { SymbolDescriptor } from "../../semantic/scope-analysis.js";
 
 // `observer.observe(el)` is the registration moment for ResizeObserver /
 // MutationObserver / IntersectionObserver et al. — subscription-shaped,
@@ -82,6 +83,36 @@ interface GlobalReleaseProof {
   call: EsTreeNode;
   handleGuard: EsTreeNodeOfType<"IfStatement"> | null;
 }
+
+interface RetainedFunctionLeakOptions {
+  allowReturnedResourceEscape?: boolean;
+  allowReturnedTimerEscape?: boolean;
+  includeOneShotTimers?: boolean;
+  requireCallableReturnedResource?: boolean;
+}
+
+interface ReactRefEffectUsage {
+  doesEffectOwnEveryResult: boolean;
+}
+
+interface ReactRefCallbackDefinition {
+  assignmentNode: EsTreeNodeOfType<"AssignmentExpression">;
+  functionNode:
+    | EsTreeNodeOfType<"ArrowFunctionExpression">
+    | EsTreeNodeOfType<"FunctionExpression">
+    | EsTreeNodeOfType<"FunctionDeclaration">;
+  refSymbol: SymbolDescriptor;
+}
+
+interface ReactRefEffectAnalysis {
+  callbackDefinitionsByRefSymbolId: Map<number, ReactRefCallbackDefinition[]>;
+  usageByRefSymbolId: Map<number, ReactRefEffectUsage>;
+}
+
+const REACT_REF_EFFECT_ANALYSIS_CACHE = new WeakMap<
+  RuleContext,
+  WeakMap<EsTreeNode, ReactRefEffectAnalysis>
+>();
 
 const RESOURCE_NOUN_BY_KIND = {
   subscribe: "subscription",
@@ -1804,7 +1835,7 @@ const effectHasCleanupForUsage = (
   if (
     usage.kind === "subscribe" &&
     findEnclosingFunction(usage.node) === callback &&
-    doesResourceResultEscape(usage.node, true) &&
+    doesResourceResultEscape(usage.node, true, true, context) &&
     isCleanupReturningSubscribeLikeCallExpression(usage.node)
   ) {
     return true;
@@ -2271,6 +2302,15 @@ const isReleaseReachableForUsage = (
   const releaseFunction = findEnclosingFunction(releaseNode);
   if (!releaseFunction) return true;
   if (releaseFunction === findEnclosingFunction(usage.node)) return true;
+  const usageFunction = findEnclosingFunction(usage.node);
+  if (
+    usageFunction &&
+    isFunctionLike(usageFunction) &&
+    getAssignedReactRefSymbol(usageFunction, context) &&
+    isCleanupFunctionReferencedByReturn(usageFunction, releaseFunction, context)
+  ) {
+    return isReactRefCallbackCleanupOwnedByEffect(usageFunction, releaseFunction, usage, context);
+  }
   return isPotentiallyReachableFunction(releaseFunction, context);
 };
 
@@ -2773,10 +2813,42 @@ const isUseSyncExternalStoreSubscribeFunction = (
   return isSubscribeBinding(bindingIdentifier);
 };
 
+const findUnconditionalReturnStatement = (
+  expression: EsTreeNode,
+  ownerFunction: EsTreeNode,
+): EsTreeNode | null => {
+  let expressionRoot = findTransparentExpressionRoot(expression);
+  while (
+    isNodeOfType(expressionRoot.parent, "SequenceExpression") &&
+    expressionRoot.parent.expressions.at(-1) === expressionRoot
+  ) {
+    expressionRoot = findTransparentExpressionRoot(expressionRoot.parent);
+  }
+  const returnStatement = expressionRoot.parent;
+  return isNodeOfType(returnStatement, "ReturnStatement") &&
+    returnStatement.argument === expressionRoot &&
+    findEnclosingFunction(returnStatement) === ownerFunction
+    ? returnStatement
+    : null;
+};
+
+const getFinalSequenceExpressionValue = (expression: EsTreeNode): EsTreeNode => {
+  let finalExpression = stripParenExpression(expression);
+  while (isNodeOfType(finalExpression, "SequenceExpression")) {
+    const sequenceResult = finalExpression.expressions.at(-1);
+    if (!sequenceResult) break;
+    finalExpression = stripParenExpression(sequenceResult);
+  }
+  return finalExpression;
+};
+
 const doesResourceResultEscape = (
   resourceNode: EsTreeNode,
+  allowReturnedResourceEscape: boolean,
   allowConciseReturnEscape: boolean,
+  context: RuleContext,
 ): boolean => {
+  if (!allowReturnedResourceEscape) return false;
   let currentNode = resourceNode;
   let parentNode = currentNode.parent;
   while (parentNode) {
@@ -2799,6 +2871,30 @@ const doesResourceResultEscape = (
       parentNode = currentNode.parent;
       continue;
     }
+    if (
+      isNodeOfType(parentNode, "VariableDeclarator") &&
+      parentNode.init === currentNode &&
+      isNodeOfType(parentNode.id, "Identifier") &&
+      isNodeOfType(parentNode.parent, "VariableDeclaration") &&
+      parentNode.parent.kind === "const"
+    ) {
+      const ownerFunction = findEnclosingFunction(resourceNode);
+      const resourceSymbol = context.scopes.symbolFor(parentNode.id);
+      if (!ownerFunction || !resourceSymbol) return false;
+      const matchingReturnStatements = resourceSymbol.references.flatMap((reference) => {
+        if (reference.flag !== "read") return [];
+        const returnStatement = findUnconditionalReturnStatement(
+          reference.identifier,
+          ownerFunction,
+        );
+        return returnStatement ? [returnStatement] : [];
+      });
+      return doMatchingNodesCoverEveryPathAfterUsage(
+        resourceNode,
+        matchingReturnStatements,
+        context,
+      );
+    }
     return false;
   }
   return false;
@@ -2807,6 +2903,7 @@ const doesResourceResultEscape = (
 const findRetainedFunctionLeak = (
   retainedFunction: EsTreeNode,
   context: RuleContext,
+  options?: RetainedFunctionLeakOptions,
 ): SubscribeLikeUsage | null => {
   if (!isFunctionLike(retainedFunction)) return null;
   const body = retainedFunction.body;
@@ -2815,7 +2912,12 @@ const findRetainedFunctionLeak = (
   // A registration returned directly from the function escapes to the
   // caller, which owns the handle.
   let leak: SubscribeLikeUsage | null = null;
-  const allowConciseReturnEscape = !isInlineRetainedHandlerFunction(retainedFunction, context);
+  const allowReturnedResourceEscape =
+    options?.allowReturnedResourceEscape !== false &&
+    !retainedFunction.async &&
+    !isInlineRetainedHandlerFunction(retainedFunction, context);
+  const allowReturnedSocketEscape =
+    allowReturnedResourceEscape && options?.requireCallableReturnedResource !== true;
   const isExternalStoreSubscribeFunction = isUseSyncExternalStoreSubscribeFunction(
     retainedFunction,
     context,
@@ -2829,7 +2931,10 @@ const findRetainedFunctionLeak = (
     if (leak !== null) return false;
     if (isFunctionLike(child)) return false;
 
-    if (isSocketConstruction(child) && !doesResourceResultEscape(child, false)) {
+    if (
+      isSocketConstruction(child) &&
+      !doesResourceResultEscape(child, allowReturnedSocketEscape, false, context)
+    ) {
       const socketUsage: SubscribeLikeUsage = {
         kind: "socket",
         node: child,
@@ -2850,16 +2955,20 @@ const findRetainedFunctionLeak = (
 
     if (
       isNodeOfType(child.callee, "Identifier") &&
-      child.callee.name === "setInterval" &&
-      !doesResourceResultEscape(child, allowConciseReturnEscape)
+      (child.callee.name === "setInterval" ||
+        (options?.includeOneShotTimers === true &&
+          child.callee.name === "setTimeout" &&
+          context.scopes.isGlobalReference(child.callee))) &&
+      (options?.allowReturnedTimerEscape === false ||
+        !doesResourceResultEscape(child, true, allowReturnedResourceEscape, context))
     ) {
       const timerUsage: SubscribeLikeUsage = {
         kind: "timer",
         node: child,
-        resourceName: "setInterval",
+        resourceName: child.callee.name,
         handleKey: findAssignedResourceKey(child, context),
         receiverKey: null,
-        registrationVerbName: "setInterval",
+        registrationVerbName: child.callee.name,
         eventKey: null,
         handlerKey: null,
       };
@@ -2871,7 +2980,14 @@ const findRetainedFunctionLeak = (
 
     if (
       isSubscribeOrObserveCall(child) &&
-      !doesResourceResultEscape(child, allowConciseReturnEscape)
+      (!doesResourceResultEscape(
+        child,
+        allowReturnedResourceEscape,
+        allowReturnedResourceEscape,
+        context,
+      ) ||
+        (options?.requireCallableReturnedResource === true &&
+          !isCleanupReturningSubscribeLikeCallExpression(child)))
     ) {
       const registrationDetails = getCallRegistrationDetails(child, context);
       const registrationVerbName = registrationDetails.registrationVerbName ?? "subscribe";
@@ -2892,6 +3008,361 @@ const findRetainedFunctionLeak = (
     }
   });
   return leak;
+};
+
+const getAssignedReactRefCallbackDefinition = (
+  functionNode: EsTreeNode,
+  context: RuleContext,
+): ReactRefCallbackDefinition | null => {
+  if (!isFunctionLike(functionNode)) return null;
+  if (functionNode.generator) return null;
+  const functionRoot = findTransparentExpressionRoot(functionNode);
+  const assignment = functionRoot.parent;
+  if (
+    !isNodeOfType(assignment, "AssignmentExpression") ||
+    assignment.operator !== "=" ||
+    assignment.right !== functionRoot
+  ) {
+    return null;
+  }
+  const refSymbol = resolveReactRefSymbol(stripParenExpression(assignment.left), context.scopes);
+  if (!refSymbol) return null;
+  const componentFunction = findRenderPhaseComponentOrHook(assignment, context.scopes);
+  if (
+    !isFunctionLike(componentFunction) ||
+    findEnclosingFunction(assignment) !== componentFunction ||
+    findEnclosingFunction(refSymbol.bindingIdentifier) !== componentFunction ||
+    !isNodeReachableWithinFunction(assignment, context)
+  ) {
+    return null;
+  }
+  return { assignmentNode: assignment, functionNode, refSymbol };
+};
+
+const getAssignedReactRefSymbol = (
+  functionNode: EsTreeNode,
+  context: RuleContext,
+): SymbolDescriptor | null =>
+  getAssignedReactRefCallbackDefinition(functionNode, context)?.refSymbol ?? null;
+
+const isExpressionReturnedFromFunction = (
+  expression: EsTreeNode,
+  ownerFunction: EsTreeNode,
+  context: RuleContext,
+): boolean => {
+  let expressionRoot = findTransparentExpressionRoot(expression);
+  const bindingDeclarator = expressionRoot.parent;
+  if (
+    isNodeOfType(bindingDeclarator, "VariableDeclarator") &&
+    bindingDeclarator.init === expressionRoot &&
+    isNodeOfType(bindingDeclarator.id, "Identifier") &&
+    isNodeOfType(bindingDeclarator.parent, "VariableDeclaration") &&
+    bindingDeclarator.parent.kind === "const"
+  ) {
+    const resultSymbol = context.scopes.symbolFor(bindingDeclarator.id);
+    if (!resultSymbol) return false;
+    const matchingReturnStatements = resultSymbol.references.flatMap((reference) => {
+      if (reference.flag !== "read") return [];
+      const returnStatement = findUnconditionalReturnStatement(reference.identifier, ownerFunction);
+      return returnStatement ? [returnStatement] : [];
+    });
+    return doMatchingNodesCoverEveryPathAfterUsage(expression, matchingReturnStatements, context);
+  }
+  while (true) {
+    const container = expressionRoot.parent;
+    if (
+      isNodeOfType(container, "ConditionalExpression") &&
+      (container.consequent === expressionRoot || container.alternate === expressionRoot)
+    ) {
+      expressionRoot = findTransparentExpressionRoot(container);
+      continue;
+    }
+    if (
+      isNodeOfType(container, "SequenceExpression") &&
+      container.expressions.at(-1) === expressionRoot
+    ) {
+      expressionRoot = findTransparentExpressionRoot(container);
+      continue;
+    }
+    if (isNodeOfType(container, "LogicalExpression") && container.right === expressionRoot) {
+      expressionRoot = findTransparentExpressionRoot(container);
+      continue;
+    }
+    break;
+  }
+  const returnStatement = expressionRoot.parent;
+  return Boolean(
+    (isNodeOfType(returnStatement, "ReturnStatement") &&
+      returnStatement.argument === expressionRoot &&
+      findEnclosingFunction(returnStatement) === ownerFunction) ||
+    (isNodeOfType(ownerFunction, "ArrowFunctionExpression") &&
+      ownerFunction.body === expressionRoot),
+  );
+};
+
+const isReactRefCurrentCall = (
+  node: EsTreeNode,
+  refSymbol: SymbolDescriptor,
+  context: RuleContext,
+): boolean =>
+  isNodeOfType(node, "CallExpression") &&
+  resolveReactRefSymbol(stripParenExpression(node.callee), context.scopes)?.id === refSymbol.id;
+
+const collectAssignedReactRefCallbacks = (
+  componentFunction: ReactRefCallbackDefinition["functionNode"],
+  context: RuleContext,
+): Map<number, ReactRefCallbackDefinition[]> => {
+  const callbackDefinitionsByRefSymbolId = new Map<number, ReactRefCallbackDefinition[]>();
+  walkAst(componentFunction.body, (child: EsTreeNode) => {
+    if (!isFunctionLike(child)) return;
+    const callbackDefinition = getAssignedReactRefCallbackDefinition(child, context);
+    if (callbackDefinition) {
+      const existingDefinitions =
+        callbackDefinitionsByRefSymbolId.get(callbackDefinition.refSymbol.id) ?? [];
+      existingDefinitions.push(callbackDefinition);
+      callbackDefinitionsByRefSymbolId.set(callbackDefinition.refSymbol.id, existingDefinitions);
+    }
+    return false;
+  });
+  for (const [refSymbolId, callbackDefinitions] of callbackDefinitionsByRefSymbolId) {
+    const activeDefinitions = callbackDefinitions.filter(
+      (callbackDefinition) =>
+        !doMatchingNodesCoverEveryPathAfterUsage(
+          callbackDefinition.assignmentNode,
+          callbackDefinitions
+            .filter((otherDefinition) => otherDefinition !== callbackDefinition)
+            .map((otherDefinition) => otherDefinition.assignmentNode),
+          context,
+        ),
+    );
+    if (activeDefinitions.length === 0) {
+      callbackDefinitionsByRefSymbolId.delete(refSymbolId);
+    } else {
+      callbackDefinitionsByRefSymbolId.set(refSymbolId, activeDefinitions);
+    }
+  }
+  return callbackDefinitionsByRefSymbolId;
+};
+
+const collectUndominatedReactRefCalls = (
+  ownerFunction: EsTreeNode,
+  refSymbol: SymbolDescriptor,
+  context: RuleContext,
+): EsTreeNode[] => {
+  if (!isFunctionLike(ownerFunction)) return [];
+  const refWrites: EsTreeNode[] = [];
+  const refCalls: EsTreeNode[] = [];
+  walkAst(ownerFunction.body, (child: EsTreeNode) => {
+    if (child !== ownerFunction.body && isFunctionLike(child)) return false;
+    if (
+      isNodeOfType(child, "AssignmentExpression") &&
+      isNodeReachableWithinFunction(child, context) &&
+      resolveReactRefSymbol(stripParenExpression(child.left), context.scopes)?.id === refSymbol.id
+    ) {
+      refWrites.push(child);
+    }
+    if (
+      isReactRefCurrentCall(child, refSymbol, context) &&
+      isNodeReachableWithinFunction(child, context)
+    ) {
+      refCalls.push(child);
+    }
+  });
+  return refCalls.filter(
+    (refCall) =>
+      !doMatchingNodesCoverEveryPathBeforeUsage(refCall, refWrites, ownerFunction, context),
+  );
+};
+
+const mergeReactRefEffectUsage = (
+  usageByRefSymbolId: Map<number, ReactRefEffectUsage>,
+  refSymbolId: number,
+  doesEffectOwnResult: boolean,
+): boolean => {
+  const existingUsage = usageByRefSymbolId.get(refSymbolId);
+  if (!existingUsage) {
+    usageByRefSymbolId.set(refSymbolId, {
+      doesEffectOwnEveryResult: doesEffectOwnResult,
+    });
+    return true;
+  }
+  if (!existingUsage.doesEffectOwnEveryResult || doesEffectOwnResult) return false;
+  existingUsage.doesEffectOwnEveryResult = false;
+  return true;
+};
+
+const collectReactRefEffectAnalysis = (
+  componentFunction: ReactRefCallbackDefinition["functionNode"],
+  context: RuleContext,
+): ReactRefEffectAnalysis => {
+  let analysisByComponent = REACT_REF_EFFECT_ANALYSIS_CACHE.get(context);
+  if (!analysisByComponent) {
+    analysisByComponent = new WeakMap();
+    REACT_REF_EFFECT_ANALYSIS_CACHE.set(context, analysisByComponent);
+  }
+  const cachedAnalysis = analysisByComponent.get(componentFunction);
+  if (cachedAnalysis) return cachedAnalysis;
+  const callbackDefinitionsByRefSymbolId = collectAssignedReactRefCallbacks(
+    componentFunction,
+    context,
+  );
+  const usageByRefSymbolId = new Map<number, ReactRefEffectUsage>();
+  walkAst(componentFunction.body, (child: EsTreeNode) => {
+    if (child !== componentFunction.body && isFunctionLike(child)) return false;
+    if (
+      !isNodeOfType(child, "CallExpression") ||
+      findEnclosingFunction(child) !== componentFunction ||
+      !isReactApiCall(child, CLEANUP_EFFECT_HOOK_NAMES, context.scopes, {
+        allowGlobalReactNamespace: true,
+      })
+    ) {
+      return;
+    }
+    const effectCallback = getEffectCallback(child);
+    if (!isFunctionLike(effectCallback)) return;
+    for (const callbackDefinitions of callbackDefinitionsByRefSymbolId.values()) {
+      const refSymbol = callbackDefinitions[0]?.refSymbol;
+      if (!refSymbol) continue;
+      for (const refCall of collectUndominatedReactRefCalls(effectCallback, refSymbol, context)) {
+        mergeReactRefEffectUsage(
+          usageByRefSymbolId,
+          refSymbol.id,
+          !effectCallback.async &&
+            isExpressionReturnedFromFunction(refCall, effectCallback, context),
+        );
+      }
+    }
+  });
+
+  let didUsageChange = true;
+  while (didUsageChange) {
+    didUsageChange = false;
+    for (const callbackDefinitions of callbackDefinitionsByRefSymbolId.values()) {
+      const ownerRefSymbol = callbackDefinitions[0]?.refSymbol;
+      if (!ownerRefSymbol) continue;
+      const ownerUsage = usageByRefSymbolId.get(ownerRefSymbol.id);
+      if (!ownerUsage) continue;
+      for (const callbackDefinition of callbackDefinitions) {
+        for (const targetDefinitions of callbackDefinitionsByRefSymbolId.values()) {
+          const targetRefSymbol = targetDefinitions[0]?.refSymbol;
+          if (!targetRefSymbol) continue;
+          for (const refCall of collectUndominatedReactRefCalls(
+            callbackDefinition.functionNode,
+            targetRefSymbol,
+            context,
+          )) {
+            const doesEffectOwnResult =
+              ownerUsage.doesEffectOwnEveryResult &&
+              !callbackDefinition.functionNode.async &&
+              isExpressionReturnedFromFunction(refCall, callbackDefinition.functionNode, context);
+            if (
+              mergeReactRefEffectUsage(usageByRefSymbolId, targetRefSymbol.id, doesEffectOwnResult)
+            ) {
+              didUsageChange = true;
+            }
+          }
+        }
+      }
+    }
+  }
+  const analysis = { callbackDefinitionsByRefSymbolId, usageByRefSymbolId };
+  analysisByComponent.set(componentFunction, analysis);
+  return analysis;
+};
+
+const getReactRefEffectUsage = (
+  retainedFunction: EsTreeNode,
+  context: RuleContext,
+): ReactRefEffectUsage | null => {
+  if (!isFunctionLike(retainedFunction)) return null;
+  const callbackDefinition = getAssignedReactRefCallbackDefinition(retainedFunction, context);
+  const componentFunction = findRenderPhaseComponentOrHook(retainedFunction, context.scopes);
+  if (!callbackDefinition || !isFunctionLike(componentFunction)) return null;
+  const analysis = collectReactRefEffectAnalysis(componentFunction, context);
+  const activeDefinitions = analysis.callbackDefinitionsByRefSymbolId.get(
+    callbackDefinition.refSymbol.id,
+  );
+  if (
+    !activeDefinitions?.some(
+      (activeDefinition) => activeDefinition.functionNode === retainedFunction,
+    )
+  ) {
+    return null;
+  }
+  return analysis.usageByRefSymbolId.get(callbackDefinition.refSymbol.id) ?? null;
+};
+
+const isReactRefCallbackCleanupOwnedByEffect = (
+  retainedFunction: EsTreeNode,
+  cleanupFunction: EsTreeNode,
+  usage: SubscribeLikeUsage,
+  context: RuleContext,
+): boolean => {
+  if (
+    !isFunctionLike(retainedFunction) ||
+    retainedFunction.async ||
+    getReactRefEffectUsage(retainedFunction, context)?.doesEffectOwnEveryResult !== true
+  ) {
+    return false;
+  }
+  if (!isNodeOfType(retainedFunction.body, "BlockStatement")) return false;
+  const doesReturnedCleanupCallFunction = (returnedValue: EsTreeNode): boolean => {
+    const returnedCleanupFunction = resolveRefOwnedCleanupFunction(
+      getFinalSequenceExpressionValue(returnedValue),
+      context,
+    );
+    if (!returnedCleanupFunction) return false;
+    if (returnedCleanupFunction === cleanupFunction) return true;
+    if (!isFunctionLike(returnedCleanupFunction)) return false;
+    const matchingCalls: EsTreeNode[] = [];
+    walkAst(returnedCleanupFunction.body, (child: EsTreeNode) => {
+      if (child !== returnedCleanupFunction.body && isFunctionLike(child)) return false;
+      if (
+        isNodeOfType(child, "CallExpression") &&
+        resolveRefOwnedCleanupFunction(child.callee, context) === cleanupFunction
+      ) {
+        matchingCalls.push(child);
+      }
+    });
+    return doMatchingNodesCoverEveryPathFromFunctionEntry(
+      returnedCleanupFunction,
+      matchingCalls,
+      context,
+    );
+  };
+  const matchingReturns: EsTreeNode[] = [];
+  walkInsideStatementBlocks(retainedFunction.body, (child: EsTreeNode) => {
+    if (
+      isNodeOfType(child, "ReturnStatement") &&
+      child.argument &&
+      doesReturnedCleanupCallFunction(child.argument)
+    ) {
+      matchingReturns.push(child);
+    }
+  });
+  return doMatchingNodesCoverEveryPathAfterUsage(usage.node, matchingReturns, context);
+};
+
+const isCleanupFunctionReferencedByReturn = (
+  ownerFunction: EsTreeNode,
+  cleanupFunction: EsTreeNode,
+  context: RuleContext,
+): boolean => {
+  if (!isFunctionLike(ownerFunction) || !isNodeOfType(ownerFunction.body, "BlockStatement")) {
+    return false;
+  }
+  let isReferencedByReturn = false;
+  walkInsideStatementBlocks(ownerFunction.body, (child: EsTreeNode) => {
+    if (isReferencedByReturn || !isNodeOfType(child, "ReturnStatement") || !child.argument) {
+      return;
+    }
+    walkAst(child.argument, (returnedChild: EsTreeNode) => {
+      if (resolveRefOwnedCleanupFunction(returnedChild, context) !== cleanupFunction) return;
+      isReferencedByReturn = true;
+      return false;
+    });
+  });
+  return isReferencedByReturn;
 };
 
 const isRetainedComponentScopeFunction = (functionNode: EsTreeNode): boolean => {
@@ -2965,8 +3436,22 @@ export const effectNeedsCleanup = defineRule({
     "Return a cleanup function that stops the subscription or timer: `return () => target.removeEventListener(name, handler)` for listeners, `return () => clearInterval(id)` or `clearTimeout(id)` for timers, `return () => observer.disconnect()` for observers, `return () => socket.close()` for connections, or `return unsubscribe` if the subscribe call already gave you one.",
   create: (context: RuleContext) => {
     const reportRetainedLeak = (retainedFunction: EsTreeNode): void => {
-      if (!isPotentiallyReachableFunction(retainedFunction, context)) return;
-      const leak = findRetainedFunctionLeak(retainedFunction, context);
+      const refEffectUsage = getReactRefEffectUsage(retainedFunction, context);
+      if (!refEffectUsage && !isPotentiallyReachableFunction(retainedFunction, context)) {
+        return;
+      }
+      const leak = findRetainedFunctionLeak(
+        retainedFunction,
+        context,
+        refEffectUsage
+          ? {
+              allowReturnedResourceEscape: refEffectUsage.doesEffectOwnEveryResult,
+              allowReturnedTimerEscape: false,
+              includeOneShotTimers: true,
+              requireCallableReturnedResource: true,
+            }
+          : undefined,
+      );
       if (!leak) return;
       const resourceNoun = RESOURCE_NOUN_BY_KIND[leak.kind];
       context.report({
@@ -3010,7 +3495,8 @@ export const effectNeedsCleanup = defineRule({
       ArrowFunctionExpression(node: EsTreeNodeOfType<"ArrowFunctionExpression">) {
         if (
           isRetainedComponentScopeFunction(node) ||
-          isInlineRetainedHandlerFunction(node, context)
+          isInlineRetainedHandlerFunction(node, context) ||
+          getAssignedReactRefSymbol(node, context)
         ) {
           reportRetainedLeak(node);
         }
@@ -3018,7 +3504,8 @@ export const effectNeedsCleanup = defineRule({
       FunctionExpression(node: EsTreeNodeOfType<"FunctionExpression">) {
         if (
           isRetainedComponentScopeFunction(node) ||
-          isInlineRetainedHandlerFunction(node, context)
+          isInlineRetainedHandlerFunction(node, context) ||
+          getAssignedReactRefSymbol(node, context)
         ) {
           reportRetainedLeak(node);
         }
