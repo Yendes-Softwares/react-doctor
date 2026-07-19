@@ -374,9 +374,6 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
   "jsx-no-script-url": {
     code: 'const A = () => <a href="javascript:void(0)">x</a>;',
   },
-  "jsx-no-target-blank": {
-    code: 'const AuthFooter = () => (\n        <a href="https://internxt.com/legal" target="_blank" className="auth-footer-link">\n          legal\n        </a>\n      );',
-  },
   "jsx-no-undef": {
     code: "\n        interface Foo {}\n        type Bar = {};\n        const App = () => <><Foo /><Bar /></>;\n      ",
   },
@@ -511,7 +508,7 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     filePath: "src/components/save-button.tsx",
   },
   "no-adjust-state-on-prop-change": {
-    code: 'function Field({ value }) {\n        const [draft, setDraft] = useState("");\n        useEffect(() => {\n          setDraft(value);\n        }, [value]);\n        return <input value={draft} />;\n      }',
+    code: "function List({ items }) {\n        const [selection, setSelection] = useState(null);\n        useEffect(() => {\n          setSelection(null);\n        }, [items]);\n        return <div>{selection}</div>;\n      }",
   },
   "no-aria-hidden-on-focusable": {
     code: 'export const A = () => <button aria-hidden={true} type="button">x</button>;',

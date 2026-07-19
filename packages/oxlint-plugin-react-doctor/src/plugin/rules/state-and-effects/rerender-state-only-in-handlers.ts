@@ -1,9 +1,10 @@
 import { BUILTIN_HOOK_NAMES, EFFECT_HOOK_NAMES } from "../../constants/react.js";
+import type { ScopeAnalysis } from "../../semantic/scope-analysis.js";
 import { defineRule } from "../../utils/define-rule.js";
 import { getRootIdentifierName } from "../../utils/get-root-identifier-name.js";
 import { isComponentAssignment } from "../../utils/is-component-assignment.js";
 import { isFunctionLike } from "../../utils/is-function-like.js";
-import { isHookCall } from "../../utils/is-hook-call.js";
+import { isReactHookCall } from "../../utils/is-react-hook-call.js";
 import { isReactHookName } from "../../utils/is-react-hook-name.js";
 import { isUppercaseName } from "../../utils/is-uppercase-name.js";
 import { walkAst } from "../../utils/walk-ast.js";
@@ -16,6 +17,7 @@ import { collectRenderReachableNames } from "./utils/collect-render-reachable-na
 import { expandTransitiveDependencies } from "./utils/expand-transitive-dependencies.js";
 import { collectFunctionLikeLocalNames } from "./utils/collect-function-like-local-names.js";
 import { isSetterCalledDuringRender } from "./utils/is-setter-called-during-render.js";
+import { createExternalLocationInvalidationChecker } from "./utils/create-external-location-invalidation-checker.js";
 import { isNodeOfType } from "../../utils/is-node-of-type.js";
 import type { EsTreeNodeOfType } from "../../utils/es-tree-node-of-type.js";
 
@@ -61,11 +63,12 @@ const isInsideConditionTest = (identifier: EsTreeNode, stopAt: EsTreeNode): bool
 const collectEffectDependencyInfos = (
   componentBody: EsTreeNode,
   setterNames: ReadonlySet<string>,
+  scopes: ScopeAnalysis,
 ): EffectDependencyInfo[] => {
   const effectInfos: EffectDependencyInfo[] = [];
   walkAst(componentBody, (child: EsTreeNode) => {
     if (!isNodeOfType(child, "CallExpression")) return;
-    if (!isHookCall(child, EFFECT_HOOK_NAMES)) return;
+    if (!isReactHookCall(child, EFFECT_HOOK_NAMES, scopes)) return;
     const dependencyNames = new Set<string>();
     for (const argument of child.arguments ?? []) {
       if (!isNodeOfType(argument, "ArrayExpression")) continue;
@@ -141,13 +144,17 @@ const collectEffectDependencyInfos = (
 // Builtin hooks are excluded: a `useState(other)` initializer reads once,
 // and memo/callback deps only matter if their result is render-reachable
 // (the dependency graph already models that).
-const collectCustomHookArgumentNames = (componentBody: EsTreeNode): Set<string> => {
+const collectCustomHookArgumentNames = (
+  componentBody: EsTreeNode,
+  scopes: ScopeAnalysis,
+): Set<string> => {
   const argumentNames = new Set<string>();
   walkAst(componentBody, (child: EsTreeNode) => {
     if (!isNodeOfType(child, "CallExpression")) return;
     if (!isNodeOfType(child.callee, "Identifier")) return;
     const calleeName = child.callee.name;
     if (!isReactHookName(calleeName)) return;
+    if (isReactHookCall(child, BUILTIN_HOOK_NAMES, scopes)) return;
     if (BUILTIN_HOOK_NAMES.has(calleeName)) return;
     if (EFFECT_HOOK_NAMES.has(calleeName)) return;
     for (const argument of child.arguments ?? []) {
@@ -206,16 +213,20 @@ export const rerenderStateOnlyInHandlers = defineRule({
   create: (context: RuleContext) => {
     const checkComponent = (componentBody: EsTreeNode | null | undefined): void => {
       if (!componentBody || !isNodeOfType(componentBody, "BlockStatement")) return;
-      const bindings = collectUseStateBindings(componentBody);
+      const bindings = collectUseStateBindings(componentBody, context.scopes);
       if (bindings.length === 0) return;
 
       const renderReachableExpressions = collectRenderReachableExpressions(componentBody);
       if (renderReachableExpressions.length === 0) return;
 
-      const eventHandlerReferenceNames = collectFunctionLikeLocalNames(componentBody);
+      const eventHandlerReferenceNames = collectFunctionLikeLocalNames(
+        componentBody,
+        context.scopes,
+      );
       const dependencyGraph = buildLocalDependencyGraph(componentBody, eventHandlerReferenceNames);
       const directRenderNames = collectRenderReachableNames(
         componentBody,
+        context.scopes,
         eventHandlerReferenceNames,
       );
       // A top-level `void someState;` is the deliberate "re-render to
@@ -242,7 +253,7 @@ export const rerenderStateOnlyInHandlers = defineRule({
       // state never leaves the effect as a value, so a ref (or no state at
       // all) would work. An effect that consumes the PAYLOAD (member reads,
       // call arguments) before clearing is a handoff, not an echo.
-      const effectInfos = collectEffectDependencyInfos(componentBody, setterNames);
+      const effectInfos = collectEffectDependencyInfos(componentBody, setterNames, context.scopes);
       const selfEchoValueNames = new Set<string>();
       for (const binding of bindings) {
         // A setter also invoked from a NESTED callback of the same effect
@@ -265,7 +276,10 @@ export const rerenderStateOnlyInHandlers = defineRule({
           if (!selfEchoValueNames.has(dependencyName)) effectConsumedNames.add(dependencyName);
         }
       }
-      for (const hookArgumentName of collectCustomHookArgumentNames(componentBody)) {
+      for (const hookArgumentName of collectCustomHookArgumentNames(
+        componentBody,
+        context.scopes,
+      )) {
         effectConsumedNames.add(hookArgumentName);
       }
       for (const reachableName of expandTransitiveDependencies(
@@ -274,6 +288,16 @@ export const rerenderStateOnlyInHandlers = defineRule({
       )) {
         renderReachableNames.add(reachableName);
       }
+      const componentFunction = context.cfg.enclosingFunction(componentBody);
+      const doesSetterInvalidateExternalLocation = isFunctionLike(componentFunction)
+        ? createExternalLocationInvalidationChecker({
+            componentBody,
+            componentFunction,
+            context,
+            directRenderNames,
+            renderReachableExpressions,
+          })
+        : () => false;
       const calledSetterNames = new Set<string>();
       walkAst(componentBody, (child: EsTreeNode) => {
         if (
@@ -287,6 +311,15 @@ export const rerenderStateOnlyInHandlers = defineRule({
 
       for (const binding of bindings) {
         if (renderReachableNames.has(binding.valueName)) continue;
+        const setterBindingIdentifier = isNodeOfType(binding.declarator.id, "ArrayPattern")
+          ? binding.declarator.id.elements?.[1]
+          : null;
+        if (
+          setterBindingIdentifier &&
+          doesSetterInvalidateExternalLocation(setterBindingIdentifier)
+        ) {
+          continue;
+        }
         // Underscore-only or underscore-prefixed value names signal
         // the user is intentionally using useState to FORCE a re-
         // render and doesn't care about the value (`const [_, force]
