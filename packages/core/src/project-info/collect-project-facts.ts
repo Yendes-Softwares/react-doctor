@@ -1,11 +1,17 @@
 import * as path from "node:path";
 import type { DependencyInfo, Framework, PackageJson } from "../types/index.js";
 import {
+  EARLIEST_GATED_STYLED_COMPONENTS_MAJOR,
+  LATEST_SUPPORTED_MOBX_MAJOR,
+  LATEST_SUPPORTED_ZUSTAND_MAJOR,
+} from "../constants.js";
+import {
   EMPTY_DEPENDENCY_INFO,
   extractDependencyInfo,
   getDependencyDeclaration,
   getDependencySpec,
   REACT_SECTIONS,
+  resolveCatalogBackedDependencyVersion,
   resolveCatalogVersion,
   TAILWIND_ZOD_SECTIONS,
 } from "./dependencies.js";
@@ -16,9 +22,21 @@ import { frameworkMergeRank } from "./detectors.js";
 import { isPackageJsonReactNativeAware, isPackageJsonReanimatedAware } from "./rn-metadata.js";
 import { isPackageJsonSsrAware } from "./ssr-metadata.js";
 import { getWorkspacePatterns, resolveWorkspaceDirectories } from "./workspaces.js";
-import { parseReactMajor } from "./version.js";
+import {
+  getDependencyMajorWithinSupportedRange,
+  getLowestDependencyMajor,
+  parseDependencyMajorMinor,
+  parseReactMajor,
+} from "./version.js";
+import { getTanStackQueryVersion } from "./get-tanstack-query-version.js";
+import { getStyledComponentsVersion } from "./get-styled-components-version.js";
+import { hasI18nDependency } from "./has-i18n-dependency.js";
 
 const REANIMATED_DEPENDENCY_NAME = "react-native-reanimated";
+const MOBX_REACT_PACKAGE_NAME = "mobx-react";
+const MOBX_REACT_LITE_PACKAGE_NAME = "mobx-react-lite";
+const MOBX_STATE_TREE_PACKAGE_NAME = "mobx-state-tree";
+const MOBX_REACT_OBSERVER_PACKAGE_NAME = "mobx-react-observer";
 
 // A dependency's declared spec plus the directory whose manifest supplied
 // it — the scan root, or the workspace package that declares the package.
@@ -45,10 +63,27 @@ export interface WorkspaceFacts {
   expo: DependencyFact;
   next: DependencyFact;
   shopifyFlashList: DependencyFact;
+  valtioVersion: string | null;
+  mobx: DependencyFact;
+  hasMobxReact: boolean;
+  mobxReactVersion: string | null;
+  hasMobxReactLite: boolean;
+  mobxReactLiteVersion: string | null;
+  hasMobxStateTree: boolean;
+  hasMobxReactObserver: boolean;
+  // Conservative representative across every declaring manifest: an
+  // unparseable or future major wins; otherwise the lowest major wins.
+  zustand: DependencyFact;
+  tanstackQueryVersion: string | null;
+  styledComponentsVersion: string | null;
   // Any-of predicates over the scan root + every workspace manifest.
+  hasI18nLibrary: boolean;
   hasReactNativeAwarePackage: boolean;
   hasReanimatedAwarePackage: boolean;
   hasSsrDependency: boolean;
+  hasRemotionDependency: boolean;
+  hasUnknownRemotionVersion: boolean;
+  remotionVersion: string | null;
   reanimatedVersion: string | null;
 }
 
@@ -111,10 +146,104 @@ const shouldReplaceReactVersion = (currentVersion: string | null, nextVersion: s
   return nextMajor < currentMajor;
 };
 
+const shouldReplaceSupportedDependencyFact = (
+  currentFact: DependencyFact,
+  nextFact: DependencyFact,
+  latestSupportedMajor: number,
+): boolean => {
+  if (currentFact.version === null) return true;
+  if (nextFact.version === null) return false;
+
+  const currentMajor = getLowestDependencyMajor(currentFact.version);
+  const nextMajor = getLowestDependencyMajor(nextFact.version);
+  if (currentMajor === null) return false;
+  if (nextMajor === null) return true;
+  if (currentMajor > latestSupportedMajor) return false;
+  if (nextMajor > latestSupportedMajor) return true;
+  return nextMajor < currentMajor;
+};
+
+const shouldReplaceStyledComponentsVersion = (
+  currentVersion: string | null,
+  nextVersion: string,
+): boolean => {
+  if (!currentVersion) return true;
+
+  const currentMajor = getLowestDependencyMajor(currentVersion);
+  const nextMajor = getLowestDependencyMajor(nextVersion);
+
+  if (currentMajor === null) {
+    return nextMajor !== null && nextMajor < EARLIEST_GATED_STYLED_COMPONENTS_MAJOR;
+  }
+  if (nextMajor === null) return currentMajor >= EARLIEST_GATED_STYLED_COMPONENTS_MAJOR;
+  return nextMajor < currentMajor;
+};
+
+const selectOldestDependencyVersion = (
+  currentVersion: string | null,
+  nextVersion: string | null,
+): string | null => {
+  if (currentVersion === null || nextVersion === null) return null;
+  const current = parseDependencyMajorMinor(currentVersion);
+  const next = parseDependencyMajorMinor(nextVersion);
+  if (current === null) return currentVersion;
+  if (next === null) return nextVersion;
+  if (next.major !== current.major)
+    return next.major < current.major ? nextVersion : currentVersion;
+  return next.minor < current.minor ? nextVersion : currentVersion;
+};
+
+const shouldReplaceMobxFact = (currentFact: DependencyFact, nextFact: DependencyFact): boolean => {
+  if (currentFact.sourceDirectory === null) return true;
+  if (currentFact.version === null) return false;
+  if (nextFact.version === null) return true;
+
+  const currentMajor = getDependencyMajorWithinSupportedRange(
+    currentFact.version,
+    LATEST_SUPPORTED_MOBX_MAJOR,
+  );
+  const nextMajor = getDependencyMajorWithinSupportedRange(
+    nextFact.version,
+    LATEST_SUPPORTED_MOBX_MAJOR,
+  );
+  if (currentMajor === null) return false;
+  if (nextMajor === null) return true;
+  return selectOldestDependencyVersion(currentFact.version, nextFact.version) === nextFact.version;
+};
+
+const collectBindingVersion = (
+  facts: WorkspaceFacts,
+  packageJson: PackageJson,
+  directory: string,
+  packageName: typeof MOBX_REACT_PACKAGE_NAME | typeof MOBX_REACT_LITE_PACKAGE_NAME,
+): void => {
+  const version = getDependencySpec(packageJson, packageName);
+  if (version === null) return;
+  const resolvedVersion = resolveCatalogBackedDependencyVersion({
+    rootDirectory: directory,
+    rootPackageJson: packageJson,
+    packageName,
+    version,
+  });
+  if (packageName === MOBX_REACT_PACKAGE_NAME) {
+    facts.mobxReactVersion = facts.hasMobxReact
+      ? selectOldestDependencyVersion(facts.mobxReactVersion, resolvedVersion)
+      : resolvedVersion;
+    facts.hasMobxReact = true;
+    return;
+  }
+  facts.mobxReactLiteVersion = facts.hasMobxReactLite
+    ? selectOldestDependencyVersion(facts.mobxReactLiteVersion, resolvedVersion)
+    : resolvedVersion;
+  facts.hasMobxReactLite = true;
+};
+
 const evaluateManifestFacts = (
   facts: WorkspaceFacts,
   packageJson: PackageJson,
   directory: string,
+  rootDirectory: string,
+  rootPackageJson: PackageJson,
 ): void => {
   if (facts.expo.version === null) {
     const spec = getDependencySpec(packageJson, "expo");
@@ -128,15 +257,101 @@ const evaluateManifestFacts = (
     const spec = getDependencySpec(packageJson, SHOPIFY_FLASH_LIST_PACKAGE_NAME);
     if (spec !== null) facts.shopifyFlashList = { version: spec, sourceDirectory: directory };
   }
+  const mobxSpec = getDependencySpec(packageJson, "mobx");
+  if (mobxSpec !== null) {
+    const nextMobxFact = {
+      version: resolveCatalogBackedDependencyVersion({
+        rootDirectory: directory,
+        rootPackageJson: packageJson,
+        packageName: "mobx",
+        version: mobxSpec,
+      }),
+      sourceDirectory: directory,
+    };
+    if (shouldReplaceMobxFact(facts.mobx, nextMobxFact)) {
+      facts.mobx = nextMobxFact;
+    }
+  }
+  collectBindingVersion(facts, packageJson, directory, MOBX_REACT_PACKAGE_NAME);
+  collectBindingVersion(facts, packageJson, directory, MOBX_REACT_LITE_PACKAGE_NAME);
+  facts.hasMobxStateTree =
+    facts.hasMobxStateTree || getDependencySpec(packageJson, MOBX_STATE_TREE_PACKAGE_NAME) !== null;
+  facts.hasMobxReactObserver =
+    facts.hasMobxReactObserver ||
+    getDependencySpec(packageJson, MOBX_REACT_OBSERVER_PACKAGE_NAME) !== null;
+  const zustandSpec = getDependencySpec(packageJson, "zustand");
+  if (zustandSpec !== null) {
+    const nextZustandFact = {
+      version: resolveCatalogBackedDependencyVersion({
+        rootDirectory: directory,
+        rootPackageJson: packageJson,
+        packageName: "zustand",
+        version: zustandSpec,
+      }),
+      sourceDirectory: directory,
+    };
+    if (
+      shouldReplaceSupportedDependencyFact(
+        facts.zustand,
+        nextZustandFact,
+        LATEST_SUPPORTED_ZUSTAND_MAJOR,
+      )
+    ) {
+      facts.zustand = nextZustandFact;
+    }
+  }
   if (facts.reanimatedVersion === null) {
     const spec = getDependencySpec(packageJson, REANIMATED_DEPENDENCY_NAME);
     if (spec !== null) facts.reanimatedVersion = spec;
   }
+  if (facts.valtioVersion === null) {
+    const spec = getDependencySpec(packageJson, "valtio");
+    if (spec !== null) facts.valtioVersion = spec;
+  }
+  facts.tanstackQueryVersion ??= getTanStackQueryVersion(packageJson);
+  const styledComponentsVersion = resolveCatalogBackedDependencyVersion({
+    rootDirectory: directory,
+    rootPackageJson: packageJson,
+    packageName: "styled-components",
+    version: getStyledComponentsVersion(packageJson),
+  });
+  if (
+    styledComponentsVersion &&
+    shouldReplaceStyledComponentsVersion(facts.styledComponentsVersion, styledComponentsVersion)
+  ) {
+    facts.styledComponentsVersion = styledComponentsVersion;
+  }
+  facts.hasI18nLibrary = facts.hasI18nLibrary || hasI18nDependency(packageJson);
   facts.hasReactNativeAwarePackage =
     facts.hasReactNativeAwarePackage || isPackageJsonReactNativeAware(packageJson);
   facts.hasReanimatedAwarePackage =
     facts.hasReanimatedAwarePackage || isPackageJsonReanimatedAware(packageJson);
   facts.hasSsrDependency = facts.hasSsrDependency || isPackageJsonSsrAware(packageJson);
+  const remotionSpec = getDependencySpec(packageJson, "remotion");
+  if (remotionSpec !== null) {
+    facts.hasRemotionDependency = true;
+    const resolvedRemotionVersion = resolveCatalogBackedDependencyVersion({
+      rootDirectory,
+      rootPackageJson,
+      packageName: "remotion",
+      version: remotionSpec,
+    });
+    const remotionMajorVersion =
+      resolvedRemotionVersion === null ? null : getLowestDependencyMajor(resolvedRemotionVersion);
+    if (remotionMajorVersion === null) {
+      facts.hasUnknownRemotionVersion = true;
+      facts.remotionVersion = null;
+    } else if (!facts.hasUnknownRemotionVersion) {
+      const currentRemotionMajorVersion =
+        facts.remotionVersion === null ? null : getLowestDependencyMajor(facts.remotionVersion);
+      if (
+        currentRemotionMajorVersion === null ||
+        remotionMajorVersion < currentRemotionMajorVersion
+      ) {
+        facts.remotionVersion = resolvedRemotionVersion;
+      }
+    }
+  }
 };
 
 interface CollectWorkspaceFactsOptions {
@@ -166,13 +381,28 @@ export const collectWorkspaceFacts = (
     expo: { version: null, sourceDirectory: null },
     next: { version: null, sourceDirectory: null },
     shopifyFlashList: { version: null, sourceDirectory: null },
+    valtioVersion: null,
+    mobx: { version: null, sourceDirectory: null },
+    hasMobxReact: false,
+    mobxReactVersion: null,
+    hasMobxReactLite: false,
+    mobxReactLiteVersion: null,
+    hasMobxStateTree: false,
+    hasMobxReactObserver: false,
+    zustand: { version: null, sourceDirectory: null },
+    tanstackQueryVersion: null,
+    styledComponentsVersion: null,
+    hasI18nLibrary: false,
     hasReactNativeAwarePackage: false,
     hasReanimatedAwarePackage: false,
     hasSsrDependency: false,
+    hasRemotionDependency: false,
+    hasUnknownRemotionVersion: false,
+    remotionVersion: null,
     reanimatedVersion: null,
   };
 
-  evaluateManifestFacts(facts, rootPackageJson, rootDirectory);
+  evaluateManifestFacts(facts, rootPackageJson, rootDirectory, rootDirectory, rootPackageJson);
 
   // Once react (major ≤ 17), tailwind, and the framework are all pinned,
   // later workspaces can't change the outcome the legacy walk would have
@@ -190,7 +420,13 @@ export const collectWorkspaceFacts = (
       visitedDirectories.add(workspaceDirectory);
       const workspacePackageJson = readPackageJson(path.join(workspaceDirectory, "package.json"));
 
-      evaluateManifestFacts(facts, workspacePackageJson, workspaceDirectory);
+      evaluateManifestFacts(
+        facts,
+        workspacePackageJson,
+        workspaceDirectory,
+        rootDirectory,
+        rootPackageJson,
+      );
 
       const info = extractDependencyInfo(workspacePackageJson);
       // Priority merge, not first-hit: a web framework outranks a mobile one

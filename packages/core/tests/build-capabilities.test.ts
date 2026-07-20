@@ -14,10 +14,24 @@ const baseProject: ProjectInfo = {
   tailwindVersion: null,
   zodVersion: null,
   zodMajorVersion: null,
+  mobxVersion: null,
+  mobxMajorVersion: null,
+  hasMobxReact: false,
+  hasMobxReactLite: false,
+  hasMobxStateTree: false,
+  hasMobxReactObserver: false,
+  zustandVersion: null,
+  zustandMajorVersion: null,
   framework: "vite",
   hasTypeScript: true,
   hasReactCompiler: false,
   hasTanStackQuery: false,
+  hasI18nLibrary: false,
+  tanstackQueryVersion: null,
+  styledComponentsVersion: null,
+  valtioVersion: null,
+  valtioMajorVersion: null,
+  hasRemotion: false,
   hasSsrDependency: false,
   nextjsVersion: null,
   nextjsMajorVersion: null,
@@ -34,6 +48,43 @@ const baseProject: ProjectInfo = {
 };
 
 describe("buildCapabilities", () => {
+  it("emits the remotion capability without replacing the web framework capability", () => {
+    const capabilities = buildCapabilities({
+      ...baseProject,
+      framework: "vite",
+      hasRemotion: true,
+      remotionVersion: "^4.0.0",
+      remotionMajorVersion: 4,
+    });
+    expect(capabilities.has("remotion")).toBe(true);
+    expect(capabilities.has("remotion:4")).toBe(true);
+    expect(capabilities.has("vite")).toBe(true);
+  });
+
+  it("omits the Remotion v4 capability for older or unparseable versions", () => {
+    const remotionThreeCapabilities = buildCapabilities({
+      ...baseProject,
+      hasRemotion: true,
+      remotionVersion: "^3.3.0",
+      remotionMajorVersion: 3,
+    });
+    const unknownRemotionCapabilities = buildCapabilities({
+      ...baseProject,
+      hasRemotion: true,
+      remotionVersion: "workspace:*",
+      remotionMajorVersion: null,
+    });
+
+    expect(remotionThreeCapabilities.has("remotion")).toBe(true);
+    expect(remotionThreeCapabilities.has("remotion:4")).toBe(false);
+    expect(unknownRemotionCapabilities.has("remotion")).toBe(true);
+    expect(unknownRemotionCapabilities.has("remotion:4")).toBe(false);
+  });
+
+  it("omits the remotion capability when the dependency is absent", () => {
+    expect(buildCapabilities(baseProject).has("remotion")).toBe(false);
+  });
+
   it("emits exactly the expected token set for a fully-featured Next.js project", () => {
     const capabilities = buildCapabilities({
       ...baseProject,
@@ -47,6 +98,9 @@ describe("buildCapabilities", () => {
       nextjsMajorVersion: 15,
       hasReactCompiler: true,
       hasTanStackQuery: true,
+      tanstackQueryVersion: "^5.66.0",
+      valtioVersion: "^2.1.4",
+      valtioMajorVersion: 2,
       hasTypeScript: true,
     });
     expect([...capabilities].sort()).toEqual([
@@ -64,9 +118,43 @@ describe("buildCapabilities", () => {
       "tailwind:3.4",
       "tanstack-query",
       "typescript",
+      "valtio",
+      "valtio:1",
+      "valtio:2",
       "zod",
       "zod:4",
     ]);
+  });
+
+  it.each([
+    { valtioVersion: "^1.0.0", valtioMajorVersion: 1, hasV2: false },
+    { valtioVersion: "^2.1.4", valtioMajorVersion: 2, hasV2: true },
+  ])(
+    "emits the Valtio major ladder for $valtioVersion",
+    ({ valtioVersion, valtioMajorVersion, hasV2 }) => {
+      const capabilities = buildCapabilities({
+        ...baseProject,
+        valtioVersion,
+        valtioMajorVersion,
+      });
+      expect(capabilities.has("valtio")).toBe(true);
+      expect(capabilities.has("valtio:1")).toBe(true);
+      expect(capabilities.has("valtio:2")).toBe(hasV2);
+    },
+  );
+
+  it("keeps an unparseable Valtio declaration present but omits version capabilities", () => {
+    const capabilities = buildCapabilities({
+      ...baseProject,
+      valtioVersion: "workspace:*",
+      valtioMajorVersion: null,
+    });
+    expect(capabilities.has("valtio")).toBe(true);
+    expect(capabilities.has("valtio:1")).toBe(false);
+  });
+
+  it("omits the `valtio` capability when project facts say the library is absent", () => {
+    expect(buildCapabilities(baseProject).has("valtio")).toBe(false);
   });
 
   it("emits the `preact` capability when `preactVersion` is set on a Preact-on-Vite project", () => {
@@ -78,6 +166,58 @@ describe("buildCapabilities", () => {
     });
     expect(capabilities.has("preact")).toBe(true);
     expect(capabilities.has("vite")).toBe(true);
+  });
+
+  it("emits the `tanstack-query` capability from either project signal", () => {
+    const legacyBooleanCapabilities = buildCapabilities({
+      ...baseProject,
+      hasTanStackQuery: true,
+    });
+    const versionCapabilities = buildCapabilities({
+      ...baseProject,
+      tanstackQueryVersion: "^5.66.0",
+    });
+    const incompleteProject = { ...baseProject };
+    Reflect.deleteProperty(incompleteProject, "tanstackQueryVersion");
+    const incompleteCapabilities = buildCapabilities(incompleteProject);
+
+    expect(legacyBooleanCapabilities.has("tanstack-query")).toBe(true);
+    expect(versionCapabilities.has("tanstack-query")).toBe(true);
+    expect(incompleteCapabilities.has("tanstack-query")).toBe(false);
+  });
+
+  it("emits library capabilities only when their dependencies are present", () => {
+    const capabilities = buildCapabilities({
+      ...baseProject,
+      hasI18nLibrary: true,
+      mobxVersion: "^6.13.0",
+      styledComponentsVersion: "^6.1.0",
+    });
+    expect(capabilities.has("i18n")).toBe(true);
+    expect(capabilities.has("mobx")).toBe(true);
+    expect(capabilities.has("styled-components")).toBe(true);
+    expect(capabilities.has("styled-components:6")).toBe(true);
+
+    const absentCapabilities = buildCapabilities(baseProject);
+    expect(absentCapabilities.has("i18n")).toBe(false);
+    expect(absentCapabilities.has("mobx")).toBe(false);
+    expect(absentCapabilities.has("styled-components")).toBe(false);
+    expect(absentCapabilities.has("styled-components:6")).toBe(false);
+  });
+
+  it("only emits the styled-components v6 capability for a parseable v6 spec", () => {
+    const versionFiveCapabilities = buildCapabilities({
+      ...baseProject,
+      styledComponentsVersion: "^5.3.11",
+    });
+    const unparseableCapabilities = buildCapabilities({
+      ...baseProject,
+      styledComponentsVersion: "workspace:*",
+    });
+    expect(versionFiveCapabilities.has("styled-components")).toBe(true);
+    expect(versionFiveCapabilities.has("styled-components:6")).toBe(false);
+    expect(unparseableCapabilities.has("styled-components")).toBe(true);
+    expect(unparseableCapabilities.has("styled-components:6")).toBe(false);
   });
 
   it("emits a `preact:<major>` ladder from `preactMajorVersion`, mirroring `react:<major>`", () => {
@@ -239,6 +379,202 @@ describe("buildCapabilities", () => {
     expect(capabilities.has("zod:4")).toBe(false);
   });
 
+  it("emits the supported MobX major ladder for versions 4 through 6", () => {
+    for (const mobxMajorVersion of [4, 5, 6]) {
+      const capabilities = buildCapabilities({
+        ...baseProject,
+        mobxVersion: `^${mobxMajorVersion}.0.0`,
+        mobxMajorVersion,
+      });
+      expect(capabilities.has("mobx")).toBe(true);
+      expect(capabilities.has("mobx:4")).toBe(true);
+      expect(capabilities.has(`mobx:${mobxMajorVersion}`)).toBe(true);
+    }
+
+    const futureVersion = buildCapabilities({
+      ...baseProject,
+      mobxVersion: "^7.0.0",
+      mobxMajorVersion: 7,
+    });
+    expect(futureVersion.has("mobx")).toBe(true);
+    expect(futureVersion.has("mobx:4")).toBe(false);
+  });
+
+  it("emits AbortSignal support only for MobX 6.10 and newer", () => {
+    expect(
+      buildCapabilities({
+        ...baseProject,
+        mobxVersion: "^6.9.0",
+        mobxMajorVersion: 6,
+      }).has("mobx:6.10"),
+    ).toBe(false);
+    expect(
+      buildCapabilities({
+        ...baseProject,
+        mobxVersion: "^6.10.0",
+        mobxMajorVersion: 6,
+      }).has("mobx:6.10"),
+    ).toBe(true);
+  });
+
+  it("keeps unparseable MobX declarations present but version-inapplicable", () => {
+    const capabilities = buildCapabilities({
+      ...baseProject,
+      mobxVersion: "workspace:*",
+      mobxMajorVersion: null,
+    });
+    expect(capabilities.has("mobx")).toBe(true);
+    expect(capabilities.has("mobx:4")).toBe(false);
+  });
+
+  it("emits binding capabilities without inventing a MobX core version", () => {
+    const capabilities = buildCapabilities({
+      ...baseProject,
+      hasMobxReact: true,
+      hasMobxReactLite: true,
+      hasMobxStateTree: true,
+      hasMobxReactObserver: true,
+    });
+    expect(capabilities.has("mobx")).toBe(true);
+    expect(capabilities.has("mobx-react")).toBe(true);
+    expect(capabilities.has("mobx-react-lite")).toBe(true);
+    expect(capabilities.has("mobx-react-binding")).toBe(true);
+    expect(capabilities.has("mobx-state-tree")).toBe(true);
+    expect(capabilities.has("mobx-react-observer")).toBe(true);
+    expect(capabilities.has("mobx:4")).toBe(false);
+  });
+
+  it("emits the shared React binding capability for both official runtime bindings", () => {
+    for (const projectOverrides of [{ hasMobxReact: true }, { hasMobxReactLite: true }]) {
+      expect(
+        buildCapabilities({ ...baseProject, ...projectOverrides }).has("mobx-react-binding"),
+      ).toBe(true);
+    }
+
+    expect(buildCapabilities(baseProject).has("mobx-react-binding")).toBe(false);
+    expect(
+      buildCapabilities({ ...baseProject, hasMobxStateTree: true }).has("mobx-react-binding"),
+    ).toBe(false);
+    expect(
+      buildCapabilities({ ...baseProject, hasMobxReactObserver: true }).has("mobx-react-binding"),
+    ).toBe(false);
+  });
+
+  it("emits the supported Zustand major ladder for versions 1 through 5", () => {
+    for (const zustandMajorVersion of [1, 2, 3, 4, 5]) {
+      const capabilities = buildCapabilities({
+        ...baseProject,
+        zustandVersion: `^${zustandMajorVersion}.0.0`,
+        zustandMajorVersion,
+      });
+      expect(capabilities.has("zustand")).toBe(true);
+      expect(capabilities.has("zustand:1")).toBe(true);
+      expect(capabilities.has(`zustand:${zustandMajorVersion}`)).toBe(true);
+    }
+
+    const futureVersion = buildCapabilities({
+      ...baseProject,
+      zustandVersion: "^6.0.0",
+      zustandMajorVersion: 6,
+    });
+    expect(futureVersion.has("zustand")).toBe(true);
+    expect(futureVersion.has("zustand:1")).toBe(false);
+  });
+
+  it("keeps unparseable Zustand declarations present but version-inapplicable", () => {
+    const capabilities = buildCapabilities({
+      ...baseProject,
+      zustandVersion: "workspace:*",
+      zustandMajorVersion: null,
+    });
+    expect(capabilities.has("zustand")).toBe(true);
+    expect(capabilities.has("zustand:1")).toBe(false);
+  });
+
+  it("enables fresh-selector diagnostics only for Zustand v5", () => {
+    const versionFour = buildCapabilities({
+      ...baseProject,
+      zustandVersion: "^4.5.7",
+      zustandMajorVersion: 4,
+    });
+    const versionFive = buildCapabilities({
+      ...baseProject,
+      zustandVersion: "^5.0.8",
+      zustandMajorVersion: 5,
+    });
+
+    expect(shouldEnableRule(["zustand", "zustand:5"], undefined, versionFour, new Set())).toBe(
+      false,
+    );
+    expect(shouldEnableRule(["zustand", "zustand:5"], undefined, versionFive, new Set())).toBe(
+      true,
+    );
+  });
+
+  it("emits `tailwind`, `tailwind:3.4`, and `tailwind:4` for a Tailwind 4 project", () => {
+    const capabilities = buildCapabilities({ ...baseProject, tailwindVersion: "^4.0.0" });
+    expect(capabilities.has("tailwind")).toBe(true);
+    expect(capabilities.has("tailwind:3.4")).toBe(true);
+    expect(capabilities.has("tailwind:4")).toBe(true);
+  });
+
+  it("emits `tailwind:3.4` but not `tailwind:4` for a Tailwind 3.4 project", () => {
+    const capabilities = buildCapabilities({ ...baseProject, tailwindVersion: "^3.4.1" });
+    expect(capabilities.has("tailwind:3.4")).toBe(true);
+    expect(capabilities.has("tailwind:4")).toBe(false);
+  });
+
+  it("stays optimistic for `tailwind:3.4` but withholds `tailwind:4` when the version is unparseable", () => {
+    const capabilities = buildCapabilities({ ...baseProject, tailwindVersion: "workspace:*" });
+    expect(capabilities.has("tailwind")).toBe(true);
+    expect(capabilities.has("tailwind:3.4")).toBe(true);
+    // A deprecation rule must not fire on an unprovable version — a v3 project
+    // would otherwise get confidently-wrong "renamed in v4" warnings.
+    expect(capabilities.has("tailwind:4")).toBe(false);
+  });
+
+  it("gates the observer memo guard on the binding version that introduced it", () => {
+    for (const projectOverrides of [
+      { hasMobxReactLite: true, mobxReactLiteVersion: "^3.3.0" },
+      { hasMobxReact: true, mobxReactVersion: "^7.3.0" },
+    ]) {
+      expect(
+        buildCapabilities({ ...baseProject, ...projectOverrides }).has(
+          "mobx-react-binding-observer-memo-guard",
+        ),
+      ).toBe(true);
+    }
+    expect(
+      buildCapabilities({
+        ...baseProject,
+        hasMobxReact: true,
+        mobxReactVersion: "^7.2.0",
+        hasMobxReactLite: true,
+        mobxReactLiteVersion: "^3.3.0",
+      }).has("mobx-react-observer-memo-guard"),
+    ).toBe(false);
+    expect(
+      buildCapabilities({
+        ...baseProject,
+        hasMobxReact: true,
+        mobxReactVersion: "^7.2.0",
+        hasMobxReactLite: true,
+        mobxReactLiteVersion: "^3.3.0",
+      }).has("mobx-react-lite-observer-memo-guard"),
+    ).toBe(true);
+    for (const projectOverrides of [
+      { hasMobxReactLite: true, mobxReactLiteVersion: "^3.2.0" },
+      { hasMobxReact: true, mobxReactVersion: "^7.2.0" },
+      { hasMobxReactLite: true, mobxReactLiteVersion: "workspace:*" },
+    ]) {
+      expect(
+        buildCapabilities({ ...baseProject, ...projectOverrides }).has(
+          "mobx-react-binding-observer-memo-guard",
+        ),
+      ).toBe(false);
+    }
+  });
+
   it("emits `nextjs:15` capability for Next.js 15+ projects", () => {
     const capabilities = buildCapabilities({
       ...baseProject,
@@ -270,6 +606,24 @@ describe("buildCapabilities", () => {
     });
     expect(capabilities.has("nextjs")).toBe(true);
     expect(capabilities.has("nextjs:15")).toBe(false);
+  });
+
+  it("emits `nextjs:16` capability only for Next.js 16+ projects", () => {
+    const nextjs15Capabilities = buildCapabilities({
+      ...baseProject,
+      framework: "nextjs",
+      nextjsVersion: "^15.3.0",
+      nextjsMajorVersion: 15,
+    });
+    const nextjs16Capabilities = buildCapabilities({
+      ...baseProject,
+      framework: "nextjs",
+      nextjsVersion: "^16.0.0",
+      nextjsMajorVersion: 16,
+    });
+    expect(nextjs15Capabilities.has("nextjs:16")).toBe(false);
+    expect(nextjs16Capabilities.has("nextjs:15")).toBe(true);
+    expect(nextjs16Capabilities.has("nextjs:16")).toBe(true);
   });
 
   it("emits `server-actions` for server-capable frameworks only", () => {
@@ -416,5 +770,111 @@ describe("shouldEnableRule react gating", () => {
   it("disables a rule that explicitly requires `react` on a non-React project", () => {
     expect(shouldEnableRule(["react"], undefined, noReactCapabilities, noIgnoredTags)).toBe(false);
     expect(shouldEnableRule(["react"], undefined, reactCapabilities, noIgnoredTags)).toBe(true);
+  });
+});
+
+describe("shouldEnableRule MobX gating", () => {
+  const noIgnoredTags = new Set<string>();
+
+  it("keeps MobX 6 rules off on MobX 5 and unknown future versions", () => {
+    const mobx5Capabilities = buildCapabilities({
+      ...baseProject,
+      mobxVersion: "^5.15.0",
+      mobxMajorVersion: 5,
+    });
+    const mobx6Capabilities = buildCapabilities({
+      ...baseProject,
+      mobxVersion: "^6.16.1",
+      mobxMajorVersion: 6,
+    });
+    const futureMobxCapabilities = buildCapabilities({
+      ...baseProject,
+      mobxVersion: "^7.0.0",
+      mobxMajorVersion: 7,
+    });
+
+    expect(shouldEnableRule(["mobx:6"], undefined, mobx5Capabilities, noIgnoredTags)).toBe(false);
+    expect(shouldEnableRule(["mobx:6"], undefined, mobx6Capabilities, noIgnoredTags)).toBe(true);
+    expect(shouldEnableRule(["mobx:6"], undefined, futureMobxCapabilities, noIgnoredTags)).toBe(
+      false,
+    );
+  });
+
+  it("requires both a supported MobX core and the matching React binding", () => {
+    const mobxReactLiteCapabilities = buildCapabilities({
+      ...baseProject,
+      mobxVersion: "^6.16.1",
+      mobxMajorVersion: 6,
+      hasMobxReactLite: true,
+    });
+    const coreOnlyCapabilities = buildCapabilities({
+      ...baseProject,
+      mobxVersion: "^6.16.1",
+      mobxMajorVersion: 6,
+    });
+    const bindingOnlyCapabilities = buildCapabilities({
+      ...baseProject,
+      mobxVersion: null,
+      mobxMajorVersion: null,
+      hasMobxReactLite: true,
+    });
+
+    expect(
+      shouldEnableRule(
+        ["mobx:4", "mobx-react-binding", "react"],
+        undefined,
+        mobxReactLiteCapabilities,
+        noIgnoredTags,
+      ),
+    ).toBe(true);
+    expect(
+      shouldEnableRule(
+        ["mobx:4", "mobx-react-binding", "react"],
+        undefined,
+        coreOnlyCapabilities,
+        noIgnoredTags,
+      ),
+    ).toBe(false);
+    expect(
+      shouldEnableRule(
+        ["mobx:4", "mobx-react-binding", "react"],
+        undefined,
+        bindingOnlyCapabilities,
+        noIgnoredTags,
+      ),
+    ).toBe(false);
+    expect(
+      shouldEnableRule(
+        ["mobx:4", "mobx-react", "react"],
+        undefined,
+        mobxReactLiteCapabilities,
+        noIgnoredTags,
+      ),
+    ).toBe(false);
+  });
+});
+
+describe("shouldEnableRule tag inclusion", () => {
+  const capabilities = new Set(["react"]);
+  const ignoredTags = new Set<string>();
+  const includedTags = new Set(["design"]);
+
+  it("keeps only rules carrying an explicitly included tag", () => {
+    expect(
+      shouldEnableRule(
+        undefined,
+        ["design", "test-noise"],
+        capabilities,
+        ignoredTags,
+        undefined,
+        includedTags,
+      ),
+    ).toBe(true);
+    expect(
+      shouldEnableRule(undefined, ["security"], capabilities, ignoredTags, undefined, includedTags),
+    ).toBe(false);
+    expect(
+      shouldEnableRule(undefined, undefined, capabilities, ignoredTags, undefined, includedTags),
+    ).toBe(false);
   });
 });

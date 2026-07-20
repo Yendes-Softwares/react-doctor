@@ -1,12 +1,33 @@
 import type { Capability } from "oxlint-plugin-react-doctor";
 import type { Framework, ProjectInfo } from "../types/index.js";
 import {
+  EARLIEST_GATED_MOBX_MAJOR,
   EARLIEST_GATED_PREACT_MAJOR,
   EARLIEST_GATED_REACT_MAJOR,
+  EARLIEST_GATED_REMOTION_MAJOR,
+  EARLIEST_GATED_STYLED_COMPONENTS_MAJOR,
+  EARLIEST_GATED_VALTIO_MAJOR,
+  EARLIEST_GATED_ZUSTAND_MAJOR,
   LATEST_KNOWN_PREACT_MAJOR,
   LATEST_KNOWN_REACT_MAJOR,
+  LATEST_KNOWN_REMOTION_MAJOR,
+  LATEST_KNOWN_VALTIO_MAJOR,
+  LATEST_SUPPORTED_MOBX_MAJOR,
+  LATEST_SUPPORTED_ZUSTAND_MAJOR,
+  MOBX_ABORT_SIGNAL_MAJOR,
+  MOBX_ABORT_SIGNAL_MINOR,
+  MOBX_REACT_LITE_OBSERVER_MEMO_GUARD_MAJOR,
+  MOBX_REACT_LITE_OBSERVER_MEMO_GUARD_MINOR,
+  MOBX_REACT_OBSERVER_MEMO_GUARD_MAJOR,
+  MOBX_REACT_OBSERVER_MEMO_GUARD_MINOR,
 } from "../constants.js";
-import { isMajorMinorAtLeast, parseReactMajorMinor, parseTailwindMajorMinor } from "./version.js";
+import {
+  getLowestDependencyMajor,
+  isMajorMinorAtLeast,
+  parseDependencyMajorMinor,
+  parseReactMajorMinor,
+  parseTailwindMajorMinor,
+} from "./version.js";
 
 // SPA / mobile frameworks with no server-side form handler at all —
 // `preventDefault()` on `<form onSubmit>` is the canonical pattern there,
@@ -30,7 +51,7 @@ const SSR_FRAMEWORKS: ReadonlySet<Framework> = new Set([
 
 const addMajorLadder = (
   capabilities: Set<Capability>,
-  name: "react" | "preact",
+  name: "react" | "remotion" | "preact" | "valtio" | "mobx" | "zustand",
   major: number | null,
   earliest: number,
   latest: number,
@@ -93,6 +114,9 @@ export const buildCapabilities = (project: ProjectInfo): ReadonlySet<Capability>
   if (project.nextjsMajorVersion !== null && project.nextjsMajorVersion >= 15) {
     capabilities.add("nextjs:15");
   }
+  if (project.nextjsMajorVersion !== null && project.nextjsMajorVersion >= 16) {
+    capabilities.add("nextjs:16");
+  }
   addMajorLadder(
     capabilities,
     "react",
@@ -111,18 +135,131 @@ export const buildCapabilities = (project: ProjectInfo): ReadonlySet<Capability>
   ) {
     capabilities.add("react:19.2");
   }
-  if (project.tailwindVersion !== null) capabilities.add("tailwind");
-  if (
-    project.tailwindVersion !== null &&
-    isMajorMinorAtLeast(parseTailwindMajorMinor(project.tailwindVersion), { major: 3, minor: 4 })
-  ) {
-    capabilities.add("tailwind:3.4");
+  if (project.tailwindVersion !== null) {
+    capabilities.add("tailwind");
+    const tailwindVersion = parseTailwindMajorMinor(project.tailwindVersion);
+    if (isMajorMinorAtLeast(tailwindVersion, { major: 3, minor: 4 })) {
+      capabilities.add("tailwind:3.4");
+    }
+    if (tailwindVersion !== null && isMajorMinorAtLeast(tailwindVersion, { major: 4, minor: 0 })) {
+      capabilities.add("tailwind:4");
+    }
   }
   if (project.zodVersion !== null) capabilities.add("zod");
   if (project.zodMajorVersion !== null && project.zodMajorVersion >= 4) capabilities.add("zod:4");
+  if (
+    (project.mobxVersion !== undefined && project.mobxVersion !== null) ||
+    project.hasMobxReact === true ||
+    project.hasMobxReactLite === true ||
+    project.hasMobxStateTree === true ||
+    project.hasMobxReactObserver === true
+  ) {
+    capabilities.add("mobx");
+  }
+  if (project.hasMobxReact === true) capabilities.add("mobx-react");
+  if (project.hasMobxReactLite === true) capabilities.add("mobx-react-lite");
+  if (project.hasMobxReact === true || project.hasMobxReactLite === true) {
+    capabilities.add("mobx-react-binding");
+  }
+  const mobxReactVersion = parseDependencyMajorMinor(project.mobxReactVersion);
+  const mobxReactLiteVersion = parseDependencyMajorMinor(project.mobxReactLiteVersion);
+  const hasMobxReactObserverMemoGuard =
+    mobxReactVersion !== null &&
+    isMajorMinorAtLeast(mobxReactVersion, {
+      major: MOBX_REACT_OBSERVER_MEMO_GUARD_MAJOR,
+      minor: MOBX_REACT_OBSERVER_MEMO_GUARD_MINOR,
+    });
+  const hasMobxReactLiteObserverMemoGuard =
+    mobxReactLiteVersion !== null &&
+    isMajorMinorAtLeast(mobxReactLiteVersion, {
+      major: MOBX_REACT_LITE_OBSERVER_MEMO_GUARD_MAJOR,
+      minor: MOBX_REACT_LITE_OBSERVER_MEMO_GUARD_MINOR,
+    });
+  if (hasMobxReactObserverMemoGuard) capabilities.add("mobx-react-observer-memo-guard");
+  if (hasMobxReactLiteObserverMemoGuard) {
+    capabilities.add("mobx-react-lite-observer-memo-guard");
+  }
+  if (hasMobxReactObserverMemoGuard || hasMobxReactLiteObserverMemoGuard) {
+    capabilities.add("mobx-react-binding-observer-memo-guard");
+  }
+  if (project.hasMobxStateTree === true) capabilities.add("mobx-state-tree");
+  if (project.hasMobxReactObserver === true) capabilities.add("mobx-react-observer");
+  if (
+    project.mobxMajorVersion !== undefined &&
+    project.mobxMajorVersion !== null &&
+    project.mobxMajorVersion >= EARLIEST_GATED_MOBX_MAJOR &&
+    project.mobxMajorVersion <= LATEST_SUPPORTED_MOBX_MAJOR
+  ) {
+    addMajorLadder(
+      capabilities,
+      "mobx",
+      project.mobxMajorVersion,
+      EARLIEST_GATED_MOBX_MAJOR,
+      LATEST_SUPPORTED_MOBX_MAJOR,
+    );
+  }
+  const mobxVersion = parseDependencyMajorMinor(project.mobxVersion);
+  if (
+    project.mobxMajorVersion === MOBX_ABORT_SIGNAL_MAJOR &&
+    mobxVersion !== null &&
+    isMajorMinorAtLeast(mobxVersion, {
+      major: MOBX_ABORT_SIGNAL_MAJOR,
+      minor: MOBX_ABORT_SIGNAL_MINOR,
+    })
+  ) {
+    capabilities.add("mobx:6.10");
+  }
+  if (project.zustandVersion !== undefined && project.zustandVersion !== null) {
+    capabilities.add("zustand");
+  }
+  if (
+    project.zustandMajorVersion !== undefined &&
+    project.zustandMajorVersion !== null &&
+    project.zustandMajorVersion >= EARLIEST_GATED_ZUSTAND_MAJOR &&
+    project.zustandMajorVersion <= LATEST_SUPPORTED_ZUSTAND_MAJOR
+  ) {
+    addMajorLadder(
+      capabilities,
+      "zustand",
+      project.zustandMajorVersion,
+      EARLIEST_GATED_ZUSTAND_MAJOR,
+      LATEST_SUPPORTED_ZUSTAND_MAJOR,
+    );
+  }
   if (project.isPreES2023Target) capabilities.add("pre-es2023");
   if (project.hasReactCompiler) capabilities.add("react-compiler");
-  if (project.hasTanStackQuery) capabilities.add("tanstack-query");
+  if (Boolean(project.hasTanStackQuery) || Boolean(project.tanstackQueryVersion)) {
+    capabilities.add("tanstack-query");
+  }
+  if (project.styledComponentsVersion) {
+    capabilities.add("styled-components");
+    const styledComponentsMajor = getLowestDependencyMajor(project.styledComponentsVersion);
+    if (
+      styledComponentsMajor !== null &&
+      styledComponentsMajor >= EARLIEST_GATED_STYLED_COMPONENTS_MAJOR
+    ) {
+      capabilities.add("styled-components:6");
+    }
+  }
+  if (project.hasI18nLibrary) capabilities.add("i18n");
+  if (project.valtioVersion !== null) capabilities.add("valtio");
+  addMajorLadder(
+    capabilities,
+    "valtio",
+    project.valtioMajorVersion,
+    EARLIEST_GATED_VALTIO_MAJOR,
+    LATEST_KNOWN_VALTIO_MAJOR,
+  );
+  if (project.hasRemotion) {
+    capabilities.add("remotion");
+    addMajorLadder(
+      capabilities,
+      "remotion",
+      project.remotionMajorVersion ?? null,
+      EARLIEST_GATED_REMOTION_MAJOR,
+      LATEST_KNOWN_REMOTION_MAJOR,
+    );
+  }
   if (project.hasTypeScript) capabilities.add("typescript");
   // Keyed off `preactVersion`, not `framework === "preact"`, so Preact-on-Vite
   // still gets the `preact` bucket.
@@ -162,6 +299,7 @@ export const shouldEnableRule = (
   capabilities: ReadonlySet<Capability>,
   ignoredTags: ReadonlySet<string>,
   disabledWhen?: ReadonlyArray<Capability>,
+  includedTags?: ReadonlySet<string>,
 ): boolean => {
   if (requires) {
     for (const capability of requires) {
@@ -183,6 +321,9 @@ export const shouldEnableRule = (
     for (const tag of tags) {
       if (ignoredTags.has(tag)) return false;
     }
+  }
+  if (includedTags && includedTags.size > 0) {
+    if (!tags?.some((tag) => includedTags.has(tag))) return false;
   }
   return true;
 };

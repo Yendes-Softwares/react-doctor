@@ -7,7 +7,9 @@ import {
   PAGE_OR_LAYOUT_FILE_PATTERN,
 } from "./constants/nextjs.js";
 import { CUSTOM_HOOK_DEPENDENCY_FORWARD_DEPTH } from "./constants/thresholds.js";
+import { INK_RULE_IDS } from "./constants/ink.js";
 import { classifyPackagePlatform } from "./utils/classify-package-platform.js";
+import { collectImportedJsxComponentDependencies } from "./utils/collect-imported-jsx-component-dependencies.js";
 import { collectCrossFileProbes } from "./utils/cross-file-probe-recorder.js";
 import type { CrossFileProbeTrace } from "./utils/cross-file-probe-recorder.js";
 import type { EsTreeNode } from "./utils/es-tree-node.js";
@@ -16,11 +18,13 @@ import { hasAncestorMetadataLayout } from "./utils/find-ancestor-metadata-layout
 import { hasAncestorSuspenseLayout } from "./utils/find-ancestor-suspense-layout.js";
 import { isBarrelIndexModule } from "./utils/is-barrel-index-module.js";
 import { isLegacyArchReactNativeFile } from "./utils/is-legacy-arch-react-native-file.js";
+import { resolveInkVersion } from "./utils/resolve-ink-version.js";
 import { isNodeOfType } from "./utils/is-node-of-type.js";
 import { isReactApiCall } from "./utils/is-react-api-call.js";
 import { normalizeFilename } from "./utils/normalize-filename.js";
 import { resolveLang } from "./utils/parse-source-file.js";
 import { resolveBarrelExportFilePath } from "./utils/resolve-barrel-export-file-path.js";
+import { resolveCrossFileExport } from "./utils/resolve-cross-file-export.js";
 import {
   resolveCrossFileFunctionExport,
   resolveCrossFileValueExportWithFilePath,
@@ -181,6 +185,15 @@ const collectEffectValueHelperDependencies: CrossFileDependencyCollector = ({
   }
 };
 
+const collectBrowserGuardDependencies: CrossFileDependencyCollector = ({
+  absoluteFilePath,
+  staticImports,
+}) => {
+  for (const entry of flattenImportEntries(staticImports)) {
+    resolveCrossFileExport(absoluteFilePath, entry.source, entry.exportedName);
+  }
+};
+
 const flattenProgramImportEntries = (program: EsTreeNode): ImportEntryName[] => {
   const entries: ImportEntryName[] = [];
   for (const statement of (program as { body?: ReadonlyArray<EsTreeNode> }).body ?? []) {
@@ -289,12 +302,10 @@ const collectMutatingReducerDependencies: CrossFileDependencyCollector = ({
   for (const staticImport of staticImports) {
     if (staticImport.moduleRequest.value !== "react") continue;
     for (const entry of staticImport.entries) {
-      if (entry.importName.kind === "Name" && entry.importName.name === "useReducer") {
+      const { importName } = entry;
+      if (importName.kind === "Name" && importName.name === "useReducer") {
         namedUseReducerLocals.add(entry.localName.value);
-      } else if (
-        entry.importName.kind === "Default" ||
-        entry.importName.kind === "NamespaceObject"
-      ) {
+      } else if (importName.kind === "Default" || importName.kind === "NamespaceObject") {
         reactObjectLocals.add(entry.localName.value);
       }
     }
@@ -354,31 +365,6 @@ const collectMutatingReducerDependencies: CrossFileDependencyCollector = ({
   }
 };
 
-// The JSX names rn-no-raw-text's boundary checks consult
-// (`resolveTextBoundaryName`): plain identifiers, the property of a member
-// tag, and the namespace of a namespaced tag.
-const collectJsxBoundaryNames = (program: EsTreeNode): Set<string> => {
-  const jsxNames = new Set<string>();
-  walkAst(program, (node) => {
-    if (node.type !== "JSXOpeningElement") return;
-    const nameNode = (node as { name?: EsTreeNode }).name;
-    if (!nameNode) return;
-    if (nameNode.type === "JSXIdentifier") {
-      const name = (nameNode as { name?: unknown }).name;
-      if (typeof name === "string") jsxNames.add(name);
-    } else if (nameNode.type === "JSXMemberExpression") {
-      const property = (nameNode as { property?: { type?: string; name?: unknown } }).property;
-      if (property?.type === "JSXIdentifier" && typeof property.name === "string") {
-        jsxNames.add(property.name);
-      }
-    } else if (nameNode.type === "JSXNamespacedName") {
-      const namespace = (nameNode as { namespace?: { name?: unknown } }).namespace;
-      if (typeof namespace?.name === "string") jsxNames.add(namespace.name);
-    }
-  });
-  return jsxNames;
-};
-
 // rn-no-raw-text reads other files two ways: the package-platform gate
 // (`wrapReactNativeRule` + the rule's own RN checks — probed on EVERY file
 // the rule is enabled for) and `resolveImportedComponentForwarding` for JSX
@@ -392,22 +378,7 @@ const collectRnNoRawTextDependencies: CrossFileDependencyCollector = ({
   program,
 }) => {
   classifyPackagePlatform(absoluteFilePath);
-  const jsxNames = collectJsxBoundaryNames(program);
-  if (jsxNames.size === 0) return;
-  for (const staticImport of staticImports) {
-    for (const entry of staticImport.entries) {
-      if (entry.importName.kind === "NamespaceObject") continue;
-      if (!jsxNames.has(entry.localName.value)) continue;
-      const exportedName = entry.importName.kind === "Default" ? "default" : entry.importName.name;
-      if (exportedName) {
-        resolveCrossFileFunctionExport(
-          absoluteFilePath,
-          staticImport.moduleRequest.value,
-          exportedName,
-        );
-      }
-    }
-  }
+  collectImportedJsxComponentDependencies({ absoluteFilePath, staticImports, program });
 };
 
 // no-dynamic-import-path / no-full-lodash-import (`is-inside-node-cli-package`),
@@ -433,8 +404,24 @@ const collectLegacyArchDependencies: CrossFileDependencyCollector = ({ absoluteF
   isLegacyArchReactNativeFile(absoluteFilePath);
 };
 
+const collectInkVersionDependencies: CrossFileDependencyCollector = ({ absoluteFilePath }) => {
+  resolveInkVersion(absoluteFilePath);
+};
+
+// ink-no-raw-text also reads imported JSX wrapper implementations. Resolving
+// every imported JSX name is a safe superset of the wrappers the rule follows.
+const collectInkNoRawTextDependencies: CrossFileDependencyCollector = (input) => {
+  collectInkVersionDependencies(input);
+  collectImportedJsxComponentDependencies(input);
+};
+
 export const CROSS_FILE_DEPENDENCY_COLLECTORS: ReadonlyMap<string, CrossFileDependencyCollector> =
   new Map([
+    ...INK_RULE_IDS.map((ruleId): [string, CrossFileDependencyCollector] => [
+      ruleId,
+      collectInkVersionDependencies,
+    ]),
+    ["ink-no-raw-text", collectInkNoRawTextDependencies],
     ["client-passive-event-listeners", collectEffectValueHelperDependencies],
     ["exhaustive-deps", collectForwardedHookDependencies],
     ["no-barrel-import", collectNoBarrelImportDependencies],
@@ -454,6 +441,7 @@ export const CROSS_FILE_DEPENDENCY_COLLECTORS: ReadonlyMap<string, CrossFileDepe
     ["no-effect-with-fresh-deps", collectForwardedHookDependencies],
     ["no-initialize-state", collectEffectValueHelperDependencies],
     ["no-mutating-reducer-state", collectMutatingReducerDependencies],
+    ["no-unguarded-browser-global-at-module-scope", collectBrowserGuardDependencies],
     ["no-unguarded-browser-global-in-render-or-hook-init", collectNearestManifestDependencies],
     ["prefer-dynamic-import", collectNearestManifestDependencies],
     ["rendering-hydration-mismatch-time", collectNearestManifestDependencies],
@@ -472,8 +460,18 @@ export const CROSS_FILE_DEPENDENCY_COLLECTORS: ReadonlyMap<string, CrossFileDepe
  * partition), forcing a conscious classification.
  */
 export const UNBOUNDED_CROSS_FILE_RULE_IDS: ReadonlySet<string> = new Set([
+  "nextjs-async-dynamic-api-not-awaited",
   "nextjs-no-img-element",
+  "no-loading-flag-reset-outside-finally",
   "only-export-components",
+  "remotion-calculate-metadata-fetch-signal",
+  "remotion-deterministic-randomness",
+  "remotion-no-css-animation",
+  "remotion-no-css-transition",
+  "remotion-no-css-url-assets",
+  "remotion-no-native-media-elements",
+  "remotion-no-next-image",
+  "window-open-without-noopener",
 ]);
 
 /**

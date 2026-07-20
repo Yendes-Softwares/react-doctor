@@ -140,6 +140,7 @@ export const EFFECT_SNIPPET_POOL = [
 // State — lazy initializers (incl. SSR-hazardous localStorage/matchMedia),
 // toggles, loading triples, prop mirrors, reducers, ref-sync.
 export const STATE_SNIPPET_POOL = [
+  `const fuzzValtioState = fuzzValtioProxy({ count: 0 }); const fuzzValtioSnapshot = useFuzzValtioSnapshot(fuzzValtioState); const handleFuzzValtioRead = () => console.log(fuzzValtioSnapshot.count); const fuzzValtioButton = <button onClick={handleFuzzValtioRead}>Read</button>;`,
   `const FuzzArrayConsumer = memo(() => null); const FuzzArrayHost = () => <FuzzArrayConsumer payload={[value]} />;`,
   `const FuzzEffectEventHost = ({ delay, onSearch }) => { useEffect(() => { const timeoutId = setTimeout(() => onSearch("done"), delay); return () => clearTimeout(timeoutId); }, [delay, onSearch]); return null; }; function FuzzTransitionHost() { const [isLoading, setIsLoading] = useState(false); const toggleLoading = () => setIsLoading(true); return <button onClick={toggleLoading}>{isLoading ? "Loading" : "Go"}</button>; } function FuzzMemoEarlyReturnHost({ loading }) { const content = useMemo(() => <Heavy />, []); if (loading) return null; return <div>{content}</div>; }`,
   `const shallowEqual = (previousProps, nextProps) => previousProps.id === nextProps.id; const FuzzCustomComparedItem = React.memo(({ foo }) => <div>{foo.label}</div>, shallowEqual); const fuzzCustomComparedItemNode = <FuzzCustomComparedItem id="item" foo={{ label: String(value) }} />;`,
@@ -175,6 +176,7 @@ export const STATE_SNIPPET_POOL = [
   `const [copied, setCopied] = useState(false);`,
   `const [cache] = useState(new Map());`,
   `const [snapshot] = useState(new Date());`,
+  `const [fuzzEagerClient] = useState(new AbortController());`,
   `const id = useId();`,
   `const deferredValue = useDeferredValue(state);`,
   `const [isPending, startTransition] = useTransition();`,
@@ -277,6 +279,7 @@ export const GUARD_SNIPPET_POOL = [
 
 // Library idioms — tanstack, mobx, styled-components, next/dynamic, redux.
 export const LIBRARY_SNIPPET_POOL = [
+  `const fuzzValtioSnapshot = useFuzzValtioSnapshot(fuzzValtioState); const fuzzValtioCount = fuzzValtioState.count;`,
   `const zodSchema = z.object({ value: z.string() }).strict();`,
   `const subscribeStore = useCallback((onStoreChange) => { store.on("change", onStoreChange); return () => store.off("change", onStoreChange); }, [store]); const snapshot = useSyncExternalStore(subscribeStore, getSnapshot);`,
   `const subscribeMediaQuery = useCallback((notify) => { const media = window.matchMedia("(prefers-color-scheme: dark)"); media.addListener(notify); return () => media.removeListener(notify); }, []); const mediaQuerySnapshot = useSyncExternalStore(subscribeMediaQuery, () => window.matchMedia("(prefers-color-scheme: dark)").matches);`,
@@ -298,6 +301,9 @@ export const LIBRARY_SNIPPET_POOL = [
 
 // Module scope — SSR hazards, guard aliases, contexts, caches, styled.
 export const MODULE_SCOPE_SNIPPET_POOL = [
+  `import { create as createFuzzZustandStore } from "zustand"; export const useFuzzZustandStore = createFuzzZustandStore(() => ({ items: [] })); export const fuzzZustandSelection = useFuzzZustandStore((state) => ({ items: state.items }));`,
+  `import { create as createFuzzZustandTarget } from "zustand"; const useFuzzZustandTarget = createFuzzZustandTarget(() => ({ value: 0, other: 0 })); export const FuzzZustandWholeStoreTarget = () => { const { value: fuzzZustandValue } = useFuzzZustandTarget(); return <output>{fuzzZustandValue}</output>; };`,
+  `import { create as createFuzzZustandGetStore } from "zustand"; const useFuzzZustandGetStore = createFuzzZustandGetStore((_set, get) => ({ count: get().count }));`,
   `export const FuzzExternalLocationInvalidator = () => { const [revision, setRevision] = useState(0); const currentPath = window.location.pathname; const navigate = () => { window.history.pushState({}, "", "/next"); setRevision((previous) => previous + 1); }; return <button onClick={navigate}>{currentPath}</button>; }; export const FuzzBatchedExternalLocationInvalidator = () => { const [revision, setRevision] = useState(0); const currentPath = window.location.pathname; const navigate = () => { setRevision((previous) => previous + 1); window.history.pushState({}, "", "/next"); }; return <button onClick={navigate}>{currentPath}</button>; }; export const FuzzUnrelatedLocationSetter = () => { const [logged, setLogged] = useState(false); return <button onClick={() => setLogged(true)}>{window.location.pathname}</button>; }; export const FuzzShadowedLocationInvalidator = ({ window }) => { const [logged, setLogged] = useState(false); const navigate = () => { window.history.pushState({}, "", "/next"); setLogged(true); }; return <button onClick={navigate}>{window.location.pathname}</button>; };`,
   `export const FuzzTypedReactEventInvalidator = () => { const [revision, setRevision] = useState(0); const handleClick = (useCallback(() => { setRevision((previous) => previous + 1); history.pushState({}, "", "/next"); }, []) satisfies React.MouseEventHandler<HTMLButtonElement>); return <button onClick={handleClick}>{location.pathname}</button>; };`,
   `export const FuzzUseCallbackLocationListener = () => { const [revision, setRevision] = useState(0); const onPopState = useCallback(() => setRevision((previous) => previous + 1), []); useEffect(() => { window.addEventListener("popstate", onPopState); return () => window.removeEventListener("popstate", onPopState); }, [onPopState]); return <output>{location.pathname}</output>; }; export const FuzzDeferredUseCallbackLocationHelper = () => { const [logged, setLogged] = useState(false); const navigate = useCallback(() => setTimeout(() => history.pushState({}, "", "/next"), 0), []); return <button onClick={() => { navigate(); setLogged(true); }}>{location.pathname}</button>; };`,
@@ -310,6 +316,9 @@ export const MODULE_SCOPE_SNIPPET_POOL = [
   `export const FuzzSequenceStoredInlineHandler = () => { const [revision, setRevision] = useState(0); const element = (undefined, <button onClick={() => { history.pushState({}, "", "/next"); bump((previous) => previous + 1); }}>Go</button>); const bump = setRevision; const reset = () => { void revision; setRevision(0); }; return <>{element}<button onClick={reset}>Reset</button><output>{location.pathname}</output></>; }; export const FuzzNonFinalSequenceStoredInlineHandler = () => { const [revision, setRevision] = useState(0); const element = (<button onClick={() => { history.pushState({}, "", "/next"); bump((previous) => previous + 1); }}>Go</button>, <span>Done</span>); const bump = setRevision; const reset = () => { void revision; setRevision(0); }; return <>{element}<button onClick={reset}>Reset</button><output>{location.pathname}</output></>; };`,
   `export const FuzzNestedStoredJsxHandler = () => { const [revision, setRevision] = useState(0); const view = <section><><button onClick={() => { history.pushState({}, "", "/next"); bump((previous) => previous + 1); }}>Go</button></></section>; const bump = setRevision; const reset = () => { void revision; setRevision(0); }; return <>{view}<button onClick={reset}>Reset</button><output>{location.pathname}</output></>; }; export const FuzzEscapedNestedStoredJsxHandler = () => { const [revision, setRevision] = useState(0); const view = <section><><button onClick={() => { history.pushState({}, "", "/next"); bump((previous) => previous + 1); }}>Go</button></></section>; registerElement(view); const bump = setRevision; const reset = () => { void revision; setRevision(0); }; return <button onClick={reset}>{location.pathname}</button>; };`,
   `export const createFuzzTeam = async (ownerId: string) => { await supabase.from("teams").insert({ ownerId, role: "admin" }); };`,
+  `import { motion as FuzzCreatedMotion, motionValue as fuzzMotionValue, useMotionValue as useFuzzMotionValue, useTransform as useFuzzTransform } from "motion/react"; export const FuzzCreatedPanel = () => { const DynamicPanel = FuzzCreatedMotion.create("section"); const progress = fuzzMotionValue(0); const liveProgress = useFuzzMotionValue(0); liveProgress.on("change", console.log); useFuzzTransform(liveProgress, [0, 0.5, 1], [0, 1]); return <DynamicPanel animate={{ opacity: [0, 1, 0] }} transition={{ times: [0, 1] }} />; }; export const FuzzHoverReveal = () => <FuzzCreatedMotion.button initial={{ opacity: 0 }} whileHover={{ opacity: 1 }} />;`,
+  `import { AnimatePresence as FuzzAnimatePresence } from "motion/react"; export const FuzzPresenceKeys = () => <FuzzAnimatePresence><Panel /><Panel /></FuzzAnimatePresence>; export const FuzzPresenceWait = () => <FuzzAnimatePresence mode="wait"><Panel key="a" /><Panel key="b" /></FuzzAnimatePresence>;`,
+  `import { TabsTrigger as FuzzTabsTrigger } from "./tabs"; export const FuzzDetachedTabsTrigger = () => <FuzzTabsTrigger value="a" />;`,
   `import { ImageResponse as FuzzImageResponse } from "next/og"; export const FuzzPostcardLayout = ({ url }) => <img src={url} alt="" />; export const FuzzPostcardRoute = () => new FuzzImageResponse(FuzzPostcardLayout({ url }));`,
   `import { render as fuzzRender } from "@testing-library/react"; it("mounts a one-shot ref harness", () => { const FuzzOneShotRefTarget = () => { const targetRef = React.createRef(); return <FuzzFocusTrap targetRef={targetRef}><button ref={targetRef}>Target</button></FuzzFocusTrap>; }; fuzzRender(<FuzzOneShotRefTarget />); });`,
   `import { render as fuzzRenderWithTypeWrapper } from "@testing-library/react"; it("mounts a type-wrapped one-shot ref harness", () => { const FuzzTypeWrappedOneShotRefTarget = () => { const targetRef = React.createRef(); return <FuzzFocusTrap targetRef={targetRef}><button ref={targetRef}>Target</button></FuzzFocusTrap>; }; fuzzRenderWithTypeWrapper((<FuzzTypeWrappedOneShotRefTarget />) as React.ReactElement); });`,
@@ -321,7 +330,10 @@ export const MODULE_SCOPE_SNIPPET_POOL = [
   `import { test as fuzzProviderTest } from "vitest"; import { FuzzProductProvider } from "./product-provider"; fuzzProviderTest("renders direct content", () => { render(<FuzzProductProvider><img src="/subject.png" /></FuzzProductProvider>); });`,
   `import { test as fuzzProviderChildrenTest } from "vitest"; import { FuzzChildrenProvider } from "./children-provider"; fuzzProviderChildrenTest("renders direct children", () => { render(<FuzzChildrenProvider children={<img src="/subject.png" />} />); });`,
   `import { motion as FuzzMotion } from "framer-motion"; export const FuzzMotionPanel = () => <FuzzMotion.div animate={{ x: 120 }}>moving</FuzzMotion.div>;`,
+  `import { motion as FuzzMenuMotion } from "motion/react"; export const FuzzScaleMenu = () => <FuzzMenuMotion.div role="menu" initial={{ scale: 0.96 }} animate={{ scale: 1 }} />;`,
+  `import { Search as FuzzLucideSearch } from "lucide-react"; import { HomeIcon as FuzzHeroHome } from "@heroicons/react/24/outline"; export const FuzzMixedIconToolbar = () => <><FuzzLucideSearch /><FuzzHeroHome /></>;`,
   `import { motion as FuzzScaleMotion } from "framer-motion"; export const FuzzScaleEntry = () => <FuzzScaleMotion.div initial={{ scale: 0 }} animate={{ scale: 1 }}>enter</FuzzScaleMotion.div>;`,
+  `import { motion as FuzzStaggerMotion, stagger as fuzzStagger } from "motion/react"; export const FuzzStaggerList = () => <FuzzStaggerMotion.ul transition={{ delayChildren: fuzzStagger(0.15) }} />;`,
   `import { div as fuzzMotionDiv, span as FuzzMotionSpan } from "framer-motion/m"; export const FuzzIntrinsicScaleCollision = () => <fuzzMotionDiv initial={{ scale: 0 }} />; export const FuzzProvenScaleTag = () => <FuzzMotionSpan initial={{ scale: 0 }} />;`,
   `import { createRoot as mountFuzzRoot } from "react-dom/client"; export const FuzzRootApp = () => <div />; export const fuzzRootConfig = getConfig(); const fuzzApplicationRoot = mountFuzzRoot(document.body); fuzzApplicationRoot.render(<FuzzRootApp />);`,
   `const GLOBAL_CACHE = new Map<string, unknown>();`,
@@ -348,6 +360,9 @@ export const MODULE_SCOPE_SNIPPET_POOL = [
   `let moduleMutableState = 0;`,
   `const ThemeContext = React.createContext({ mode: "light" });`,
   `const ItemsContext = React.createContext(null);`,
+  `import { FuzzImportedContext } from "./fuzz-context"; export const FuzzImportedContextConsumer = () => { const value = {}; return <FuzzImportedContext value={value} />; };`,
+  `var FuzzRedeclaredContext = React.createContext(null); var FuzzRedeclaredContext = FuzzImportedContext; export const FuzzRedeclaredContextConsumer = () => <FuzzRedeclaredContext value={{ mode: "dark" }} />;`,
+  `export const FuzzNamedContextCallback = ({ theme, children }) => React.useMemo(function BuildFuzzContext() { const value = { theme }; return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>; }, [theme, children]);`,
   `export const DynamicChart = dynamic(() => import("./chart"), { ssr: false });`,
   `const canUseDOM = typeof window !== "undefined";`,
   `const isServer = typeof window === "undefined";`,
@@ -380,6 +395,23 @@ export const MODULE_SCOPE_SNIPPET_POOL = [
 ] as const;
 
 export const SERVER_MODULE_PROGRAM_POOL = [
+  `export default function FuzzDedupPage({ items }) {
+  return <FuzzList items={items} sortedItems={items.toSorted()} />;
+}`,
+  `import { headers } from "next/headers";
+export const readFuzzRequestId = () => headers().get("x-request-id");`,
+  `import { cookies as readFuzzCookies } from "next/headers";
+export const readFuzzFallbackCookie = () => {
+  const cookieStore = { get: (name) => name } || readFuzzCookies();
+  return cookieStore.get("session");
+};`,
+  `import { cookies as readFuzzCallbackCookies } from "next/headers";
+export const readFuzzCallbackCookie = async () => {
+  let pendingCookies = readFuzzCallbackCookies();
+  const sessions = [0].map(() => pendingCookies.get("session"));
+  pendingCookies = await pendingCookies;
+  return sessions[0];
+};`,
   `#!/usr/bin/env node\u2028export const FUZZ_DATABASE_URL = process.env.DATABASE_URL;`,
   `#!/usr/bin/env node process.env.DATABASE_URL\u2029export const FuzzGeneratedDatabaseClient = {};`,
   `"use server";
@@ -609,6 +641,65 @@ export const JSX_LEAF_POOL = [
   `<span>{new Intl.DateTimeFormat().format(state)}</span>`,
   `<time>{new Intl.DateTimeFormat("en-US", localeOptionsAlias).format(new Date(value))}</time>`,
   `<FuzzMarkdown rehypePlugins={[fuzzRehypeRaw]}>{String(value)}</FuzzMarkdown>`,
+  `<form><form /></form>`,
+  `<div role="status" aria-live="assertive" />`,
+  `<><main className="scroll-smooth" /><header className="sticky" /><img src="/avatar.jpg" alt="Ada" /></>`,
+  `<><input className="text-sm" /><button aria-label="Close" className="size-4 p-0"><CloseIcon /></button><button className="hover:px-6">Save</button></>`,
+  `<button className="text-[var(--muted)] hover:text-[var(--foreground)]">Save</button>`,
+  `<div aria-hidden><button type="button">Save</button></div>`,
+  `<><nav /><nav /></>`,
+  `<input aria-invalid />`,
+  `<img srcSet="small.jpg 640w, large.jpg 1280w" alt="" />`,
+  `<img srcSet="avatar.jpg 1x, avatar@2x.jpg 2x" alt="" />`,
+  `<span className="animate-spin" />`,
+  `<button className="opacity-0 hover:opacity-100" />`,
+  `<div className="scale-95"><div className="fixed" /></div>`,
+  `<details><p>Answer</p></details>`,
+  `<fieldset><input /><input /></fieldset>`,
+  `<table><tbody><tr><th>Name</th></tr></tbody></table>`,
+  `<><main /><main /></>`,
+  `<textarea className="resize-none" />`,
+  `<img srcSet="small.jpg 640w, large.jpg 2x" />`,
+  `<form><input /></form>`,
+  `<label><input /><input /></label>`,
+  `<div className="absolute size-96 rounded-full bg-purple-500 blur-3xl" />`,
+  `<main><div className="rounded-xl border bg-white/10 backdrop-blur-xl" /><div className="rounded-xl border bg-white/10 backdrop-blur-xl" /><div className="rounded-xl border bg-white/10 backdrop-blur-xl" /></main>`,
+  `<main><span className="rounded-full border px-3">Fast</span><span className="rounded-full border px-3">Safe</span><span className="rounded-full border px-3">Simple</span><span className="rounded-full border px-3">Clear</span><span className="rounded-full border px-3">New</span></main>`,
+  `<section className="rounded-xl border bg-white p-6" />`,
+  `<button className="rounded-md bg-blue-600 p-3">Save changes</button>`,
+  `<button title="Save changes">Save changes</button>`,
+  `<nav><span className="rounded-full bg-gray-200 px-2">12</span></nav>`,
+  `<aside><span className="uppercase tracking-widest">Workspace</span></aside>`,
+  `<section className="grid grid-cols-3"><article className="rounded-xl border p-6"><h3>Fast</h3><p>Finish sooner.</p></article><article className="rounded-xl border p-6"><h3>Safe</h3><p>Protect changes.</p></article><article className="rounded-xl border p-6"><h3>Simple</h3><p>Stay focused.</p></article></section>`,
+  `<main><p className="text-center">Build polished interfaces with a workflow that keeps every decision visible.</p><p className="text-center">Move from an initial idea to a working result without losing important context.</p><p className="text-center">Keep the whole team aligned with clear updates and shared project history.</p></main>`,
+  `<section className="flex min-h-dvh items-center justify-center"><h1>Build faster</h1></section>`,
+  `<main><span className="size-12 rounded-xl bg-blue-100">🚀</span><span className="size-12 rounded-xl bg-green-100">🔒</span><span className="size-12 rounded-xl bg-amber-100">⚡</span></main>`,
+  `<span className="font-mono text-xs uppercase tracking-widest">System online</span>`,
+  `<h1 className="text-7xl tracking-tighter">Build your next idea</h1>`,
+  `<main><section className="rounded-xl border p-6">A</section><section className="rounded-xl border p-6">B</section><section className="rounded-xl border p-6">C</section><section className="rounded-xl border p-6">D</section><section className="rounded-xl border p-6">E</section><section className="rounded-xl border p-6">F</section></main>`,
+  `<main><section className="py-20"><div className="mx-auto max-w-6xl">A</div></section><section className="py-24"><div className="mx-auto max-w-6xl">B</div></section><section className="py-20"><div className="mx-auto max-w-6xl">C</div></section></main>`,
+  `<div style={{ boxShadow: "0 10px 30px #000" }} />`,
+  `<span className="animate-pulse">New feature</span>`,
+  `<main><h1 style={{ fontFamily: "Fraunces" }}>Title</h1><p style={{ fontFamily: "Inter" }}>Body</p><code style={{ fontFamily: "JetBrains Mono" }}>Code</code><aside style={{ fontFamily: "Caveat" }}>Note</aside></main>`,
+  `<div className="overflow-hidden rounded-xl border"><div><div><span className="size-3 rounded-full bg-red-500" /><span className="size-3 rounded-full bg-yellow-500" /><span className="size-3 rounded-full bg-green-500" /></div></div></div>`,
+  `<article className="hover:-translate-y-1 hover:shadow-xl hover:bg-white" />`,
+  `<main><p>Jane Doe</p></main>`,
+  `<main><article className="hover:scale-105" /><article className="hover:scale-105" /><article className="hover:scale-105" /></main>`,
+  `<h1 className="uppercase leading-none">Infrastructure for every engineering team</h1>`,
+  `<button className="transition-shadow focus-visible:ring-2">Save</button>`,
+  `<table><tbody><tr><td>{Number(value).toLocaleString()}</td></tr></tbody></table>`,
+  `<video autoPlay muted src="/demo.mp4" />`,
+  `<button aria-braillelabel="sv" />`,
+  `<table><tbody><tr><th /></tr></tbody></table>`,
+  `<html lang="en" xml:lang="fr" />`,
+  `<><iframe title="Map" /><iframe title="Map" /></>`,
+  `<body aria-hidden="true" />`,
+  `<><label htmlFor="email">Email</label><input id="email" /><input id="email" /></>`,
+  `<span role="text"><button>Open</button></span>`,
+  `<><label htmlFor="name">Name</label><label htmlFor="name">Required</label><input id="name" /></>`,
+  `<img alt="Campus" src="map.png" isMap />`,
+  `<div role="presentation" tabIndex={0} />`,
+  `<button type="button"><a href="/details">Details</a></button>`,
 ] as const;
 
 // Rare-but-parseable weirdness kept from the original generator, plus
@@ -658,6 +749,8 @@ export const EDGE_CASE_STATEMENT_POOL = [
 ] as const;
 
 export const IMPORT_LINE_POOL = [
+  `import { compile as compileFuzzMdx } from "@mdx-js/mdx"; const fuzzCompiledMdx = await compileFuzzMdx(tenantContent);`,
+  `import { proxy as createFuzzValtioProxy, useSnapshot as useFuzzValtioSnapshot } from "valtio"; const fuzzValtioState = createFuzzValtioProxy({ count: 0 });`,
   `import fetch from "node-fetch";`,
   `import { motion, MotionConfig, useReducedMotion } from "framer-motion";`,
   `import React from "react";`,
@@ -674,8 +767,12 @@ export const IMPORT_LINE_POOL = [
   `import * as ReactQuery from "@tanstack/react-query";`,
   `import { observer } from "mobx-react-lite";`,
   `import { reaction, autorun } from "mobx";`,
+  `import { autorun as fuzzMobxAutorun, makeAutoObservable as fuzzMakeAutoObservable } from "mobx"; import { observer as fuzzMobxObserver } from "mobx-react-lite"; import { memo as fuzzReactMemo } from "react"; declare const fuzzMobxExternalStore: { value: number }; class FuzzMobxBaseStore { constructor() { fuzzMakeAutoObservable(this); } start() { fuzzMobxAutorun(() => fuzzMobxExternalStore.value); } } class FuzzMobxChildStore extends FuzzMobxBaseStore {} const FuzzMobxView = () => null; const FuzzMemoizedMobxView = fuzzMobxObserver(fuzzReactMemo(FuzzMobxView));`,
   `import styled from "styled-components";`,
   `import { atom, useAtom } from "jotai";`,
+  `import { proxy as fuzzValtioProxy, useSnapshot as useFuzzValtioSnapshot } from "valtio";`,
+  `import { proxy as fuzzValtioScenarioProxy, useSnapshot as useFuzzValtioScenarioSnapshot } from "valtio"; const FuzzValtioCallbackScenario = () => { const fuzzValtioScenarioState = fuzzValtioScenarioProxy({ count: 0 }); const fuzzValtioScenarioSnapshot = useFuzzValtioScenarioSnapshot(fuzzValtioScenarioState); return <button onClick={() => console.log(fuzzValtioScenarioSnapshot.count)}>Read</button>; };`,
+  `import { create as createZustandStore } from "zustand"; const useFuzzZustandStore = createZustandStore(() => ({ value: 0 }));`,
   `import { useDispatch, useSelector } from "react-redux";`,
   `import { useNavigate, useSearchParams, useParams } from "react-router-dom";`,
   `import { useForm } from "react-hook-form";`,
@@ -714,6 +811,7 @@ export const FUZZ_FILENAME_POOL = [
   "src/utils/fuzz-helper.ts",
   "packages/docs/archive/v1/static/docs.js",
   "dist/assets/fuzz-bundle.js",
+  "public/debug.log",
 ] as const;
 
 // Identifiers rules key on by NAME (guard aliases, visibility gates,

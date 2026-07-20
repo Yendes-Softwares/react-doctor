@@ -45,6 +45,28 @@ export const LATEST_KNOWN_PREACT_MAJOR = 20;
 // for. Preact X (10) is the modern baseline.
 export const EARLIEST_GATED_PREACT_MAJOR = 10;
 
+// Valtio shipped the useSnapshot render contract in v1. The upper bound
+// follows the same untrusted-version clamp as React and Preact.
+export const EARLIEST_GATED_VALTIO_MAJOR = 1;
+export const EARLIEST_GATED_STYLED_COMPONENTS_MAJOR = 6;
+export const LATEST_KNOWN_VALTIO_MAJOR = 10;
+export const LATEST_KNOWN_REMOTION_MAJOR = 30;
+
+export const EARLIEST_GATED_REMOTION_MAJOR = 4;
+
+export const EARLIEST_GATED_MOBX_MAJOR = 4;
+
+export const LATEST_SUPPORTED_MOBX_MAJOR = 6;
+export const MOBX_ABORT_SIGNAL_MAJOR = 6;
+export const MOBX_ABORT_SIGNAL_MINOR = 10;
+export const MOBX_REACT_OBSERVER_MEMO_GUARD_MAJOR = 7;
+export const MOBX_REACT_OBSERVER_MEMO_GUARD_MINOR = 3;
+export const MOBX_REACT_LITE_OBSERVER_MEMO_GUARD_MAJOR = 3;
+export const MOBX_REACT_LITE_OBSERVER_MEMO_GUARD_MINOR = 3;
+export const EARLIEST_GATED_ZUSTAND_MAJOR = 1;
+
+export const LATEST_SUPPORTED_ZUSTAND_MAJOR = 5;
+
 // Max chars of an unparseable oxlint stdout we keep for the error
 // message. oxlint prints a multi-line, framed error to stdout when it
 // can't load the config (e.g. a JS plugin failed to import) — the first
@@ -669,6 +691,12 @@ export const SIDECAR_LINT_CACHE_FILENAME = "sidecar-lint-cache.json";
 // Length (chars) of the project-directory hash used to name the tmp-dir cache
 // fallback when a project has no `node_modules` to host `.cache/react-doctor`.
 export const CACHE_FILENAME_HASH_LENGTH_CHARS = 16;
+
+// Length (chars) of the rule-plugin entry-content hash folded into the
+// per-file lint cache's ruleset hash, so a rebuilt dev plugin (same version,
+// different rule behavior) busts the cache instead of replaying stale
+// diagnostics.
+export const PLUGIN_FINGERPRINT_LENGTH_CHARS = 16;
 
 // This package's own version, inlined at build time (`vite.config.ts` `env`)
 // the same way the CLI inlines `VERSION`; running from source (tests, dev)

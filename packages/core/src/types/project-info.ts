@@ -13,11 +13,40 @@ export interface ProjectInfo {
   zodVersion: string | null;
   /** Parsed major from `zodVersion`, or `null` when absent/unparseable. Mirrors `reactMajorVersion`. */
   zodMajorVersion: number | null;
+  /** Declared MobX core version spec. Optional so existing `ProjectInfo` consumers remain source-compatible. */
+  mobxVersion?: string | null;
+  /** Parsed major from `mobxVersion`, or `null` when absent/unparseable. */
+  mobxMajorVersion?: number | null;
+  hasMobxReact?: boolean;
+  mobxReactVersion?: string | null;
+  hasMobxReactLite?: boolean;
+  mobxReactLiteVersion?: string | null;
+  hasMobxStateTree?: boolean;
+  hasMobxReactObserver?: boolean;
+  /** Declared Zustand version spec. Optional so existing `ProjectInfo` consumers remain source-compatible. */
+  zustandVersion?: string | null;
+  /** Parsed major from `zustandVersion`, or `null` when absent/unparseable. */
+  zustandMajorVersion?: number | null;
   framework: Framework;
   hasTypeScript: boolean;
   hasReactCompiler: boolean;
   hasReactCompilerLintPlugin?: boolean;
   hasTanStackQuery: boolean;
+  hasRemotion?: boolean;
+  remotionVersion?: string | null;
+  remotionMajorVersion?: number | null;
+  hasI18nLibrary?: boolean;
+  tanstackQueryVersion?: string | null;
+  styledComponentsVersion?: string | null;
+  /**
+   * The declared `valtio` version spec, or `null` when no package in the
+   * analyzed project declares Valtio. `useSnapshot` has kept the same
+   * render-read contract across Valtio 1 and 2, so presence alone drives the
+   * `valtio` capability and its parsed major-version ladder.
+   */
+  valtioVersion: string | null;
+  /** Parsed major from `valtioVersion`, or `null` when absent/unparseable. */
+  valtioMajorVersion: number | null;
   /**
    * `true` when the project or a workspace declares a Vite-based SSR runtime
    * such as React Router's Node adapter, Vike, or vite-plugin-ssr.

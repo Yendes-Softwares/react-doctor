@@ -72,11 +72,29 @@ describe("discoverProject characterization — workspace fixture matrix", () => 
       tailwindVersion: null,
       zodVersion: "4.1.0",
       zodMajorVersion: 4,
+      mobxVersion: null,
+      mobxMajorVersion: null,
+      hasMobxReact: false,
+      mobxReactVersion: null,
+      hasMobxReactLite: false,
+      mobxReactLiteVersion: null,
+      hasMobxStateTree: false,
+      hasMobxReactObserver: false,
+      zustandVersion: null,
+      zustandMajorVersion: null,
       framework: "nextjs",
       hasTypeScript: false,
       hasReactCompiler: false,
       hasReactCompilerLintPlugin: false,
       hasTanStackQuery: false,
+      hasI18nLibrary: false,
+      tanstackQueryVersion: null,
+      styledComponentsVersion: null,
+      valtioVersion: null,
+      valtioMajorVersion: null,
+      hasRemotion: false,
+      remotionVersion: null,
+      remotionMajorVersion: null,
       hasSsrDependency: false,
       preactVersion: null,
       preactMajorVersion: null,
@@ -130,11 +148,29 @@ describe("discoverProject characterization — workspace fixture matrix", () => 
       tailwindVersion: null,
       zodVersion: null,
       zodMajorVersion: null,
+      mobxVersion: null,
+      mobxMajorVersion: null,
+      hasMobxReact: false,
+      mobxReactVersion: null,
+      hasMobxReactLite: false,
+      mobxReactLiteVersion: null,
+      hasMobxStateTree: false,
+      hasMobxReactObserver: false,
+      zustandVersion: null,
+      zustandMajorVersion: null,
       framework: "nextjs",
       hasTypeScript: false,
       hasReactCompiler: false,
       hasReactCompilerLintPlugin: false,
       hasTanStackQuery: false,
+      hasI18nLibrary: false,
+      tanstackQueryVersion: null,
+      styledComponentsVersion: null,
+      valtioVersion: null,
+      valtioMajorVersion: null,
+      hasRemotion: false,
+      remotionVersion: null,
+      remotionMajorVersion: null,
       hasSsrDependency: false,
       preactVersion: null,
       preactMajorVersion: null,
@@ -176,6 +212,81 @@ describe("discoverProject characterization — workspace fixture matrix", () => 
     expect(projectInfo.zodVersion).toBe(null);
     expect(projectInfo.reactVersion).toBe("^19.0.0");
     expect(projectInfo.framework).toBe("nextjs");
+  });
+
+  it("surfaces a Remotion dependency from a workspace package", () => {
+    const fixtureDirectory = writeFixture("remotion-workspace", [
+      {
+        filePath: "package.json",
+        contents: packageJson({
+          name: "remotion-root",
+          private: true,
+          workspaces: ["apps/*"],
+        }),
+      },
+      {
+        filePath: "apps/video/package.json",
+        contents: packageJson({
+          name: "video",
+          dependencies: { react: "19.1.0", remotion: "4.0.420", vite: "^7.0.0" },
+        }),
+      },
+    ]);
+
+    const projectInfo = discoverProject(fixtureDirectory);
+    expect(projectInfo.hasRemotion).toBe(true);
+    expect(projectInfo.remotionVersion).toBe("4.0.420");
+    expect(projectInfo.remotionMajorVersion).toBe(4);
+    expect(projectInfo.framework).toBe("vite");
+  });
+
+  it("uses the oldest Remotion major across a mixed-version workspace", () => {
+    const fixtureDirectory = writeFixture("mixed-remotion-workspace", [
+      {
+        filePath: "package.json",
+        contents: packageJson({
+          name: "remotion-root",
+          private: true,
+          workspaces: ["apps/*"],
+          dependencies: { remotion: "^4.0.0" },
+        }),
+      },
+      {
+        filePath: "apps/legacy/package.json",
+        contents: packageJson({ name: "legacy-video", dependencies: { remotion: "^3.3.0" } }),
+      },
+    ]);
+
+    const projectInfo = discoverProject(fixtureDirectory);
+    expect(projectInfo.hasRemotion).toBe(true);
+    expect(projectInfo.remotionVersion).toBe("^3.3.0");
+    expect(projectInfo.remotionMajorVersion).toBe(3);
+  });
+
+  it("suppresses the Remotion major when any workspace version is unresolved", () => {
+    const fixtureDirectory = writeFixture("unresolved-remotion-workspace", [
+      {
+        filePath: "package.json",
+        contents: packageJson({
+          name: "remotion-root",
+          private: true,
+          workspaces: ["apps/*"],
+          dependencies: { remotion: "^4.0.0" },
+        }),
+      },
+      {
+        filePath: "apps/video/package.json",
+        contents: packageJson({
+          name: "video",
+          dependencies: { remotion: "workspace:*" },
+        }),
+      },
+    ]);
+
+    const projectInfo = discoverProject(fixtureDirectory);
+    expect(projectInfo.hasRemotion).toBe(true);
+    expect(projectInfo.remotionVersion).toBe(null);
+    expect(projectInfo.remotionMajorVersion).toBe(null);
   });
 
   it("nx workspace: react + framework detected from an app project", () => {

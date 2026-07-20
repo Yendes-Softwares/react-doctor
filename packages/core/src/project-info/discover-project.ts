@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import { PackageJsonNotFoundError } from "./errors.js";
 import type { PackageJson, ProjectInfo } from "../types/index.js";
+import { LATEST_SUPPORTED_MOBX_MAJOR } from "../constants.js";
 import { isFile } from "./fs-utils.js";
 import { countSourceFiles } from "./count-source-files.js";
 import {
@@ -14,7 +15,6 @@ import {
   extractDependencyInfo,
   getDependencyDeclaration,
   getPreactVersion,
-  hasTanStackQuery,
   isCatalogReference,
   REACT_SECTIONS,
   resolveCatalogBackedDependencyVersion,
@@ -30,7 +30,9 @@ import {
 } from "./collect-project-facts.js";
 import { resolveInstalledReactVersion } from "./resolve-installed-react-version.js";
 import { readPackageJson } from "./package-json.js";
+import { getTanStackQueryVersion } from "./get-tanstack-query-version.js";
 import {
+  getDependencyMajorWithinSupportedRange,
   getLowestDependencyMajor,
   parseReactMajor,
   resolveEffectiveReactMajor,
@@ -95,11 +97,29 @@ const discoverProjectWithoutPackageJson = (directory: string): ProjectInfo => {
     tailwindVersion: null,
     zodVersion: null,
     zodMajorVersion: null,
+    mobxVersion: null,
+    mobxMajorVersion: null,
+    hasMobxReact: false,
+    mobxReactVersion: null,
+    hasMobxReactLite: false,
+    mobxReactLiteVersion: null,
+    hasMobxStateTree: false,
+    hasMobxReactObserver: false,
+    zustandVersion: null,
+    zustandMajorVersion: null,
     framework: "unknown",
     hasTypeScript: hasOwnTsConfig,
     hasReactCompiler: false,
     hasReactCompilerLintPlugin: false,
     hasTanStackQuery: false,
+    valtioVersion: null,
+    valtioMajorVersion: null,
+    hasRemotion: false,
+    remotionVersion: null,
+    remotionMajorVersion: null,
+    hasI18nLibrary: false,
+    tanstackQueryVersion: null,
+    styledComponentsVersion: null,
     hasSsrDependency: false,
     preactVersion: null,
     preactMajorVersion: null,
@@ -250,6 +270,13 @@ export const discoverProject = (directory: string): ProjectInfo => {
       })
     : null;
 
+  const zustandVersion = resolveCatalogBackedDependencyVersion({
+    rootDirectory: directory,
+    rootPackageJson: packageJson,
+    packageName: "zustand",
+    version: workspaceFacts.zustand.version,
+  });
+
   // Reanimated implies React Native, so the fact only applies once the
   // project already classifies as RN.
   const hasReanimated = hasReactNativeWorkspace && workspaceFacts.hasReanimatedAwarePackage;
@@ -264,7 +291,22 @@ export const discoverProject = (directory: string): ProjectInfo => {
           version: workspaceFacts.next.version,
         })
       : null;
+  const valtioVersion = resolveCatalogBackedDependencyVersion({
+    rootDirectory: directory,
+    rootPackageJson: packageJson,
+    packageName: "valtio",
+    version: workspaceFacts.valtioVersion,
+  });
+  const mobxVersion = resolveCatalogBackedDependencyVersion({
+    rootDirectory: directory,
+    rootPackageJson: packageJson,
+    packageName: "mobx",
+    version: workspaceFacts.mobx.version,
+  });
   const preactVersion = getPreactVersion(packageJson);
+  const remotionVersion = workspaceFacts.remotionVersion;
+  const tanstackQueryVersion =
+    getTanStackQueryVersion(packageJson) ?? workspaceFacts.tanstackQueryVersion;
   const isPreES2023Target = hasTypeScript && detectPreES2023Target(directory);
 
   const projectInfo: ProjectInfo = {
@@ -275,11 +317,33 @@ export const discoverProject = (directory: string): ProjectInfo => {
     tailwindVersion,
     zodVersion,
     zodMajorVersion: zodVersion === null ? null : getLowestDependencyMajor(zodVersion),
+    mobxVersion,
+    mobxMajorVersion:
+      mobxVersion === null
+        ? null
+        : getDependencyMajorWithinSupportedRange(mobxVersion, LATEST_SUPPORTED_MOBX_MAJOR),
+    hasMobxReact: workspaceFacts.hasMobxReact,
+    mobxReactVersion: workspaceFacts.mobxReactVersion,
+    hasMobxReactLite: workspaceFacts.hasMobxReactLite,
+    mobxReactLiteVersion: workspaceFacts.mobxReactLiteVersion,
+    hasMobxStateTree: workspaceFacts.hasMobxStateTree,
+    hasMobxReactObserver: workspaceFacts.hasMobxReactObserver,
+    zustandVersion,
+    zustandMajorVersion: zustandVersion === null ? null : getLowestDependencyMajor(zustandVersion),
     framework,
     hasTypeScript,
     hasReactCompiler: detectReactCompiler(directory, packageJson),
     hasReactCompilerLintPlugin: detectReactCompilerLintPlugin(directory, packageJson),
-    hasTanStackQuery: hasTanStackQuery(packageJson),
+    hasTanStackQuery: tanstackQueryVersion !== null,
+    hasI18nLibrary: workspaceFacts.hasI18nLibrary,
+    tanstackQueryVersion,
+    styledComponentsVersion: workspaceFacts.styledComponentsVersion,
+    valtioVersion,
+    valtioMajorVersion: valtioVersion === null ? null : getLowestDependencyMajor(valtioVersion),
+    hasRemotion: workspaceFacts.hasRemotionDependency,
+    remotionVersion,
+    remotionMajorVersion:
+      remotionVersion === null ? null : getLowestDependencyMajor(remotionVersion),
     hasSsrDependency: workspaceFacts.hasSsrDependency,
     preactVersion,
     preactMajorVersion: parseReactMajor(preactVersion),

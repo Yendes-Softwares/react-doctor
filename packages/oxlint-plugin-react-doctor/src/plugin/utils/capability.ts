@@ -29,6 +29,7 @@ export type Capability =
   // ruleset cache key, so even "unknown" is load-bearing).
   | FrameworkToken
   | "react"
+  | "remotion"
   | "pure-preact"
   | "react-native"
   | "server-actions"
@@ -36,19 +37,39 @@ export type Capability =
   | "client-only"
   | "nextjs:static-export"
   | "nextjs:15"
+  | "nextjs:16"
   | "tailwind"
   | "tailwind:3.4"
+  | "tailwind:4"
   | "zod"
   | "zod:4"
+  | "mobx"
+  | "mobx-react"
+  | "mobx-react-lite"
+  | "mobx-react-binding"
+  | "mobx-react-binding-observer-memo-guard"
+  | "mobx-react-observer-memo-guard"
+  | "mobx-react-lite-observer-memo-guard"
+  | "mobx-state-tree"
+  | "mobx-react-observer"
+  | "zustand"
   | "typescript"
   | "react-compiler"
   | "tanstack-query"
+  | "valtio"
+  | "i18n"
+  | "styled-components"
+  | "styled-components:6"
   | "pre-es2023"
   // Major-version ladders (`react:17`…) plus minor-versioned gates like
   // `react:19.2` — both parse as numeric template members. Bounds live in
-  // core's constants (`EARLIEST_GATED_*` / `LATEST_KNOWN_*`).
+  // core's constants (`EARLIEST_GATED_*` / `LATEST_*`).
   | `react:${number}`
-  | `preact:${number}`;
+  | `preact:${number}`
+  | `remotion:${number}`
+  | `valtio:${number}`
+  | `mobx:${number}`
+  | `zustand:${number}`;
 
 // The shape rules use to query the project's capability set — implemented
 // by core (over the memoized set) and by `hasCapability` (over the

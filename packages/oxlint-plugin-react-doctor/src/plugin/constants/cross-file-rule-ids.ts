@@ -1,3 +1,5 @@
+import { INK_RULE_IDS } from "./ink.js";
+
 // Rules whose verdict for a file can depend on the content of OTHER files at
 // lint time. The per-file lint cache (`@react-doctor/core`'s `file-lint-cache`)
 // keys cached diagnostics on a single file's own content, so it would serve
@@ -34,9 +36,11 @@
 // also forces every rule here into the bounded/unbounded classification in
 // `cross-file-dependencies.ts`.
 export const CROSS_FILE_RULE_IDS: ReadonlySet<string> = new Set([
+  ...INK_RULE_IDS,
   "client-passive-event-listeners",
   "exhaustive-deps",
   "no-barrel-import",
+  "nextjs-async-dynamic-api-not-awaited",
   "nextjs-missing-metadata",
   "nextjs-no-img-element",
   "nextjs-no-use-search-params-without-suspense",
@@ -44,6 +48,7 @@ export const CROSS_FILE_RULE_IDS: ReadonlySet<string> = new Set([
   "no-full-lodash-import",
   "no-hydration-branch-on-browser-global",
   "no-indeterminate-attribute",
+  "no-loading-flag-reset-outside-finally",
   "no-locale-format-in-render",
   "no-match-media-in-state-initializer",
   "no-create-ref-in-function-component",
@@ -55,9 +60,18 @@ export const CROSS_FILE_RULE_IDS: ReadonlySet<string> = new Set([
   "no-initialize-state",
   "no-mutating-reducer-state",
   "only-export-components",
+  "no-unguarded-browser-global-at-module-scope",
   "no-unguarded-browser-global-in-render-or-hook-init",
+  "window-open-without-noopener",
   "prefer-dynamic-import",
   "rendering-hydration-mismatch-time",
+  "remotion-calculate-metadata-fetch-signal",
+  "remotion-deterministic-randomness",
+  "remotion-no-css-animation",
+  "remotion-no-css-transition",
+  "remotion-no-css-url-assets",
+  "remotion-no-native-media-elements",
+  "remotion-no-next-image",
   "rerender-memo-with-default-value",
   "rn-no-legacy-shadow-styles",
   "rn-no-raw-text",
