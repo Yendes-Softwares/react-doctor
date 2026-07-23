@@ -32,6 +32,12 @@ const baseProject: ProjectInfo = {
   valtioVersion: null,
   valtioMajorVersion: null,
   hasRemotion: false,
+  hasThree: false,
+  threeVersion: null,
+  threeRelease: null,
+  hasReactThreeFiber: false,
+  reactThreeFiberVersion: null,
+  reactThreeFiberMajorVersion: null,
   hasSsrDependency: false,
   nextjsVersion: null,
   nextjsMajorVersion: null,
@@ -83,6 +89,84 @@ describe("buildCapabilities", () => {
 
   it("omits the remotion capability when the dependency is absent", () => {
     expect(buildCapabilities(baseProject).has("remotion")).toBe(false);
+  });
+
+  it("emits the R3F capability only when React Three Fiber is present", () => {
+    expect(buildCapabilities(baseProject).has("r3f")).toBe(false);
+    expect(buildCapabilities({ ...baseProject, hasReactThreeFiber: true }).has("r3f")).toBe(true);
+  });
+
+  it("emits Three.js independently from the Fiber capability", () => {
+    const plainThree = buildCapabilities({ ...baseProject, hasThree: true });
+    expect(plainThree.has("three")).toBe(true);
+    expect(plainThree.has("r3f")).toBe(false);
+
+    const fiber = buildCapabilities({ ...baseProject, hasReactThreeFiber: true });
+    expect(fiber.has("three")).toBe(true);
+    expect(fiber.has("r3f")).toBe(true);
+  });
+
+  it("emits the Three.js release ladder only for classified direct versions", () => {
+    const release145 = buildCapabilities({
+      ...baseProject,
+      hasThree: true,
+      threeVersion: "^0.145.0",
+      threeRelease: 145,
+    });
+    const release146 = buildCapabilities({
+      ...baseProject,
+      hasThree: true,
+      threeVersion: "^0.146.0",
+      threeRelease: 146,
+    });
+    const release180 = buildCapabilities({
+      ...baseProject,
+      hasThree: true,
+      threeVersion: "^0.180.0",
+      threeRelease: 180,
+    });
+
+    expect(release145.has("three")).toBe(true);
+    expect(release145.has("three:145")).toBe(true);
+    expect(release145.has("three:146")).toBe(false);
+    expect(release146.has("three:146")).toBe(true);
+    expect(release180.has("three:146")).toBe(true);
+    expect(release180.has("three:180")).toBe(true);
+    expect(buildCapabilities({ ...baseProject, hasThree: true }).has("three:146")).toBe(false);
+  });
+
+  it("emits the R3F major ladder only for detected Fiber versions", () => {
+    const r3fTwo = buildCapabilities({
+      ...baseProject,
+      hasReactThreeFiber: true,
+      reactThreeFiberVersion: "^2.0.0",
+      reactThreeFiberMajorVersion: 2,
+    });
+    expect(r3fTwo.has("r3f")).toBe(true);
+    expect(r3fTwo.has("r3f:3")).toBe(false);
+
+    const r3fThree = buildCapabilities({
+      ...baseProject,
+      hasReactThreeFiber: true,
+      reactThreeFiberVersion: "^3.0.0",
+      reactThreeFiberMajorVersion: 3,
+    });
+    expect(r3fThree.has("r3f:3")).toBe(true);
+
+    const r3fNine = buildCapabilities({
+      ...baseProject,
+      hasReactThreeFiber: true,
+      reactThreeFiberVersion: "^9.6.1",
+      reactThreeFiberMajorVersion: 9,
+    });
+    expect(r3fNine.has("r3f:3")).toBe(true);
+    expect(r3fNine.has("r3f:8")).toBe(true);
+    expect(r3fNine.has("r3f:9")).toBe(true);
+    expect(r3fNine.has("r3f:10")).toBe(false);
+
+    const dreiOnly = buildCapabilities({ ...baseProject, hasReactThreeFiber: true });
+    expect(dreiOnly.has("r3f")).toBe(true);
+    expect(dreiOnly.has("r3f:8")).toBe(false);
   });
 
   it("emits exactly the expected token set for a fully-featured Next.js project", () => {
@@ -524,6 +608,33 @@ describe("buildCapabilities", () => {
     expect(capabilities.has("tailwind:4")).toBe(false);
   });
 
+  it("does not enable Tailwind version gates from digits in npm alias package names", () => {
+    for (const tailwindVersion of [
+      "npm:@tailwindcss/postcss7-compat@^2.2.17",
+      "npm:@tailwindcss/postcss7-compat",
+      "npm:@tailwindcss/postcss7-compat@latest",
+      "npm:@tailwindcss/postcss7-compat@next",
+      "npm:@tailwindcss/postcss7-compat@*",
+    ]) {
+      const capabilities = buildCapabilities({
+        ...baseProject,
+        tailwindVersion,
+      });
+      expect(capabilities.has("tailwind")).toBe(true);
+      expect(capabilities.has("tailwind:3.4")).toBe(false);
+      expect(capabilities.has("tailwind:4")).toBe(false);
+    }
+  });
+
+  it("does not enable Tailwind 3.4 for ranges that explicitly cap the version below it", () => {
+    for (const tailwindVersion of ["<3.4", "<=3.3.99"]) {
+      const capabilities = buildCapabilities({ ...baseProject, tailwindVersion });
+      expect(capabilities.has("tailwind")).toBe(true);
+      expect(capabilities.has("tailwind:3.4")).toBe(false);
+      expect(capabilities.has("tailwind:4")).toBe(false);
+    }
+  });
+
   it("stays optimistic for `tailwind:3.4` but withholds `tailwind:4` when the version is unparseable", () => {
     const capabilities = buildCapabilities({ ...baseProject, tailwindVersion: "workspace:*" });
     expect(capabilities.has("tailwind")).toBe(true);
@@ -595,6 +706,93 @@ describe("buildCapabilities", () => {
     });
     expect(capabilities.has("nextjs")).toBe(true);
     expect(capabilities.has("nextjs:15")).toBe(false);
+  });
+
+  it("emits React Router capability thresholds through the detected version", () => {
+    const capabilities = buildCapabilities({
+      ...baseProject,
+      reactRouterVersion: "^7.9.0",
+    });
+    expect(capabilities.has("react-router")).toBe(true);
+    expect(capabilities.has("react-router:6.4")).toBe(true);
+    expect(capabilities.has("react-router:6.19")).toBe(true);
+    expect(capabilities.has("react-router:7.9")).toBe(true);
+    expect(capabilities.has("react-router:7.10")).toBe(false);
+    expect(capabilities.has("react-router:8")).toBe(false);
+  });
+
+  it("does not enable v7 React Router rules for a v6 project", () => {
+    const capabilities = buildCapabilities({
+      ...baseProject,
+      reactRouterVersion: "^6.30.1",
+    });
+    expect(capabilities.has("react-router:6.9")).toBe(true);
+    expect(capabilities.has("react-router:7")).toBe(false);
+    expect(
+      shouldEnableRule(
+        ["react-router:7", "react-router-framework"],
+        undefined,
+        capabilities,
+        new Set(),
+      ),
+    ).toBe(false);
+  });
+
+  it("enables stable middleware rules only at v7.9 in Framework mode", () => {
+    const dataModeCapabilities = buildCapabilities({
+      ...baseProject,
+      reactRouterVersion: "^7.9.0",
+    });
+    const frameworkModeCapabilities = buildCapabilities({
+      ...baseProject,
+      reactRouterVersion: "^7.9.0",
+      hasReactRouterFramework: true,
+    });
+    expect(
+      shouldEnableRule(
+        ["react-router:7.9", "react-router-framework"],
+        undefined,
+        dataModeCapabilities,
+        new Set(),
+      ),
+    ).toBe(false);
+    expect(
+      shouldEnableRule(
+        ["react-router:7.9", "react-router-framework"],
+        undefined,
+        frameworkModeCapabilities,
+        new Set(),
+      ),
+    ).toBe(true);
+  });
+
+  it("emits the Framework mode capability independently of the framework bucket", () => {
+    const capabilities = buildCapabilities({
+      ...baseProject,
+      framework: "vite",
+      reactRouterVersion: "^8.1.0",
+      hasReactRouterFramework: true,
+    });
+    expect(capabilities.has("react-router-framework")).toBe(true);
+    expect(capabilities.has("react-router:7.10")).toBe(true);
+    expect(capabilities.has("react-router:7.15")).toBe(true);
+    expect(capabilities.has("react-router:8")).toBe(true);
+  });
+
+  it("emits only the bare React Router capability for an unparseable version", () => {
+    for (const reactRouterVersion of [
+      "workspace:*",
+      "catalog:router8",
+      "git+https://github.com/acme/router.git#v7.9.0",
+      "acme/router#v7.9.0",
+    ]) {
+      const capabilities = buildCapabilities({
+        ...baseProject,
+        reactRouterVersion,
+      });
+      expect(capabilities.has("react-router")).toBe(true);
+      expect(capabilities.has("react-router:6.4")).toBe(false);
+    }
   });
 
   it("omits `nextjs:15` when the Next.js version is unparseable", () => {

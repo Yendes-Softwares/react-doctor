@@ -15,6 +15,18 @@ export {
 
 export const JSX_FILE_PATTERN = /\.(tsx|jsx)$/;
 
+export const TYPESCRIPT_DECLARATION_FILE_PATTERN = /\.d\.(?:ts|mts|cts)$/;
+
+// HACK: Oxlint 1.68 added ambient-context parser diagnostics that ignore
+// projects' skipLibCheck setting. Preserve the existing report and score
+// contract while keeping earlier TypeScript parser diagnostics visible.
+export const OXLINT_IGNORED_DECLARATION_DIAGNOSTIC_CODES: ReadonlySet<string> = new Set([
+  "TS(1036)",
+  "TS(1038)",
+  "TS(1183)",
+  "TS(1319)",
+]);
+
 // Whether `"warning"`-severity diagnostics surface when neither the
 // caller (`--warnings` / `warnings:`) nor `config.warnings` decide.
 // Warnings show by default — only `"error"` is too generous a bar for a
@@ -66,6 +78,43 @@ export const MOBX_REACT_LITE_OBSERVER_MEMO_GUARD_MINOR = 3;
 export const EARLIEST_GATED_ZUSTAND_MAJOR = 1;
 
 export const LATEST_SUPPORTED_ZUSTAND_MAJOR = 5;
+
+export const LATEST_KNOWN_R3F_MAJOR = 10;
+
+export const EARLIEST_GATED_R3F_MAJOR = 3;
+
+export const EARLIEST_GATED_THREE_RELEASE = 145;
+
+export const LATEST_KNOWN_THREE_RELEASE = 250;
+
+export interface ReactRouterCapabilityThreshold {
+  capability:
+    | "react-router:6.4"
+    | "react-router:6.7"
+    | "react-router:6.9"
+    | "react-router:6.19"
+    | "react-router:7"
+    | "react-router:7.8"
+    | "react-router:7.9"
+    | "react-router:7.10"
+    | "react-router:7.15"
+    | "react-router:8";
+  major: number;
+  minor: number;
+}
+
+export const REACT_ROUTER_CAPABILITY_THRESHOLDS: ReadonlyArray<ReactRouterCapabilityThreshold> = [
+  { capability: "react-router:6.4", major: 6, minor: 4 },
+  { capability: "react-router:6.7", major: 6, minor: 7 },
+  { capability: "react-router:6.9", major: 6, minor: 9 },
+  { capability: "react-router:6.19", major: 6, minor: 19 },
+  { capability: "react-router:7", major: 7, minor: 0 },
+  { capability: "react-router:7.8", major: 7, minor: 8 },
+  { capability: "react-router:7.9", major: 7, minor: 9 },
+  { capability: "react-router:7.10", major: 7, minor: 10 },
+  { capability: "react-router:7.15", major: 7, minor: 15 },
+  { capability: "react-router:8", major: 8, minor: 0 },
+];
 
 // Max chars of an unparseable oxlint stdout we keep for the error
 // message. oxlint prints a multi-line, framed error to stdout when it
@@ -226,9 +275,152 @@ export const GIT_SHOW_MAX_BUFFER_BYTES = 10 * 1024 * 1024;
 
 export const TSCONFIG_EXTENDS_MAX_DEPTH = 8;
 
+export const REACT_COMPILER_CONFIG_IMPORT_MAX_DEPTH = 4;
+
 export const ES2023_YEAR = 2023;
 
 export const UNKNOWN_FUTURE_ES_YEAR = 9999;
+
+export interface TargetBlankBrowserSupport {
+  browserName: string;
+  supportsTargetBlankBrowsingContext: boolean;
+  implicitNoopenerVersion: number | null;
+  explicitNoopenerVersion: number | null;
+  explicitNoreferrerVersion: number | null;
+}
+
+export const TARGET_BLANK_BROWSER_SUPPORT: ReadonlyArray<TargetBlankBrowserSupport> = [
+  {
+    browserName: "chrome",
+    supportsTargetBlankBrowsingContext: true,
+    explicitNoreferrerVersion: 16,
+    explicitNoopenerVersion: 49,
+    implicitNoopenerVersion: 88,
+  },
+  {
+    browserName: "and_chr",
+    supportsTargetBlankBrowsingContext: true,
+    explicitNoreferrerVersion: 16,
+    explicitNoopenerVersion: 49,
+    implicitNoopenerVersion: 88,
+  },
+  {
+    browserName: "android",
+    supportsTargetBlankBrowsingContext: true,
+    explicitNoreferrerVersion: 2.3,
+    explicitNoopenerVersion: 49,
+    implicitNoopenerVersion: 88,
+  },
+  {
+    browserName: "edge",
+    supportsTargetBlankBrowsingContext: true,
+    explicitNoreferrerVersion: 13,
+    explicitNoopenerVersion: 79,
+    implicitNoopenerVersion: 88,
+  },
+  {
+    browserName: "firefox",
+    supportsTargetBlankBrowsingContext: true,
+    explicitNoreferrerVersion: 33,
+    explicitNoopenerVersion: 52,
+    implicitNoopenerVersion: 79,
+  },
+  {
+    browserName: "and_ff",
+    supportsTargetBlankBrowsingContext: true,
+    explicitNoreferrerVersion: 33,
+    explicitNoopenerVersion: 52,
+    implicitNoopenerVersion: 79,
+  },
+  {
+    browserName: "kaios",
+    supportsTargetBlankBrowsingContext: true,
+    explicitNoreferrerVersion: 2.5,
+    explicitNoopenerVersion: 3,
+    implicitNoopenerVersion: 3,
+  },
+  {
+    browserName: "safari",
+    supportsTargetBlankBrowsingContext: true,
+    explicitNoreferrerVersion: 5,
+    explicitNoopenerVersion: 10.1,
+    implicitNoopenerVersion: 12.1,
+  },
+  {
+    browserName: "ios_saf",
+    supportsTargetBlankBrowsingContext: true,
+    explicitNoreferrerVersion: 4,
+    explicitNoopenerVersion: 10.3,
+    implicitNoopenerVersion: 12.2,
+  },
+  {
+    browserName: "opera",
+    supportsTargetBlankBrowsingContext: true,
+    explicitNoreferrerVersion: 15,
+    explicitNoopenerVersion: 36,
+    implicitNoopenerVersion: 74,
+  },
+  {
+    browserName: "op_mob",
+    supportsTargetBlankBrowsingContext: true,
+    explicitNoreferrerVersion: 80,
+    explicitNoopenerVersion: 80,
+    implicitNoopenerVersion: 80,
+  },
+  {
+    browserName: "op_mini",
+    supportsTargetBlankBrowsingContext: false,
+    explicitNoreferrerVersion: null,
+    explicitNoopenerVersion: null,
+    implicitNoopenerVersion: null,
+  },
+  {
+    browserName: "samsung",
+    supportsTargetBlankBrowsingContext: true,
+    explicitNoreferrerVersion: 4,
+    explicitNoopenerVersion: 5,
+    implicitNoopenerVersion: 15,
+  },
+  {
+    browserName: "and_uc",
+    supportsTargetBlankBrowsingContext: true,
+    explicitNoreferrerVersion: 15.5,
+    explicitNoopenerVersion: 15.5,
+    implicitNoopenerVersion: null,
+  },
+  {
+    browserName: "and_qq",
+    supportsTargetBlankBrowsingContext: true,
+    explicitNoreferrerVersion: 14.9,
+    explicitNoopenerVersion: 14.9,
+    implicitNoopenerVersion: null,
+  },
+  {
+    browserName: "baidu",
+    supportsTargetBlankBrowsingContext: true,
+    explicitNoreferrerVersion: 13.52,
+    explicitNoopenerVersion: 13.52,
+    implicitNoopenerVersion: null,
+  },
+  {
+    browserName: "ie",
+    supportsTargetBlankBrowsingContext: true,
+    explicitNoreferrerVersion: null,
+    explicitNoopenerVersion: null,
+    implicitNoopenerVersion: null,
+  },
+  {
+    browserName: "ie_mob",
+    supportsTargetBlankBrowsingContext: true,
+    explicitNoreferrerVersion: null,
+    explicitNoopenerVersion: null,
+    implicitNoopenerVersion: null,
+  },
+];
+
+export const ELECTRON_EXPLICIT_NOOPENER_MIN_VERSION = "0.37.0";
+
+export const ELECTRON_IMPLICIT_NOOPENER_MIN_VERSION = "12.0.0";
 
 export const ES_TARGET_YEAR_BY_NAME: Readonly<Record<string, number>> = {
   es3: 1999,
@@ -510,6 +702,21 @@ export const DIAGNOSTIC_CATEGORY_BUCKETS = [
 // flag (see `resolveMatchByOccurrence` in `runners/oxlint/parse-output`).
 export const OCCURRENCE_MATCHED_CATEGORIES: ReadonlySet<string> = new Set(["Accessibility"]);
 
+export const CATEGORY_IMPACT = {
+  Security: "An attacker can read user data, act as your users, or run code you never shipped.",
+  Bugs: "Real users hit crashes, wrong output, or state that silently corrupts.",
+  Performance: "Users feel extra latency and wasted renders on every interaction.",
+  Accessibility: "Users on screen readers, keyboards, or assistive tech get locked out.",
+  Maintainability: "Every future change gets slower and riskier to make.",
+} satisfies Record<(typeof DIAGNOSTIC_CATEGORY_BUCKETS)[number], string>;
+
+const CATEGORY_IMPACT_BY_NAME: ReadonlyMap<string, string> = new Map(
+  Object.entries(CATEGORY_IMPACT),
+);
+
+export const getCategoryImpact = (category: string): string | undefined =>
+  CATEGORY_IMPACT_BY_NAME.get(category);
+
 // Rules whose heuristic only makes sense in application code. A published
 // library deliberately exposes flexible primitives (components built in
 // render to capture closures, many `render*` slots for composition), so these
@@ -666,7 +873,9 @@ export const SOCKET_FREE_USER_AGENT = "react-doctor-supply-chain";
 // Per-file lint cache (`runners/oxlint/file-lint-cache.ts`). Caches the raw
 // oxlint diagnostics of unchanged files keyed by content hash + ruleset hash,
 // so repeat scans re-lint only the files that actually changed.
-export const FILE_LINT_CACHE_SCHEMA_VERSION = 1;
+// Bumped to 2 when declaration-file parser diagnostic compatibility filtering
+// changed the stored diagnostic set.
+export const FILE_LINT_CACHE_SCHEMA_VERSION = 2;
 
 export const FILE_LINT_CACHE_FILENAME = "file-lint-cache.json";
 
@@ -684,7 +893,8 @@ export const FILE_LINT_CACHE_MAX_FILE_COUNT = 50_000;
 // ruleset hash, each entry guarded by the file's cross-file dependency probe
 // set, so a warm rescan replays the sidecar instead of re-linting every
 // unchanged file. Shares the file cache's bucket/file caps.
-export const SIDECAR_LINT_CACHE_SCHEMA_VERSION = 2;
+// Bumped to 3 with the same parser-diagnostic compatibility change.
+export const SIDECAR_LINT_CACHE_SCHEMA_VERSION = 3;
 
 export const SIDECAR_LINT_CACHE_FILENAME = "sidecar-lint-cache.json";
 

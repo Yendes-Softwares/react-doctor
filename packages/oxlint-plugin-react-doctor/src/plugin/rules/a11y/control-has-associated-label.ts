@@ -15,8 +15,9 @@ import { isNodeOfType } from "../../utils/is-node-of-type.js";
 import { isReactComponentName } from "../../utils/is-react-component-name.js";
 import { isTestlikeFilename } from "../../utils/is-testlike-filename.js";
 import { stripParenExpression } from "../../utils/strip-paren-expression.js";
+import { splitTailwindClassName } from "../../utils/split-tailwind-class-name.js";
 import type { ScopeAnalysis } from "../../semantic/scope-analysis.js";
-import { getJsxAttributeStaticString } from "../../utils/get-jsx-attribute-static-string.js";
+import { getStringLiteralAttributeValue } from "../../utils/get-string-literal-attribute-value.js";
 
 const MESSAGE =
   "Blind users can't tell what this control does because screen readers find no label, so add visible text, `aria-label`, or `aria-labelledby`.";
@@ -93,7 +94,7 @@ const collectStaticTemplateClassTokens = (
   const tokens: string[] = [];
   for (const [quasiIndex, quasi] of quasis.entries()) {
     const quasiText = quasi.value?.cooked ?? quasi.value?.raw ?? "";
-    const quasiTokens = quasiText.split(/\s+/).filter((token) => token.length > 0);
+    const quasiTokens = splitTailwindClassName(quasiText);
     if (quasiTokens.length === 0) continue;
     const isCutByLeadingExpression = quasiIndex > 0 && !/^\s/.test(quasiText);
     const isCutByTrailingExpression = quasiIndex < quasis.length - 1 && !/\s$/.test(quasiText);
@@ -109,9 +110,9 @@ const hasDisplayNoneClass = (opening: EsTreeNodeOfType<"JSXOpeningElement">): bo
     hasJsxPropIgnoreCase(opening.attributes, "className") ??
     hasJsxPropIgnoreCase(opening.attributes, "class");
   if (!classAttribute) return false;
-  const literalValue = getJsxAttributeStaticString(classAttribute);
+  const literalValue = getStringLiteralAttributeValue(classAttribute);
   if (literalValue !== null) {
-    return literalValue.split(/\s+/).some(isDisplayNoneClassToken);
+    return splitTailwindClassName(literalValue).some(isDisplayNoneClassToken);
   }
   if (
     classAttribute.value &&

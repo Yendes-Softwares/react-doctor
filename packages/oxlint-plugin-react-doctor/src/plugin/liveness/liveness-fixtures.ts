@@ -28,6 +28,15 @@ const giantComponentCode = [
   "}",
 ].join("\n");
 
+const reactRouterFrameworkSettings = {
+  "react-doctor": { capabilities: ["react-router-framework"] },
+};
+
+const reactRouterFrameworkRouteFixture = {
+  filePath: "/project/app/routes/dashboard.tsx",
+  settings: reactRouterFrameworkSettings,
+};
+
 export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
   "active-static-asset": {
     code: '<svg xmlns="http://www.w3.org/2000/svg">\n  <script>alert(1)</script>\n</svg>\n',
@@ -461,6 +470,12 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
   "jsx-no-script-url": {
     code: 'const A = () => <a href="javascript:void(0)">x</a>;',
   },
+  "jsx-no-target-blank": {
+    code: 'const A = () => <a href="https://example.com" target="_blank">x</a>;',
+    settings: {
+      "react-doctor": { capabilities: ["target-blank-needs-explicit-protection"] },
+    },
+  },
   "jsx-no-undef": {
     code: "\n        interface Foo {}\n        type Bar = {};\n        const App = () => <><Foo /><Bar /></>;\n      ",
   },
@@ -591,7 +606,7 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     code: 'export const Hero = () => <img src="/hero.png" alt="hero" />;',
   },
   "nextjs-no-native-script": {
-    code: 'const Layout = () => (\n        <head>\n          <script src="https://widget.example.com/embed.js" />\n        </head>\n      );',
+    code: 'const Layout = () => (\n        <head>\n          <script async blocking="render" src="https://widget.example.com/embed.js" />\n        </head>\n      );',
   },
   "nextjs-no-polyfill-script": {
     code: 'const El = () => <script src="https://polyfill.io/v3/polyfill.min.js" />;',
@@ -851,7 +866,7 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     code: 'requestAnimationFrame(() => {\n  document.documentElement.style.setProperty("--scroll", String(window.scrollY));\n});',
   },
   "no-gradient-text": {
-    code: 'const El = () => <span className="bg-clip-text bg-gradient-to-r from-pink-500 to-violet-500">Hi</span>;',
+    code: 'const El = () => <span className="text-transparent bg-clip-text bg-gradient-to-r from-pink-500 to-violet-500">Hi</span>;',
   },
   "no-hairline-border-wide-shadow": {
     code: 'const Card = () => <div className="border shadow-2xl" />;',
@@ -1728,6 +1743,208 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     code: "export const Route = createRootRoute({\n  component: () => (\n    <html>\n      <head />\n      <body />\n    </html>\n  ),\n});",
     filePath: "src/routes/__root.tsx",
   },
+  "r3f-no-advancing-clock-in-use-frame": {
+    code: 'import { useFrame } from "@react-three/fiber"; useFrame((state) => state.clock.getDelta());',
+  },
+  "r3f-cap-device-pixel-ratio": {
+    code: 'import { Canvas } from "@react-three/fiber"; const Scene = () => <Canvas dpr={window.devicePixelRatio} />;',
+  },
+  "r3f-limit-shadowed-point-lights": {
+    code: 'import "@react-three/fiber"; const Scene = () => <><pointLight castShadow /><pointLight castShadow /><pointLight castShadow /></>;',
+  },
+  "r3f-no-async-use-frame": {
+    code: 'import { useFrame } from "@react-three/fiber"; useFrame(async () => load());',
+  },
+  "r3f-no-allocation-in-pointer-move": {
+    code: 'import "@react-three/fiber"; import { Vector3 } from "three"; const Scene = () => <mesh onPointerMove={() => new Vector3()} />;',
+  },
+  "r3f-no-clone-in-use-frame": {
+    code: 'import { useFrame } from "@react-three/fiber"; import { useRef } from "react"; const Scene = () => { const mesh = useRef(null); useFrame(() => mesh.current.position.clone()); return <mesh ref={mesh} />; };',
+  },
+  "r3f-no-dispose-loader-cache": {
+    code: 'import { useTexture } from "@react-three/drei"; const Scene = () => { const texture = useTexture(url); texture.dispose(); return null; };',
+  },
+  "r3f-no-duplicate-primitive-object": {
+    code: 'import "@react-three/fiber"; const Scene = ({ scene }) => <><primitive object={scene} /><primitive object={scene} /></>;',
+  },
+  "r3f-no-deep-use-three-selector": {
+    code: 'import { useThree } from "@react-three/fiber"; const zoom = useThree((state) => state.camera.zoom);',
+  },
+  "r3f-no-fresh-use-three-selector": {
+    code: 'import { useThree } from "@react-three/fiber"; const pair = useThree((state) => [state.camera, state.scene]);',
+  },
+  "r3f-no-extend-in-render": {
+    code: 'import { extend } from "@react-three/fiber"; const Scene = () => { extend({ CustomObject }); return <customObject />; };',
+  },
+  "r3f-no-extend-three-namespace": {
+    code: 'import { extend } from "@react-three/fiber"; import * as THREE from "three"; extend(THREE);',
+  },
+  "r3f-no-fresh-portal-container": {
+    code: 'import { createPortal } from "@react-three/fiber"; import { Scene } from "three"; const World = ({ enabled }) => createPortal(<mesh />, enabled ? {} : new Scene());',
+  },
+  "r3f-no-inline-resource-prop": {
+    code: 'import { Canvas } from "@react-three/fiber"; import { MeshBasicMaterial } from "three"; const Scene = () => <Canvas><mesh material={new MeshBasicMaterial()} /></Canvas>;',
+  },
+  "r3f-no-inline-primitive-object": {
+    code: 'import "@react-three/fiber"; const Scene = () => <primitive object={scene.clone()} />;',
+  },
+  "r3f-no-internal-imports": {
+    code: 'import internal from "@react-three/fiber/dist/internal";',
+  },
+  "r3f-no-imperative-attach-of-managed-ref": {
+    code: 'import { useRef } from "react"; import "@react-three/fiber"; import { Scene as ThreeScene } from "three"; const Scene = () => { const group = useRef(null); const scene = new ThreeScene(); scene.add(group.current); return <group ref={group} />; };',
+  },
+  "r3f-no-mutate-loader-cache": {
+    code: 'import { useGLTF } from "@react-three/drei"; const Scene = () => { const { nodes } = useGLTF(url); nodes.Mesh.geometry.center(); return null; };',
+  },
+  "r3f-no-manual-canvas-resize": {
+    code: 'import { useThree } from "@react-three/fiber"; const Scene = () => { const gl = useThree((state) => state.gl); window.addEventListener("resize", () => gl.setSize(1, 1)); return null; };',
+  },
+  "r3f-no-mutating-pointer-event-data": {
+    code: 'import "@react-three/fiber"; const Scene = () => <mesh onPointerMove={(event) => event.point.normalize()} />;',
+  },
+  "r3f-no-new-in-use-frame": {
+    code: 'import { useFrame } from "@react-three/fiber"; useFrame(() => new Vector3());',
+  },
+  "r3f-no-object-pointer-capture": {
+    code: 'import { Canvas } from "@react-three/fiber"; const Scene = () => <mesh onPointerDown={(event) => event.object.setPointerCapture(event.pointerId)} />;',
+  },
+  "r3f-no-null-loader-input": {
+    code: 'import { useLoader } from "@react-three/fiber"; const Scene = () => { useLoader(TextureLoader, null); return null; };',
+  },
+  "r3f-no-recursive-raf-with-use-frame": {
+    code: 'import { useFrame } from "@react-three/fiber"; const Scene = () => { useFrame(update); const animate = () => requestAnimationFrame(animate); requestAnimationFrame(animate); return null; };',
+  },
+  "r3f-prefer-use-loader": {
+    code: 'import "@react-three/fiber"; import { useEffect } from "react"; import { TextureLoader } from "three"; const Scene = ({ url }) => { useEffect(() => { new TextureLoader().load(url, setTexture); }, [url]); return <mesh />; };',
+  },
+  "r3f-no-state-in-use-frame": {
+    code: 'import { useState } from "react"; import { useFrame } from "@react-three/fiber"; const Scene = () => { const [count, setCount] = useState(0); useFrame(() => setCount(count + 1)); };',
+  },
+  "r3f-no-state-in-pointer-move": {
+    code: 'import { useState } from "react"; import "@react-three/fiber"; const Scene = () => { const [point, setPoint] = useState(null); return <mesh onPointerMove={(event) => setPoint(event.point)} />; };',
+  },
+  "r3f-no-sync-readback-in-use-frame": {
+    code: 'import { useFrame } from "@react-three/fiber"; useFrame(({ gl }) => gl.readRenderTargetPixels(target, 0, 0, 1, 1, pixels));',
+  },
+  "r3f-no-unstable-args": {
+    code: 'import { Canvas } from "@react-three/fiber"; import { Vector3 } from "three"; const Scene = () => <shapeGeometry args={[new Vector3()]} />;',
+  },
+  "r3f-no-use-frame-dependency-array": {
+    code: 'import { useFrame } from "@react-three/fiber"; useFrame(() => update(), []);',
+  },
+  "r3f-require-frame-delta": {
+    code: 'import { useFrame } from "@react-three/fiber"; useFrame(({ scene }) => { scene.rotation.y += 0.01; });',
+  },
+  "r3f-require-global-effect-cleanup": {
+    code: 'import { useEffect } from "react"; import { addEffect } from "@react-three/fiber"; const Scene = () => { useEffect(() => { addEffect(update); }, []); return null; };',
+  },
+  "r3f-require-instanced-buffer-update": {
+    code: 'import "@react-three/fiber"; import { useRef } from "react"; const Scene = () => { const meshRef = useRef(null); const update = () => { meshRef.current.setMatrixAt(0, matrix); }; return <instancedMesh ref={meshRef} />; };',
+  },
+  "r3f-require-owned-texture-cleanup": {
+    code: 'import { useMemo } from "react"; import { CanvasTexture } from "three"; const Scene = ({ canvas }) => { const texture = useMemo(() => new CanvasTexture(canvas), [canvas]); return <meshStandardMaterial map={texture} />; };',
+  },
+  "r3f-require-projection-matrix-update": {
+    code: 'import { useFrame } from "@react-three/fiber"; useFrame(({ camera }) => { camera.aspect = 2; });',
+  },
+  "r3f-require-render-with-positive-priority": {
+    code: 'import { useFrame } from "@react-three/fiber"; const Scene = () => { useFrame(() => update(), 1); return null; };',
+  },
+  "r3f-require-root-unmount": {
+    code: 'import { createRoot } from "@react-three/fiber"; const Scene = ({ canvas }) => { const root = createRoot(canvas); root.render(<mesh />); return null; };',
+  },
+  "r3f-webgpu-canvas-prop-compatibility": {
+    code: 'import { Canvas } from "@react-three/fiber/webgpu"; const Scene = () => <Canvas gl={{ antialias: true }} />;',
+  },
+  "r3f-webgpu-no-legacy-effect-composer": {
+    code: 'import { Canvas } from "@react-three/fiber/webgpu"; import { EffectComposer } from "@react-three/postprocessing"; const Scene = () => <Canvas><EffectComposer /></Canvas>;',
+  },
+  "r3f-webgpu-no-legacy-material-api": {
+    code: 'import { Canvas } from "@react-three/fiber/webgpu"; const Scene = () => <Canvas><shaderMaterial /></Canvas>;',
+  },
+  "three-require-controls-cleanup": {
+    code: 'import { useMemo } from "react"; import { OrbitControls } from "three/addons/controls/OrbitControls.js"; import "@react-three/fiber"; const Scene = ({ camera, element }) => { const controls = useMemo(() => new OrbitControls(camera, element), [camera, element]); return <primitive object={controls} />; };',
+  },
+  "three-cap-device-pixel-ratio": {
+    code: 'import { WebGLRenderer } from "three"; const renderer = new WebGLRenderer(); renderer.setPixelRatio(window.devicePixelRatio);',
+  },
+  "three-limit-shadowed-point-lights": {
+    code: 'import { PointLight, Scene } from "three"; const scene = new Scene(); const first = new PointLight(); const second = new PointLight(); const third = new PointLight(); first.castShadow = true; second.castShadow = true; third.castShadow = true; scene.add(first); scene.add(second); scene.add(third);',
+  },
+  "three-no-allocation-in-pointer-move": {
+    code: 'import { Vector2, WebGLRenderer } from "three"; const renderer = new WebGLRenderer(); renderer.domElement.addEventListener("pointermove", () => new Vector2());',
+  },
+  "three-no-async-animation-loop": {
+    code: 'import { WebGLRenderer } from "three"; const renderer = new WebGLRenderer(); renderer.setAnimationLoop(async () => update());',
+  },
+  "three-no-clone-in-animation-loop": {
+    code: 'import { Mesh, WebGLRenderer } from "three"; const renderer = new WebGLRenderer(); const mesh = new Mesh(); renderer.setAnimationLoop(() => mesh.clone());',
+  },
+  "three-no-new-in-animation-loop": {
+    code: 'import { WebGLRenderer } from "three"; const renderer = new WebGLRenderer(); renderer.setAnimationLoop(() => new Vector3());',
+  },
+  "three-no-object-construction-in-render": {
+    code: 'import { BoxGeometry } from "three"; const Scene = () => <primitive object={new BoxGeometry()} />;',
+  },
+  "three-no-state-in-animation-loop": {
+    code: 'import { useState } from "react"; import { WebGLRenderer } from "three"; const Scene = () => { const [, setFrame] = useState(0); const renderer = new WebGLRenderer(); renderer.setAnimationLoop(() => setFrame((frame) => frame + 1)); };',
+  },
+  "three-no-state-in-pointer-move": {
+    code: 'import { useState } from "react"; import { WebGLRenderer } from "three"; const Scene = () => { const [, setPoint] = useState(null); const renderer = new WebGLRenderer(); renderer.domElement.addEventListener("pointermove", (event) => setPoint(event.clientX)); return null; };',
+  },
+  "three-require-animation-mixer-cleanup": {
+    code: 'import { useMemo } from "react"; import { AnimationMixer } from "three"; const Scene = ({ root, clip }) => { const mixer = useMemo(() => new AnimationMixer(root), [root]); mixer.clipAction(clip); return null; };',
+  },
+  "three-require-frame-delta": {
+    code: 'import { Mesh, WebGLRenderer } from "three"; const renderer = new WebGLRenderer(); const mesh = new Mesh(); renderer.setAnimationLoop(() => { mesh.rotation.y += 0.01; });',
+  },
+  "three-require-instanced-buffer-update": {
+    code: 'import { InstancedMesh } from "three"; const mesh = new InstancedMesh(geometry, material, count); const update = () => { mesh.setMatrixAt(0, matrix); };',
+  },
+  "three-require-owned-geometry-cleanup": {
+    code: 'import { useMemo } from "react"; import { BoxGeometry } from "three"; const Scene = () => { const geometry = useMemo(() => new BoxGeometry(), []); return geometry.name; };',
+  },
+  "three-require-owned-material-cleanup": {
+    code: 'import { useMemo } from "react"; import { MeshBasicMaterial } from "three"; const Scene = () => { const material = useMemo(() => new MeshBasicMaterial(), []); return material.name; };',
+  },
+  "three-require-owned-texture-cleanup": {
+    code: 'import { useMemo } from "react"; import { Texture } from "three"; const Scene = () => { const texture = useMemo(() => new Texture(), []); return texture.name; };',
+  },
+  "three-require-projection-matrix-update": {
+    code: 'import { PerspectiveCamera } from "three"; const camera = new PerspectiveCamera(); const resize = () => { camera.aspect = width / height; };',
+  },
+  "r3f-webgpu-no-gl-state": {
+    code: 'import { useThree } from "@react-three/fiber/webgpu"; const renderer = useThree((state) => state.gl);',
+  },
+  "r3f-webgpu-no-js-uniform-branch": {
+    code: 'import { useLocalNodes } from "@react-three/fiber/webgpu"; useLocalNodes(({ uniforms }) => { if (uniforms.mode.value) return { colorNode: red }; return { colorNode: blue }; });',
+  },
+  "r3f-webgpu-no-unregistered-pipeline-pass": {
+    code: 'import { useRenderPipeline } from "@react-three/fiber/webgpu"; useRenderPipeline(({ passes }) => { passes.custom = customPass; });',
+  },
+  "three-require-render-target-cleanup": {
+    code: 'import { useMemo } from "react"; import { WebGLRenderTarget } from "three"; const Scene = () => { const target = useMemo(() => new WebGLRenderTarget(1, 1), []); target.width; return null; };',
+  },
+  "three-require-renderer-cleanup": {
+    code: 'import { useMemo } from "react"; import { WebGLRenderer } from "three"; const Scene = ({ canvas }) => { const renderer = useMemo(() => new WebGLRenderer({ canvas }), [canvas]); renderer.render(scene, camera); return null; };',
+  },
+  "three-require-postprocessing-cleanup": {
+    code: 'import { useMemo } from "react"; import "three"; import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js"; const Scene = ({ renderer }) => { const composer = useMemo(() => new EffectComposer(renderer), [renderer]); composer.render(); return null; };',
+    settings: { "react-doctor": { capabilities: ["three", "three:145", "three:146"] } },
+  },
+  "three-tsl-no-js-uniform-branch": {
+    code: 'import { Fn, uniform } from "three/tsl"; const mode = uniform(0); const shader = Fn(() => { if (mode.value) return red; return blue; });',
+  },
+  "three-webgpu-no-legacy-effect-composer": {
+    code: 'import { WebGPURenderer } from "three/webgpu"; import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js"; const renderer = new WebGPURenderer(); const composer = new EffectComposer(renderer);',
+  },
+  "three-webgpu-no-legacy-material-api": {
+    code: 'import { ShaderMaterial } from "three"; import { WebGPURenderer } from "three/webgpu"; const renderer = new WebGPURenderer(); const material = new ShaderMaterial();',
+  },
+  "webgl-no-sync-readback-in-animation-loop": {
+    code: 'const gl = canvas.getContext("webgl"); const pixels = new Uint8Array(4); const frame = () => { gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, pixels); requestAnimationFrame(frame); }; requestAnimationFrame(frame);',
+  },
   "tanstack-start-no-anchor-element": {
     code: 'const C = () => <a href="/dashboard">Go</a>;',
     filePath: "src/routes/index.tsx",
@@ -2064,14 +2281,138 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
   "no-focusable-content-in-role-text": {
     code: 'const View = () => <span role="text"><button>Open</button></span>;',
   },
-  "no-multiple-labels-for-control": {
-    code: 'const Form = () => <><label htmlFor="name">Name</label><label htmlFor="name">Required</label><input id="name" /></>;',
-  },
   "no-server-side-image-map": {
     code: 'const Map = () => <img alt="Campus" src="map.png" isMap />;',
   },
   "no-presentation-role-conflict": {
     code: 'const Control = () => <div role="presentation" tabIndex={0} />;',
+  },
+  "react-router-csp-nonce-consistency": {
+    code: 'import { ServerRouter } from "react-router";\nimport { renderToPipeableStream } from "react-dom/server";\nexport const render = (request, context) => renderToPipeableStream(<ServerRouter context={context} url={request.url} nonce={context.nonce} />, {});',
+  },
+  "react-router-descendant-routes-require-splat": {
+    code: 'import { createBrowserRouter, useRoutes } from "react-router";\ncreateBrowserRouter([{ path: "account", Component: () => useRoutes([]) }]);',
+  },
+  "react-router-guard-aborted-handle-error": {
+    code: "export function handleError(error, { request }) { console.error(error); }",
+    filePath: "/project/app/entry.server.tsx",
+    settings: reactRouterFrameworkSettings,
+  },
+  "react-router-internal-route-anchor": {
+    code: 'import { createBrowserRouter } from "react-router";\ncreateBrowserRouter([{ path: "/about", element: <About /> }]);\nexport const Nav = () => <a href="/about">About</a>;',
+  },
+  "react-router-loader-fetch-forwards-signal": {
+    code: 'export async function loader({ request }) { return fetch("/api/profile"); }',
+    ...reactRouterFrameworkRouteFixture,
+  },
+  "react-router-loader-parallel-fetch": {
+    code: 'export async function loader() { const user = await fetch("/api/user"); const teams = await fetch("/api/teams"); return { user, teams }; }',
+    ...reactRouterFrameworkRouteFixture,
+  },
+  "react-router-nested-route-requires-outlet": {
+    code: 'import { createBrowserRouter } from "react-router";\ncreateBrowserRouter([{ Component: () => <main />, children: [{ path: "child", element: <Child /> }] }]);',
+  },
+  "react-router-no-catch-middleware-next": {
+    code: "export const middleware = [async (_context, next) => { try { return await next(); } catch (error) { report(error); } }];",
+  },
+  "react-router-no-client-module-in-server-render": {
+    code: 'import ClientCard from "./card.client";\nexport default function Route() { return <ClientCard />; }',
+  },
+  "react-router-no-duplicate-route-id": {
+    code: 'import { createBrowserRouter } from "react-router";\ncreateBrowserRouter([{ id: "root", path: "/" }, { id: "root", path: "/other" }]);',
+  },
+  "react-router-no-empty-leaf-route": {
+    code: 'import { createBrowserRouter } from "react-router";\ncreateBrowserRouter([{ path: "/" }]);',
+  },
+  "react-router-no-invalid-absolute-child-path": {
+    code: 'import { createBrowserRouter } from "react-router";\ncreateBrowserRouter([{ path: "/app", children: [{ path: "/settings", element: <Settings /> }] }]);',
+  },
+  "react-router-no-invalid-lazy-route-properties": {
+    code: 'import { createBrowserRouter } from "react-router";\ncreateBrowserRouter([{ path: "/", lazy: async () => ({ path: "/changed", Component }) }]);',
+  },
+  "react-router-no-invalid-splat-path": {
+    code: 'import { createBrowserRouter } from "react-router";\ncreateBrowserRouter([{ path: "files*", element: <Files /> }]);',
+  },
+  "react-router-no-loader-request-body": {
+    code: "export async function loader({ request }) { return request.formData(); }",
+    ...reactRouterFrameworkRouteFixture,
+  },
+  "react-router-no-middleware-response-body-consumption": {
+    code: "export const middleware = [async (_context, next) => { const response = await next(); await response.json(); return response; }];",
+  },
+  "react-router-no-multiple-blockers": {
+    code: 'import { useBlocker } from "react-router";\nexport const Form = () => { useBlocker(true); useBlocker(false); return <form />; };',
+    settings: { "react-doctor": { capabilities: ["react-router:6.19"] } },
+  },
+  "react-router-no-multiple-middleware-next": {
+    code: "export const middleware = [async (_context, next) => { await next(); return next(); }];",
+  },
+  "react-router-no-multiple-set-search-params-in-tick": {
+    code: 'import { useSearchParams } from "react-router";\nexport const Filters = () => { const [, setSearchParams] = useSearchParams(); const apply = () => { setSearchParams({ q: "one" }); setSearchParams({ page: "2" }); }; return <button onClick={apply} />; };',
+  },
+  "react-router-no-navigate-in-render": {
+    code: 'import { useNavigate } from "react-router";\nexport const Gate = ({ denied }) => { const navigate = useNavigate(); if (denied) navigate("/login"); return null; };',
+  },
+  "react-router-no-nested-router": {
+    code: 'import { BrowserRouter, MemoryRouter } from "react-router";\nexport const App = () => <BrowserRouter><MemoryRouter><Page /></MemoryRouter></BrowserRouter>;',
+  },
+  "react-router-no-redirect-in-try-catch": {
+    code: 'import { redirect } from "react-router";\nexport async function loader() { try { throw redirect("/login"); } catch (error) { return null; } }',
+    ...reactRouterFrameworkRouteFixture,
+  },
+  "react-router-no-route-module-environment-suffix": {
+    code: "export default function Route() { return null; }",
+    filePath: "/project/app/routes/dashboard.server.tsx",
+  },
+  "react-router-no-router-in-render": {
+    code: 'import { createBrowserRouter } from "react-router";\nexport const App = () => { const router = createBrowserRouter([]); return <RouterProvider router={router} />; };',
+  },
+  "react-router-no-session-mutation-in-loader": {
+    code: 'import { createCookieSessionStorage } from "react-router";\nconst { getSession } = createCookieSessionStorage({ cookie: { name: "session" } });\nexport async function loader({ request }) { const session = await getSession(request.headers.get("Cookie")); session.set("notice", "hello"); return null; }',
+    ...reactRouterFrameworkRouteFixture,
+  },
+  "react-router-no-static-cookie-expires": {
+    code: 'import { createCookie } from "react-router";\nexport const cookie = createCookie("session", { expires: new Date(Date.now() + 1000) });',
+  },
+  "react-router-no-unsynchronized-search-params-mutation": {
+    code: 'import { useSearchParams } from "react-router";\nexport const Filters = () => { const [searchParams] = useSearchParams(); searchParams.set("q", "react"); return null; };',
+  },
+  "react-router-no-use-loader-data-in-error-ui": {
+    code: 'import { useLoaderData } from "react-router";\nexport function ErrorBoundary() { const data = useLoaderData(); return <pre>{data.message}</pre>; }',
+    ...reactRouterFrameworkRouteFixture,
+  },
+  "react-router-prefer-route-lazy": {
+    code: 'import { lazy } from "react";\nimport { createBrowserRouter } from "react-router";\nconst Page = lazy(() => import("./page"));\ncreateBrowserRouter([{ path: "/", Component: Page }]);',
+  },
+  "react-router-require-root-error-boundary": {
+    code: 'import { createBrowserRouter } from "react-router";\ncreateBrowserRouter([{ path: "/", element: <App /> }]);',
+  },
+  "react-router-resource-link-requires-reload": {
+    code: 'import { createBrowserRouter, Link } from "react-router";\ncreateBrowserRouter([{ path: "/guide.pdf", loader: loadGuide }]);\nexport const Download = () => <Link to="/guide.pdf">Guide</Link>;',
+  },
+  "react-router-return-navigation-promise-in-transition": {
+    code: 'import { startTransition } from "react";\nimport { RouterProvider, useNavigate } from "react-router";\nexport const App = ({ router }) => <RouterProvider router={router} useTransitions />;\nexport const Button = () => { const navigate = useNavigate(); return <button onClick={() => startTransition(() => { navigate("/next"); })} />; };',
+    settings: { "react-doctor": { capabilities: ["react-router:7.15"] } },
+  },
+  "react-router-server-middleware-return-response": {
+    code: "export const middleware = [async (_context, next) => { await next(); }];",
+  },
+  "react-router-session-mutation-requires-commit": {
+    code: 'import { createCookieSessionStorage } from "react-router";\nconst { getSession, commitSession } = createCookieSessionStorage({ cookie: { name: "session" } });\nexport async function action({ request }) { const session = await getSession(request.headers.get("Cookie")); session.set("user", "a"); return null; }',
+    ...reactRouterFrameworkRouteFixture,
+  },
+  "react-router-v8-no-meta-data-field": {
+    code: 'import { useMatches } from "react-router";\nexport function Breadcrumbs() { const [{ data }] = useMatches(); return data.title; }',
+  },
+  "react-router-v8-no-react-router-dom-import": {
+    code: 'import { Link } from "react-router-dom";\nexport const Home = () => <Link to="/" />;',
+  },
+  "react-router-v8-no-removed-future-flags": {
+    code: "export default { future: { v8_middleware: true } };",
+    filePath: "react-router.config.ts",
+  },
+  "react-router-valid-route-object": {
+    code: 'import { createBrowserRouter } from "react-router";\ncreateBrowserRouter([{ index: true, children: [{ path: "child", element: <Child /> }] }]);',
   },
   "zod-v4-no-deprecated-error-apis": {
     code: '\n      import { z } from "zod";\n      const error = z.ZodError.create([]);\n    ',

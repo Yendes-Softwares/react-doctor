@@ -1,16 +1,21 @@
+import * as path from "node:path";
 import type { Capability } from "oxlint-plugin-react-doctor";
 import type { Framework, ProjectInfo } from "../types/index.js";
 import {
   EARLIEST_GATED_MOBX_MAJOR,
   EARLIEST_GATED_PREACT_MAJOR,
+  EARLIEST_GATED_R3F_MAJOR,
   EARLIEST_GATED_REACT_MAJOR,
   EARLIEST_GATED_REMOTION_MAJOR,
   EARLIEST_GATED_STYLED_COMPONENTS_MAJOR,
+  EARLIEST_GATED_THREE_RELEASE,
   EARLIEST_GATED_VALTIO_MAJOR,
   EARLIEST_GATED_ZUSTAND_MAJOR,
   LATEST_KNOWN_PREACT_MAJOR,
+  LATEST_KNOWN_R3F_MAJOR,
   LATEST_KNOWN_REACT_MAJOR,
   LATEST_KNOWN_REMOTION_MAJOR,
+  LATEST_KNOWN_THREE_RELEASE,
   LATEST_KNOWN_VALTIO_MAJOR,
   LATEST_SUPPORTED_MOBX_MAJOR,
   LATEST_SUPPORTED_ZUSTAND_MAJOR,
@@ -20,6 +25,7 @@ import {
   MOBX_REACT_LITE_OBSERVER_MEMO_GUARD_MINOR,
   MOBX_REACT_OBSERVER_MEMO_GUARD_MAJOR,
   MOBX_REACT_OBSERVER_MEMO_GUARD_MINOR,
+  REACT_ROUTER_CAPABILITY_THRESHOLDS,
 } from "../constants.js";
 import {
   getLowestDependencyMajor,
@@ -28,6 +34,8 @@ import {
   parseReactMajorMinor,
   parseTailwindMajorMinor,
 } from "./version.js";
+import { detectTargetBlankOpenerProtection } from "./detect-target-blank-opener-protection.js";
+import { readPackageJson } from "./package-json.js";
 
 // SPA / mobile frameworks with no server-side form handler at all —
 // `preventDefault()` on `<form onSubmit>` is the canonical pattern there,
@@ -49,19 +57,19 @@ const SSR_FRAMEWORKS: ReadonlySet<Framework> = new Set([
   "tanstack-start",
 ]);
 
-const addMajorLadder = (
+const addVersionCapabilityLadder = (
   capabilities: Set<Capability>,
-  name: "react" | "remotion" | "preact" | "valtio" | "mobx" | "zustand",
-  major: number | null,
+  name: "react" | "remotion" | "preact" | "r3f" | "three" | "valtio" | "mobx" | "zustand",
+  detectedVersion: number | null,
   earliest: number,
   latest: number,
 ): void => {
-  if (major === null) return;
-  // Clamp the upper bound: a major parsed from an arbitrary package.json
+  if (detectedVersion === null) return;
+  // Clamp the upper bound: a version parsed from an arbitrary package.json
   // spec can be implausibly large (e.g. a date-like typo `"20240101"`),
   // which would otherwise turn this loop into a multi-minute hang / OOM.
-  const cappedMajor = Math.min(major, latest);
-  for (let candidate = earliest; candidate <= cappedMajor; candidate += 1) {
+  const cappedVersion = Math.min(detectedVersion, latest);
+  for (let candidate = earliest; candidate <= cappedVersion; candidate += 1) {
     capabilities.add(`${name}:${candidate}`);
   }
 };
@@ -117,7 +125,22 @@ export const buildCapabilities = (project: ProjectInfo): ReadonlySet<Capability>
   if (project.nextjsMajorVersion !== null && project.nextjsMajorVersion >= 16) {
     capabilities.add("nextjs:16");
   }
-  addMajorLadder(
+  const reactRouterVersion = project.reactRouterVersion ?? null;
+  if (reactRouterVersion !== null) {
+    capabilities.add("react-router");
+    if (project.hasReactRouterFramework === true) {
+      capabilities.add("react-router-framework");
+    }
+    const detectedVersion = parseReactMajorMinor(reactRouterVersion);
+    if (detectedVersion !== null) {
+      for (const threshold of REACT_ROUTER_CAPABILITY_THRESHOLDS) {
+        if (isMajorMinorAtLeast(detectedVersion, threshold)) {
+          capabilities.add(threshold.capability);
+        }
+      }
+    }
+  }
+  addVersionCapabilityLadder(
     capabilities,
     "react",
     project.reactMajorVersion,
@@ -190,7 +213,7 @@ export const buildCapabilities = (project: ProjectInfo): ReadonlySet<Capability>
     project.mobxMajorVersion >= EARLIEST_GATED_MOBX_MAJOR &&
     project.mobxMajorVersion <= LATEST_SUPPORTED_MOBX_MAJOR
   ) {
-    addMajorLadder(
+    addVersionCapabilityLadder(
       capabilities,
       "mobx",
       project.mobxMajorVersion,
@@ -218,7 +241,7 @@ export const buildCapabilities = (project: ProjectInfo): ReadonlySet<Capability>
     project.zustandMajorVersion >= EARLIEST_GATED_ZUSTAND_MAJOR &&
     project.zustandMajorVersion <= LATEST_SUPPORTED_ZUSTAND_MAJOR
   ) {
-    addMajorLadder(
+    addVersionCapabilityLadder(
       capabilities,
       "zustand",
       project.zustandMajorVersion,
@@ -243,7 +266,7 @@ export const buildCapabilities = (project: ProjectInfo): ReadonlySet<Capability>
   }
   if (project.hasI18nLibrary) capabilities.add("i18n");
   if (project.valtioVersion !== null) capabilities.add("valtio");
-  addMajorLadder(
+  addVersionCapabilityLadder(
     capabilities,
     "valtio",
     project.valtioMajorVersion,
@@ -252,7 +275,7 @@ export const buildCapabilities = (project: ProjectInfo): ReadonlySet<Capability>
   );
   if (project.hasRemotion) {
     capabilities.add("remotion");
-    addMajorLadder(
+    addVersionCapabilityLadder(
       capabilities,
       "remotion",
       project.remotionMajorVersion ?? null,
@@ -260,11 +283,29 @@ export const buildCapabilities = (project: ProjectInfo): ReadonlySet<Capability>
       LATEST_KNOWN_REMOTION_MAJOR,
     );
   }
+  if (project.hasThree || project.hasReactThreeFiber) capabilities.add("three");
+  addVersionCapabilityLadder(
+    capabilities,
+    "three",
+    project.threeRelease ?? null,
+    EARLIEST_GATED_THREE_RELEASE,
+    LATEST_KNOWN_THREE_RELEASE,
+  );
+  if (project.hasReactThreeFiber) {
+    capabilities.add("r3f");
+    addVersionCapabilityLadder(
+      capabilities,
+      "r3f",
+      project.reactThreeFiberMajorVersion ?? null,
+      EARLIEST_GATED_R3F_MAJOR,
+      LATEST_KNOWN_R3F_MAJOR,
+    );
+  }
   if (project.hasTypeScript) capabilities.add("typescript");
   // Keyed off `preactVersion`, not `framework === "preact"`, so Preact-on-Vite
   // still gets the `preact` bucket.
   if (project.preactVersion !== null) capabilities.add("preact");
-  addMajorLadder(
+  addVersionCapabilityLadder(
     capabilities,
     "preact",
     project.preactMajorVersion,
@@ -288,7 +329,18 @@ const capabilitiesByProject = new WeakMap<ProjectInfo, ReadonlySet<Capability>>(
 export const getCapabilities = (project: ProjectInfo): ReadonlySet<Capability> => {
   const cached = capabilitiesByProject.get(project);
   if (cached !== undefined) return cached;
-  const capabilities = buildCapabilities(project);
+  const capabilities = new Set(buildCapabilities(project));
+  const packageJson = readPackageJson(path.join(project.rootDirectory, "package.json"));
+  const targetBlankOpenerProtection = detectTargetBlankOpenerProtection(
+    project.rootDirectory,
+    packageJson,
+  );
+  if (targetBlankOpenerProtection !== undefined) {
+    capabilities.add("target-blank-needs-explicit-protection");
+  }
+  if (targetBlankOpenerProtection === "noreferrer") {
+    capabilities.add("target-blank-needs-noreferrer");
+  }
   capabilitiesByProject.set(project, capabilities);
   return capabilities;
 };

@@ -38,6 +38,18 @@ export interface ProjectInfo {
   hasI18nLibrary?: boolean;
   tanstackQueryVersion?: string | null;
   styledComponentsVersion?: string | null;
+  /** Whether the project or one of its workspaces declares Three.js, Fiber, or Drei. */
+  hasThree?: boolean;
+  /** Lowest declared Three.js version across the project and its workspaces. */
+  threeVersion?: string | null;
+  /** Three.js release number parsed from threeVersion (`0.146.x` becomes 146). */
+  threeRelease?: number | null;
+  /** Whether the project or one of its workspaces declares React Three Fiber or Drei. */
+  hasReactThreeFiber?: boolean;
+  /** Declared version of @react-three/fiber or its legacy package name, when directly present. */
+  reactThreeFiberVersion?: string | null;
+  /** Parsed major from reactThreeFiberVersion, or null when absent or unparseable. */
+  reactThreeFiberMajorVersion?: number | null;
   /**
    * The declared `valtio` version spec, or `null` when no package in the
    * analyzed project declares Valtio. `useSnapshot` has kept the same
@@ -80,6 +92,10 @@ export interface ProjectInfo {
   hasReactNativeWorkspace: boolean;
   nextjsVersion: string | null;
   nextjsMajorVersion: number | null;
+  /** Declared React Router runtime version from `@react-router/dev`, `react-router-dom`, or `react-router`. */
+  reactRouterVersion?: string | null;
+  /** Whether the project declares `@react-router/dev` and therefore uses Framework mode. */
+  hasReactRouterFramework?: boolean;
   /**
    * The declared `expo` package version spec (e.g. `"~51.0.0"`), looked up
    * in the project or any of its workspace packages, or `null` when `expo`
@@ -147,6 +163,7 @@ export interface PackageJson {
   name?: string;
   version?: string;
   main?: string;
+  babel?: unknown;
   scripts?: Record<string, string>;
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;

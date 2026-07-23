@@ -22,6 +22,12 @@ const buildProject = (overrides: Partial<ProjectInfo> = {}): ProjectInfo => ({
   styledComponentsVersion: null,
   valtioVersion: null,
   valtioMajorVersion: null,
+  hasThree: false,
+  threeVersion: null,
+  threeRelease: null,
+  hasReactThreeFiber: false,
+  reactThreeFiberVersion: null,
+  reactThreeFiberMajorVersion: null,
   nextjsVersion: null,
   nextjsMajorVersion: null,
   hasReactNativeWorkspace: true,
@@ -37,6 +43,11 @@ const buildProject = (overrides: Partial<ProjectInfo> = {}): ProjectInfo => ({
 });
 
 const viteWebProject = buildProject({ framework: "vite", hasReactNativeWorkspace: false });
+const tailwindViteWebProject = buildProject({
+  framework: "vite",
+  hasReactNativeWorkspace: false,
+  tailwindVersion: "^4.0.0",
+});
 
 describe("createOxlintConfig settings", () => {
   it("enables the Valtio rule only when the project declares Valtio", () => {
@@ -110,6 +121,88 @@ describe("createOxlintConfig settings", () => {
     expect(futureZustand.rules).not.toHaveProperty(ruleKey);
     expect(zustand1.rules[ruleKey]).toBe("warn");
     expect(zustand5.rules[ruleKey]).toBe("warn");
+  });
+
+  it("registers Three lifecycle rules without enabling Fiber rules", () => {
+    const plainThree = createOxlintConfig({
+      pluginPath: "/tmp/plugin.js",
+      project: buildProject({
+        framework: "vite",
+        hasReactNativeWorkspace: false,
+        hasThree: true,
+        threeVersion: "^0.180.0",
+        threeRelease: 180,
+      }),
+    });
+
+    expect(plainThree.rules).toHaveProperty("react-doctor/three-require-renderer-cleanup");
+    expect(plainThree.rules).toHaveProperty("react-doctor/three-require-render-target-cleanup");
+    expect(plainThree.rules).toHaveProperty("react-doctor/three-require-postprocessing-cleanup");
+    expect(plainThree.rules).not.toHaveProperty("react-doctor/r3f-cap-device-pixel-ratio");
+  });
+
+  it("forwards Three.js release capabilities for runtime postprocessing gates", () => {
+    const release145 = createOxlintConfig({
+      pluginPath: "/tmp/plugin.js",
+      project: buildProject({
+        framework: "vite",
+        hasReactNativeWorkspace: false,
+        hasThree: true,
+        threeVersion: "^0.145.0",
+        threeRelease: 145,
+      }),
+    });
+    const release146 = createOxlintConfig({
+      pluginPath: "/tmp/plugin.js",
+      project: buildProject({
+        framework: "vite",
+        hasReactNativeWorkspace: false,
+        hasThree: true,
+        threeVersion: "^0.146.0",
+        threeRelease: 146,
+      }),
+    });
+
+    expect(release145.rules).toHaveProperty("react-doctor/three-require-postprocessing-cleanup");
+    expect(release146.rules).toHaveProperty("react-doctor/three-require-postprocessing-cleanup");
+    expect(release145.settings["react-doctor"].capabilities).toContain("three:145");
+    expect(release145.settings["react-doctor"].capabilities).not.toContain("three:146");
+    expect(release146.settings["react-doctor"].capabilities).toContain("three:146");
+  });
+
+  it("registers R3F rules only for compatible declared library versions", () => {
+    const withoutR3f = createOxlintConfig({
+      pluginPath: "/tmp/plugin.js",
+      project: viteWebProject,
+    });
+    const withR3fNine = createOxlintConfig({
+      pluginPath: "/tmp/plugin.js",
+      project: buildProject({
+        framework: "vite",
+        hasReactNativeWorkspace: false,
+        hasReactThreeFiber: true,
+        reactThreeFiberVersion: "^9.6.1",
+        reactThreeFiberMajorVersion: 9,
+      }),
+    });
+    const withR3fTen = createOxlintConfig({
+      pluginPath: "/tmp/plugin.js",
+      project: buildProject({
+        framework: "vite",
+        hasReactNativeWorkspace: false,
+        hasReactThreeFiber: true,
+        reactThreeFiberVersion: "^10.0.0-alpha.2",
+        reactThreeFiberMajorVersion: 10,
+      }),
+    });
+
+    expect(Object.keys(withoutR3f.rules).some((ruleId) => ruleId.includes("/r3f-"))).toBe(false);
+    expect(withR3fNine.rules).toHaveProperty("react-doctor/r3f-no-advancing-clock-in-use-frame");
+    expect(withR3fNine.rules).not.toHaveProperty(
+      "react-doctor/r3f-webgpu-canvas-prop-compatibility",
+    );
+    expect(withR3fTen.rules).not.toHaveProperty("react-doctor/r3f-no-advancing-clock-in-use-frame");
+    expect(withR3fTen.rules).toHaveProperty("react-doctor/r3f-webgpu-canvas-prop-compatibility");
   });
 
   it("forwards the detected @shopify/flash-list major version", () => {
@@ -225,7 +318,7 @@ describe("createOxlintConfig settings", () => {
   it("runs only an explicitly included tag and activates that tag's opt-in rules", () => {
     const config = createOxlintConfig({
       pluginPath: "/tmp/plugin.js",
-      project: viteWebProject,
+      project: tailwindViteWebProject,
       includedTags: new Set(["design"]),
       includeTagDefaults: true,
     });
@@ -238,7 +331,7 @@ describe("createOxlintConfig settings", () => {
   it("preserves an explicit off override inside an included tag", () => {
     const config = createOxlintConfig({
       pluginPath: "/tmp/plugin.js",
-      project: viteWebProject,
+      project: tailwindViteWebProject,
       includedTags: new Set(["design"]),
       includeTagDefaults: true,
       severityControls: {

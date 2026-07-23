@@ -48,10 +48,39 @@ const BUCKETS_REQUIRING_REACT = new Set([
   "performance",
   "react-builtins",
   "react-ui",
+  "r3f",
   "state-and-effects",
   "valtio",
   "view-transitions",
 ]);
+
+const BUCKET_TO_REQUIRED_CAPABILITIES = {
+  r3f: ["react", "r3f"],
+};
+
+const THREE_RULE_IDS_REQUIRING_REACT = new Set([
+  "three-no-object-construction-in-render",
+  "three-no-state-in-animation-loop",
+  "three-no-state-in-pointer-move",
+  "three-require-animation-mixer-cleanup",
+  "three-require-controls-cleanup",
+  "three-require-owned-geometry-cleanup",
+  "three-require-owned-material-cleanup",
+  "three-require-owned-texture-cleanup",
+  "three-require-postprocessing-cleanup",
+  "three-require-render-target-cleanup",
+  "three-require-renderer-cleanup",
+]);
+
+const getRequiredCapabilities = (bucketName, ruleId) => {
+  if (bucketName === "r3f" && ruleId.startsWith("three-")) {
+    return THREE_RULE_IDS_REQUIRING_REACT.has(ruleId) ? ["react", "three"] : ["three"];
+  }
+  return (
+    BUCKET_TO_REQUIRED_CAPABILITIES[bucketName] ??
+    (BUCKETS_REQUIRING_REACT.has(bucketName) ? ["react"] : [])
+  );
+};
 
 // Bucket directory → behavioral tags merged onto every rule in that
 // bucket at registry-build time. Lets cross-cutting controls
@@ -64,8 +93,15 @@ const BUCKET_TO_AUTO_TAGS = {
   design: ["design"],
   ink: ["ink"],
   "react-native": ["react-native"],
+  r3f: ["r3f", "webgl"],
+  webgl: ["webgl"],
   "security-scan": ["security-scan"],
   server: ["server-action"],
+};
+
+const getAutoTags = (bucketName, ruleId) => {
+  if (bucketName === "r3f" && ruleId.startsWith("three-")) return ["three", "webgl"];
+  return BUCKET_TO_AUTO_TAGS[bucketName] ?? [];
 };
 
 // Buckets containing rules ported from external upstream linters
@@ -185,6 +221,7 @@ const BUCKET_TO_DEFAULT_CATEGORY = {
   preact: "Preact",
   "react-builtins": "Correctness",
   "react-native": "React Native",
+  r3f: "Performance",
   "react-ui": "Accessibility",
   security: "Security",
   "security-scan": "Security",
@@ -194,6 +231,7 @@ const BUCKET_TO_DEFAULT_CATEGORY = {
   "tanstack-start": "TanStack Start",
   valtio: "State & Effects",
   "view-transitions": "Correctness",
+  webgl: "Performance",
   zod: "Architecture",
 };
 
@@ -221,14 +259,16 @@ for (const bucket of fs.readdirSync(PLUGIN_RULES_ROOT, { withFileTypes: true }))
     // (a `scan` field instead of `create`) also register through plain
     // `defineRule`.
     const exportMatch = source.match(
-      /export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:defineRule|defineRetiredRule)\b[^(]*\(\s*\{/,
+      /export\s+const\s+([A-Za-z_$][\w$]*)\s*=\s*(?:wrapReactRouterRule\s*\(\s*)?(?:defineRule|defineRetiredRule)\b[^(]*\(\s*\{/,
     );
     if (!exportMatch) {
       // Fail loudly if a file clearly declares a rule export but the scanner
       // can't parse it — a silent `continue` would ship a registry missing
       // the rule with no error.
       if (
-        /export\s+const\s+[A-Za-z_$][\w$]*\s*=\s*(?:defineRule|defineRetiredRule)\b/.test(source)
+        /export\s+const\s+[A-Za-z_$][\w$]*\s*=\s*(?:wrapReactRouterRule\s*\(\s*)?(?:defineRule|defineRetiredRule)\b/.test(
+          source,
+        )
       ) {
         console.error(
           `Rule export present but unparseable by the registry scanner: ${path.relative(PACKAGE_ROOT, filePath)}`,
@@ -265,8 +305,8 @@ for (const bucket of fs.readdirSync(PLUGIN_RULES_ROOT, { withFileTypes: true }))
         .relative(path.dirname(REGISTRY_OUTPUT), filePath)
         .replaceAll(path.sep, "/")
         .replace(/\.ts$/, ".js");
-    const autoTags = BUCKET_TO_AUTO_TAGS[bucket.name] ?? [];
-    const requiresReact = BUCKETS_REQUIRING_REACT.has(bucket.name);
+    const autoTags = getAutoTags(bucket.name, ruleId);
+    const requiredCapabilities = getRequiredCapabilities(bucket.name, ruleId);
     const originallyExternal =
       !RULES_NOT_PORTED_FROM_EXTERNAL.has(ruleId) &&
       (BUCKETS_PORTED_FROM_EXTERNAL.has(bucket.name) ||
@@ -279,7 +319,7 @@ for (const bucket of fs.readdirSync(PLUGIN_RULES_ROOT, { withFileTypes: true }))
       category,
       severity,
       autoTags,
-      requiresReact,
+      requiredCapabilities,
       originallyExternal,
     });
   }
@@ -316,28 +356,31 @@ const formatAutoTagsLine = (entry) => {
   return `      tags: [...new Set([${autoTagLiteral}, ...(${entry.identifier}.tags ?? [])])],\n`;
 };
 
-// Merge the bucket-synthesized `"react"` capability with any
-// rule-authored `requires` (deduped), mirroring the auto-tag merge. A
+// Merge bucket-synthesized capabilities with any rule-authored `requires`
+// (deduped), mirroring the auto-tag merge. A
 // rule that already pins a React version (e.g. `requires: ["react:19"]`)
 // keeps that; the redundant `"react"` is harmless since the version gate
 // already implies React is present.
 const formatRequiresLine = (entry) => {
-  if (!entry.requiresReact) return "";
+  if (entry.requiredCapabilities.length === 0) return "";
+  const requiredCapabilities = entry.requiredCapabilities
+    .map((capability) => `"${capability}"`)
+    .join(", ");
   // Match prettier's 100-char print width so `gen:check` and `format:check`
   // agree: emit the single-line form when it fits, else the wrapped form
   // prettier would otherwise rewrite it into (a few rules have long enough
   // identifiers — e.g. `noNoninteractiveElementToInteractiveRole` — to spill
   // past the limit).
-  const singleLine = `      requires: [...new Set<Capability>(["react", ...(${entry.identifier}.requires ?? [])])],`;
+  const singleLine = `      requires: [...new Set<Capability>([${requiredCapabilities}, ...(${entry.identifier}.requires ?? [])])],`;
   if (singleLine.length <= 100) return `${singleLine}\n`;
-  const wrappedSetLine = `        ...new Set<Capability>(["react", ...(${entry.identifier}.requires ?? [])]),`;
+  const wrappedSetLine = `        ...new Set<Capability>([${requiredCapabilities}, ...(${entry.identifier}.requires ?? [])]),`;
   if (wrappedSetLine.length <= 100) {
     return `      requires: [\n${wrappedSetLine}\n      ],\n`;
   }
   return (
     `      requires: [\n` +
     `        ...new Set<Capability>([\n` +
-    `          "react",\n` +
+    entry.requiredCapabilities.map((capability) => `          "${capability}",\n`).join("") +
     `          ...(${entry.identifier}.requires ?? []),\n` +
     `        ]),\n` +
     `      ],\n`

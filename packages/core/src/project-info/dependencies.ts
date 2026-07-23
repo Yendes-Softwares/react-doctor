@@ -5,11 +5,12 @@ import { detectFramework } from "./detectors.js";
 import { isFile, isPlainObject } from "./fs-utils.js";
 import { findMonorepoRoot } from "./monorepo-root.js";
 import { readPackageJson } from "./package-json.js";
-import { isConcreteDependencyVersion } from "./version.js";
+import { isConcreteDependencyVersion, isTailwindPostcss7CompatAlias } from "./version.js";
 
-export const isCatalogReference = (version: string): boolean => version.startsWith("catalog:");
+export const isCatalogReference = (version: unknown): version is string =>
+  typeof version === "string" && version.startsWith("catalog:");
 
-export const extractCatalogName = (version: string): string | null => {
+export const extractCatalogName = (version: unknown): string | null => {
   if (!isCatalogReference(version)) return null;
   const name = version.slice("catalog:".length).trim();
   return name.length > 0 ? name : null;
@@ -228,6 +229,12 @@ export const TAILWIND_ZOD_SECTIONS = [
   "devDependencies",
   "peerDependencies",
 ] as const;
+const DEPENDENCY_SPEC_SECTIONS = [
+  "dependencies",
+  "devDependencies",
+  "peerDependencies",
+  "optionalDependencies",
+] as const;
 
 export const EMPTY_DEPENDENCY_INFO: DependencyInfo = {
   reactVersion: null,
@@ -240,12 +247,15 @@ const pickConcreteVersion = (
   packageJson: PackageJson,
   packageName: string,
   sections: ReadonlyArray<"dependencies" | "peerDependencies" | "devDependencies">,
+  isAcceptedNonConcreteVersion?: (version: string) => boolean,
 ): string | null => {
   for (const section of sections) {
     const version = packageJson[section]?.[packageName];
-    if (version === undefined) continue;
+    if (typeof version !== "string") continue;
     if (isCatalogReference(version)) return null;
-    if (isConcreteDependencyVersion(version)) return version;
+    if (isConcreteDependencyVersion(version) || Boolean(isAcceptedNonConcreteVersion?.(version))) {
+      return version;
+    }
   }
   return null;
 };
@@ -261,11 +271,12 @@ export const extractDependencyInfo = (packageJson: PackageJson): DependencyInfo 
     "peerDependencies",
     "devDependencies",
   ]);
-  const tailwindVersion = pickConcreteVersion(packageJson, "tailwindcss", [
-    "dependencies",
-    "devDependencies",
-    "peerDependencies",
-  ]);
+  const tailwindVersion = pickConcreteVersion(
+    packageJson,
+    "tailwindcss",
+    ["dependencies", "devDependencies", "peerDependencies"],
+    isTailwindPostcss7CompatAlias,
+  );
   const zodVersion = pickConcreteVersion(packageJson, "zod", [
     "dependencies",
     "devDependencies",
@@ -285,12 +296,11 @@ export const extractDependencyInfo = (packageJson: PackageJson): DependencyInfo 
 // present. The `typeof` guard keeps a malformed non-string entry (e.g.
 // `"expo": 54`) from reaching downstream `.trim()` parsing and aborting the scan.
 export const getDependencySpec = (packageJson: PackageJson, packageName: string): string | null => {
-  const spec =
-    packageJson.dependencies?.[packageName] ??
-    packageJson.devDependencies?.[packageName] ??
-    packageJson.peerDependencies?.[packageName] ??
-    packageJson.optionalDependencies?.[packageName];
-  return typeof spec === "string" ? spec : null;
+  for (const section of DEPENDENCY_SPEC_SECTIONS) {
+    const spec = packageJson[section]?.[packageName];
+    if (typeof spec === "string") return spec;
+  }
+  return null;
 };
 
 interface DependencyDeclaration {
@@ -302,7 +312,9 @@ interface DependencyDeclaration {
 interface GetDependencyDeclarationOptions {
   packageJson: PackageJson;
   packageName: string;
-  sections: ReadonlyArray<"dependencies" | "peerDependencies" | "devDependencies">;
+  sections: ReadonlyArray<
+    "dependencies" | "peerDependencies" | "devDependencies" | "optionalDependencies"
+  >;
 }
 
 export const getDependencyDeclaration = ({
@@ -312,7 +324,7 @@ export const getDependencyDeclaration = ({
 }: GetDependencyDeclarationOptions): DependencyDeclaration => {
   for (const section of sections) {
     const version = packageJson[section]?.[packageName];
-    if (version === undefined) continue;
+    if (typeof version !== "string") continue;
 
     return {
       catalogReference: extractCatalogName(version) ?? null,
@@ -354,6 +366,8 @@ interface ResolveCatalogBackedDependencyVersionOptions {
   rootDirectory: string;
   rootPackageJson: PackageJson;
   packageName: string;
+  sourceDirectory?: string;
+  sourcePackageJson?: PackageJson;
   version: string | null;
 }
 
@@ -361,18 +375,30 @@ export const resolveCatalogBackedDependencyVersion = ({
   rootDirectory,
   rootPackageJson,
   packageName,
+  sourceDirectory = rootDirectory,
+  sourcePackageJson = rootPackageJson,
   version,
 }: ResolveCatalogBackedDependencyVersionOptions): string | null => {
   if (version === null || !isCatalogReference(version)) return version;
 
   const catalogName = extractCatalogName(version);
-  const resolvedLocalVersion = resolveCatalogVersion(
-    rootPackageJson,
+  const resolvedSourceVersion = resolveCatalogVersion(
+    sourcePackageJson,
     packageName,
-    rootDirectory,
+    sourceDirectory,
     catalogName,
   );
-  if (resolvedLocalVersion) return resolvedLocalVersion;
+  if (resolvedSourceVersion) return resolvedSourceVersion;
+
+  if (sourceDirectory !== rootDirectory || sourcePackageJson !== rootPackageJson) {
+    const resolvedRootVersion = resolveCatalogVersion(
+      rootPackageJson,
+      packageName,
+      rootDirectory,
+      catalogName,
+    );
+    if (resolvedRootVersion) return resolvedRootVersion;
+  }
 
   const monorepoRoot = findMonorepoRoot(rootDirectory);
   if (!monorepoRoot) return version;

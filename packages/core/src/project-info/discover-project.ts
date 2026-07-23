@@ -35,8 +35,10 @@ import {
   getDependencyMajorWithinSupportedRange,
   getLowestDependencyMajor,
   parseReactMajor,
+  parseThreeRelease,
   resolveEffectiveReactMajor,
 } from "./version.js";
+import { clearTargetBlankOpenerProtectionCache } from "./detect-target-blank-opener-protection.js";
 
 export { discoverReactSubprojects } from "./discover-react-subprojects.js";
 export { formatFrameworkName } from "./detectors.js";
@@ -49,6 +51,7 @@ const cachedProjectInfos = new Map<string, ProjectInfo>();
 // tsconfig.json / monorepo manifests change between diagnose() calls.
 export const clearProjectCache = (): void => {
   cachedProjectInfos.clear();
+  clearTargetBlankOpenerProtectionCache();
 };
 
 /**
@@ -120,12 +123,20 @@ const discoverProjectWithoutPackageJson = (directory: string): ProjectInfo => {
     hasI18nLibrary: false,
     tanstackQueryVersion: null,
     styledComponentsVersion: null,
+    hasThree: false,
+    threeVersion: null,
+    threeRelease: null,
+    hasReactThreeFiber: false,
+    reactThreeFiberVersion: null,
+    reactThreeFiberMajorVersion: null,
     hasSsrDependency: false,
     preactVersion: null,
     preactMajorVersion: null,
     hasReactNativeWorkspace: false,
     nextjsVersion: null,
     nextjsMajorVersion: null,
+    reactRouterVersion: null,
+    hasReactRouterFramework: false,
     expoVersion: null,
     shopifyFlashListVersion: null,
     shopifyFlashListMajorVersion: null,
@@ -303,10 +314,33 @@ export const discoverProject = (directory: string): ProjectInfo => {
     packageName: "mobx",
     version: workspaceFacts.mobx.version,
   });
+  const reactRouterVersion =
+    workspaceFacts.reactRouter.packageName === null
+      ? null
+      : resolveCatalogBackedDependencyVersion({
+          rootDirectory: directory,
+          rootPackageJson: packageJson,
+          packageName: workspaceFacts.reactRouter.packageName,
+          version: workspaceFacts.reactRouter.version,
+        });
   const preactVersion = getPreactVersion(packageJson);
   const remotionVersion = workspaceFacts.remotionVersion;
   const tanstackQueryVersion =
     getTanStackQueryVersion(packageJson) ?? workspaceFacts.tanstackQueryVersion;
+  const reactThreeFiberVersion = workspaceFacts.reactThreeFiber.packageName
+    ? resolveCatalogBackedDependencyVersion({
+        rootDirectory: directory,
+        rootPackageJson: packageJson,
+        packageName: workspaceFacts.reactThreeFiber.packageName,
+        version: workspaceFacts.reactThreeFiber.version,
+      })
+    : null;
+  const threeVersion = resolveCatalogBackedDependencyVersion({
+    rootDirectory: directory,
+    rootPackageJson: packageJson,
+    packageName: "three",
+    version: workspaceFacts.threeVersion,
+  });
   const isPreES2023Target = hasTypeScript && detectPreES2023Target(directory);
 
   const projectInfo: ProjectInfo = {
@@ -344,12 +378,21 @@ export const discoverProject = (directory: string): ProjectInfo => {
     remotionVersion,
     remotionMajorVersion:
       remotionVersion === null ? null : getLowestDependencyMajor(remotionVersion),
+    hasThree: workspaceFacts.hasThree,
+    threeVersion,
+    threeRelease: parseThreeRelease(threeVersion),
+    hasReactThreeFiber: workspaceFacts.hasReactThreeFiber,
+    reactThreeFiberVersion,
+    reactThreeFiberMajorVersion:
+      reactThreeFiberVersion === null ? null : getLowestDependencyMajor(reactThreeFiberVersion),
     hasSsrDependency: workspaceFacts.hasSsrDependency,
     preactVersion,
     preactMajorVersion: parseReactMajor(preactVersion),
     hasReactNativeWorkspace,
     nextjsVersion,
     nextjsMajorVersion: nextjsVersion === null ? null : getLowestDependencyMajor(nextjsVersion),
+    reactRouterVersion,
+    hasReactRouterFramework: workspaceFacts.hasReactRouterFramework,
     expoVersion,
     shopifyFlashListVersion,
     shopifyFlashListMajorVersion:

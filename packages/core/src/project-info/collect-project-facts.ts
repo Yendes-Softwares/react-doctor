@@ -27,6 +27,8 @@ import {
   getLowestDependencyMajor,
   parseDependencyMajorMinor,
   parseReactMajor,
+  parseReactMajorMinor,
+  parseThreeRelease,
 } from "./version.js";
 import { getTanStackQueryVersion } from "./get-tanstack-query-version.js";
 import { getStyledComponentsVersion } from "./get-styled-components-version.js";
@@ -37,6 +39,29 @@ const MOBX_REACT_PACKAGE_NAME = "mobx-react";
 const MOBX_REACT_LITE_PACKAGE_NAME = "mobx-react-lite";
 const MOBX_STATE_TREE_PACKAGE_NAME = "mobx-state-tree";
 const MOBX_REACT_OBSERVER_PACKAGE_NAME = "mobx-react-observer";
+const REACT_THREE_FIBER_DEPENDENCY_NAMES = ["@react-three/fiber", "react-three-fiber"] as const;
+const REACT_THREE_FIBER_SECTIONS = [
+  "dependencies",
+  "peerDependencies",
+  "optionalDependencies",
+  "devDependencies",
+] as const;
+const THREE_DEPENDENCY_SECTIONS = [
+  "dependencies",
+  "peerDependencies",
+  "optionalDependencies",
+  "devDependencies",
+] as const;
+const REACT_THREE_FIBER_ECOSYSTEM_DEPENDENCY_NAMES = [
+  ...REACT_THREE_FIBER_DEPENDENCY_NAMES,
+  "@react-three/drei",
+] as const;
+const THREE_DEPENDENCY_NAMES = [...REACT_THREE_FIBER_ECOSYSTEM_DEPENDENCY_NAMES, "three"] as const;
+const REACT_ROUTER_DEPENDENCY_NAMES: readonly string[] = [
+  "@react-router/dev",
+  "react-router-dom",
+  "react-router",
+];
 
 // A dependency's declared spec plus the directory whose manifest supplied
 // it — the scan root, or the workspace package that declares the package.
@@ -46,6 +71,14 @@ const MOBX_REACT_OBSERVER_PACKAGE_NAME = "mobx-react-observer";
 interface DependencyFact {
   version: string | null;
   sourceDirectory: string | null;
+}
+
+interface ReactThreeFiberDependencyFact extends DependencyFact {
+  packageName: string | null;
+}
+
+interface ReactRouterDependencyFact extends DependencyFact {
+  packageName: string | null;
 }
 
 export interface WorkspaceFacts {
@@ -62,6 +95,7 @@ export interface WorkspaceFacts {
   // package, in any of the four dependency sections.
   expo: DependencyFact;
   next: DependencyFact;
+  reactRouter: ReactRouterDependencyFact;
   shopifyFlashList: DependencyFact;
   valtioVersion: string | null;
   mobx: DependencyFact;
@@ -84,6 +118,11 @@ export interface WorkspaceFacts {
   hasRemotionDependency: boolean;
   hasUnknownRemotionVersion: boolean;
   remotionVersion: string | null;
+  hasThree: boolean;
+  threeVersion: string | null;
+  hasReactThreeFiber: boolean;
+  reactThreeFiber: ReactThreeFiberDependencyFact;
+  hasReactRouterFramework: boolean;
   reanimatedVersion: string | null;
 }
 
@@ -132,10 +171,13 @@ const resolveWorkspaceDependencyVersion = ({
   );
 };
 
-// Lowest-major-wins: a monorepo mixing React 18 and 19 workspaces must be
-// linted against the older runtime's constraints. Unparseable specs lose
-// to parseable ones and never displace them.
-const shouldReplaceReactVersion = (currentVersion: string | null, nextVersion: string): boolean => {
+// Lowest-major-wins: mixed-version monorepos must be linted against the
+// older runtime's constraints. Unparseable specs lose to parseable ones
+// and never displace them.
+const shouldReplaceWithLowerMajor = (
+  currentVersion: string | null,
+  nextVersion: string,
+): boolean => {
   if (!currentVersion) return true;
 
   const currentMajor = parseReactMajor(currentVersion);
@@ -238,6 +280,19 @@ const collectBindingVersion = (
   facts.hasMobxReactLite = true;
 };
 
+const shouldReplaceReactRouterVersion = (
+  currentVersion: string | null,
+  nextVersion: string,
+): boolean => {
+  if (currentVersion === null) return true;
+  const current = parseReactMajorMinor(currentVersion);
+  const next = parseReactMajorMinor(nextVersion);
+  if (current === null) return next !== null;
+  if (next === null) return false;
+  if (next.major !== current.major) return next.major < current.major;
+  return next.minor < current.minor;
+};
+
 const evaluateManifestFacts = (
   facts: WorkspaceFacts,
   packageJson: PackageJson,
@@ -253,6 +308,25 @@ const evaluateManifestFacts = (
     const spec = getDependencySpec(packageJson, "next");
     if (spec !== null) facts.next = { version: spec, sourceDirectory: directory };
   }
+  for (const packageName of REACT_ROUTER_DEPENDENCY_NAMES) {
+    const spec = getDependencySpec(packageJson, packageName);
+    const resolvedSpec = resolveCatalogBackedDependencyVersion({
+      rootDirectory,
+      rootPackageJson,
+      sourceDirectory: directory,
+      sourcePackageJson: packageJson,
+      packageName,
+      version: spec,
+    });
+    if (
+      resolvedSpec === null ||
+      !shouldReplaceReactRouterVersion(facts.reactRouter.version, resolvedSpec)
+    )
+      continue;
+    facts.reactRouter = { version: resolvedSpec, sourceDirectory: directory, packageName };
+  }
+  facts.hasReactRouterFramework =
+    facts.hasReactRouterFramework || getDependencySpec(packageJson, "@react-router/dev") !== null;
   if (facts.shopifyFlashList.version === null) {
     const spec = getDependencySpec(packageJson, SHOPIFY_FLASH_LIST_PACKAGE_NAME);
     if (spec !== null) facts.shopifyFlashList = { version: spec, sourceDirectory: directory };
@@ -322,6 +396,48 @@ const evaluateManifestFacts = (
     facts.styledComponentsVersion = styledComponentsVersion;
   }
   facts.hasI18nLibrary = facts.hasI18nLibrary || hasI18nDependency(packageJson);
+  for (const packageName of REACT_THREE_FIBER_DEPENDENCY_NAMES) {
+    const dependencyDeclaration = getDependencyDeclaration({
+      packageName,
+      packageJson,
+      sections: REACT_THREE_FIBER_SECTIONS,
+    });
+    const version = resolveCatalogBackedDependencyVersion({
+      rootDirectory,
+      rootPackageJson,
+      sourceDirectory: directory,
+      sourcePackageJson: packageJson,
+      packageName,
+      version: dependencyDeclaration.version,
+    });
+    if (version === null) continue;
+    if (shouldReplaceWithLowerMajor(facts.reactThreeFiber.version, version)) {
+      facts.reactThreeFiber = { packageName, version, sourceDirectory: directory };
+    }
+  }
+  const threeDependencyDeclaration = getDependencyDeclaration({
+    packageName: "three",
+    packageJson,
+    sections: THREE_DEPENDENCY_SECTIONS,
+  });
+  const threeVersion = resolveCatalogBackedDependencyVersion({
+    rootDirectory,
+    rootPackageJson,
+    sourceDirectory: directory,
+    sourcePackageJson: packageJson,
+    packageName: "three",
+    version: threeDependencyDeclaration.version,
+  });
+  if (threeVersion !== null) {
+    const currentRelease = parseThreeRelease(facts.threeVersion);
+    const nextRelease = parseThreeRelease(threeVersion);
+    if (
+      facts.threeVersion === null ||
+      (nextRelease !== null && (currentRelease === null || nextRelease < currentRelease))
+    ) {
+      facts.threeVersion = threeVersion;
+    }
+  }
   facts.hasReactNativeAwarePackage =
     facts.hasReactNativeAwarePackage || isPackageJsonReactNativeAware(packageJson);
   facts.hasReanimatedAwarePackage =
@@ -352,6 +468,16 @@ const evaluateManifestFacts = (
       }
     }
   }
+  facts.hasThree =
+    facts.hasThree ||
+    THREE_DEPENDENCY_NAMES.some(
+      (dependencyName) => getDependencySpec(packageJson, dependencyName) !== null,
+    );
+  facts.hasReactThreeFiber =
+    facts.hasReactThreeFiber ||
+    REACT_THREE_FIBER_ECOSYSTEM_DEPENDENCY_NAMES.some(
+      (dependencyName) => getDependencySpec(packageJson, dependencyName) !== null,
+    );
 };
 
 interface CollectWorkspaceFactsOptions {
@@ -380,6 +506,7 @@ export const collectWorkspaceFacts = (
     framework: "unknown",
     expo: { version: null, sourceDirectory: null },
     next: { version: null, sourceDirectory: null },
+    reactRouter: { version: null, sourceDirectory: null, packageName: null },
     shopifyFlashList: { version: null, sourceDirectory: null },
     valtioVersion: null,
     mobx: { version: null, sourceDirectory: null },
@@ -399,6 +526,11 @@ export const collectWorkspaceFacts = (
     hasRemotionDependency: false,
     hasUnknownRemotionVersion: false,
     remotionVersion: null,
+    hasThree: false,
+    threeVersion: null,
+    hasReactThreeFiber: false,
+    reactThreeFiber: { packageName: null, version: null, sourceDirectory: null },
+    hasReactRouterFramework: false,
     reanimatedVersion: null,
   };
 
@@ -414,7 +546,7 @@ export const collectWorkspaceFacts = (
   for (const pattern of getWorkspacePatterns(rootDirectory, rootPackageJson)) {
     // Sorted so every fact resolves to the same workspace on repeated
     // analysis of the same tree — raw readdir order isn't stable.
-    const directories = [...resolveWorkspaceDirectories(rootDirectory, pattern)].sort();
+    const directories = resolveWorkspaceDirectories(rootDirectory, pattern).toSorted();
     for (const workspaceDirectory of directories) {
       if (visitedDirectories.has(workspaceDirectory)) continue;
       visitedDirectories.add(workspaceDirectory);
@@ -468,7 +600,7 @@ export const collectWorkspaceFacts = (
         workspacePackageJson,
       });
 
-      if (reactVersion && shouldReplaceReactVersion(facts.reactVersion, reactVersion)) {
+      if (reactVersion && shouldReplaceWithLowerMajor(facts.reactVersion, reactVersion)) {
         facts.reactVersion = reactVersion;
       }
       if (tailwindVersion && !facts.tailwindVersion) {

@@ -60,7 +60,23 @@ export type Capability =
   | "i18n"
   | "styled-components"
   | "styled-components:6"
+  | "three"
+  | "r3f"
+  | "react-router"
+  | "react-router-framework"
+  | "react-router:6.4"
+  | "react-router:6.7"
+  | "react-router:6.9"
+  | "react-router:6.19"
+  | "react-router:7"
+  | "react-router:7.8"
+  | "react-router:7.9"
+  | "react-router:7.10"
+  | "react-router:7.15"
+  | "react-router:8"
   | "pre-es2023"
+  | "target-blank-needs-explicit-protection"
+  | "target-blank-needs-noreferrer"
   // Major-version ladders (`react:17`…) plus minor-versioned gates like
   // `react:19.2` — both parse as numeric template members. Bounds live in
   // core's constants (`EARLIEST_GATED_*` / `LATEST_*`).
@@ -69,7 +85,9 @@ export type Capability =
   | `remotion:${number}`
   | `valtio:${number}`
   | `mobx:${number}`
-  | `zustand:${number}`;
+  | `zustand:${number}`
+  | `three:${number}`
+  | `r3f:${number}`;
 
 // The shape rules use to query the project's capability set — implemented
 // by core (over the memoized set) and by `hasCapability` (over the
