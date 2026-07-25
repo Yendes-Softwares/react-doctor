@@ -820,6 +820,10 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     code: 'const fn = new Function("return 1");',
     filePath: "src/run.ts",
   },
+  "no-path-prefix-containment": {
+    code: 'import path from "node:path";\nconst candidatePath = path.resolve(rootDirectory, requestedPath);\nconst isInside = candidatePath.startsWith(rootDirectory);',
+    filePath: "src/files.ts",
+  },
   "no-event-handler": {
     code: "function Form() {\n        const [submitted, setSubmitted] = useState(false);\n        const [data, setData] = useState(null);\n        useEffect(() => {\n          if (submitted) {\n            submitData(data);\n            window.scrollTo(0, 0);\n          }\n        }, [submitted]);\n        return <button onClick={() => setSubmitted(true)}>go</button>;\n      }",
   },
@@ -1550,8 +1554,17 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
   "rn-animation-reaction-as-derived": {
     code: 'import { useAnimatedReaction } from "react-native-reanimated";\nconst C = () => { useAnimatedReaction(() => x.value, (cur) => { sv.value = cur; }); };',
   },
+  "rn-bottom-sheet-no-ignored-scroll-prop": {
+    code: 'import { BottomSheetScrollView } from "@gorhom/bottom-sheet";\nconst Sheet = () => <BottomSheetScrollView scrollEventThrottle={16} />;',
+  },
+  "rn-bottom-sheet-no-state-in-on-animate": {
+    code: 'import BottomSheet from "@gorhom/bottom-sheet";\nimport { useState } from "react";\nconst Sheet = () => { const [, setOpen] = useState(false); return <BottomSheet onAnimate={() => setOpen(true)} />; };',
+  },
   "rn-bottom-sheet-prefer-native": {
     code: 'import ActionSheet from "react-native-actions-sheet";',
+  },
+  "rn-bottom-sheet-use-integrated-scrollable": {
+    code: 'import BottomSheet from "@gorhom/bottom-sheet";\nimport { ScrollView } from "react-native";\nconst Sheet = () => <BottomSheet><ScrollView /></BottomSheet>;',
   },
   "rn-detox-missing-await": {
     code: 'it("x", async () => { element(by.id("submit")).tap(); });',
@@ -1568,7 +1581,7 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     code: '\n      import { FlashList } from "@shopify/flash-list";\n      const Screen = ({ items }) => (\n        <FlashList data={items} renderItem={renderItem} />\n      );\n    ',
   },
   "rn-list-recyclable-without-types": {
-    code: 'import { FlashList } from "@shopify/flash-list";\nconst C = () => (<FlashList recycleItems data={items} renderItem={r} />);',
+    code: 'import { FlashList } from "@shopify/flash-list";\nconst C = () => (<FlashList recycleItems data={items} renderItem={({ item }) => item.kind === "header" ? <Header /> : <Row />} />);',
   },
   "rn-no-deep-imports": {
     code: 'import { Alert } from "react-native/Libraries/Alert/Alert";',
@@ -1621,6 +1634,9 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
   "rn-no-single-element-style-array": {
     code: "const C = () => <View style={[styles.box]} />;",
   },
+  "rn-platform-shaking-use-direct-import": {
+    code: 'import * as ReactNative from "react-native";\nconst platform = ReactNative.Platform.OS;',
+  },
   "rn-prefer-expo-image": {
     code: 'import { Image } from "react-native";\n',
     filePath: "/liveness-fixture-no-package/src/App.tsx",
@@ -1637,6 +1653,15 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
   },
   "rn-pressable-shared-value-mutation": {
     code: 'import { Pressable } from "react-native";\nimport { useSharedValue } from "react-native-reanimated";\nconst PressCard = () => {\n  const scale = useSharedValue(1);\n  return <Pressable onPressIn={() => { scale.value = 0.97; }} />;\n};',
+  },
+  "rn-reanimated-4-no-legacy-spring-thresholds": {
+    code: 'import { withSpring } from "react-native-reanimated";\nconst value = withSpring(1, { restSpeedThreshold: 0.1 });',
+  },
+  "rn-reanimated-4-no-removed-api": {
+    code: 'import { useWorkletCallback } from "react-native-reanimated";\nconst callback = useWorkletCallback(() => {});',
+  },
+  "rn-reanimated-4-use-worklets-scheduler": {
+    code: 'import { runOnUI } from "react-native-reanimated";\nrunOnUI(() => {})();',
   },
   "rn-scrollview-dynamic-padding": {
     code: "const C = ({ keyboardHeight }) => <ScrollView contentContainerStyle={{ paddingBottom: keyboardHeight }} />;",
@@ -1740,6 +1765,10 @@ export const livenessFixtures: Readonly<Record<string, LivenessFixture>> = {
     code: "createFileRoute('/x')({ loader: async () => { const a = await fetchA(); const b = await fetchB(); return { a, b }; } });",
   },
   "tanstack-start-missing-head-content": {
+    code: "export const Route = createRootRoute({\n  component: () => (\n    <html>\n      <head />\n      <body />\n    </html>\n  ),\n});",
+    filePath: "src/routes/__root.tsx",
+  },
+  "tanstack-start-missing-scripts": {
     code: "export const Route = createRootRoute({\n  component: () => (\n    <html>\n      <head />\n      <body />\n    </html>\n  ),\n});",
     filePath: "src/routes/__root.tsx",
   },
