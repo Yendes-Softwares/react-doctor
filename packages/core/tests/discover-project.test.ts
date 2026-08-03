@@ -22,6 +22,22 @@ interface ReactCompilerDetectionCase {
 }
 
 describe("discoverProject", () => {
+  it("uses a precomputed source-file count", () => {
+    const projectDirectory = path.join(tempDirectory, "precomputed-source-count");
+    fs.mkdirSync(projectDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDirectory, "package.json"),
+      JSON.stringify({ name: "precomputed-source-count", dependencies: { react: "^19.0.0" } }),
+    );
+
+    expect(discoverProject(projectDirectory, { sourceFileCount: 12_345 }).sourceFileCount).toBe(
+      12_345,
+    );
+    expect(discoverProject(projectDirectory, { sourceFileCount: 54_321 }).sourceFileCount).toBe(
+      54_321,
+    );
+  });
+
   it("detects React version from package.json", () => {
     const projectInfo = discoverProject(path.join(FIXTURES_DIRECTORY, "basic-react"));
     expect(projectInfo.reactVersion).toBe("^19.0.0");
@@ -2824,6 +2840,22 @@ describe("listWorkspacePackages", () => {
     expect(projectInfo.framework, "the framework package outranks its bundler").toBe("gatsby");
   });
 
+  it("classifies an Astro app that also lists Vite as `astro`, not `vite`", () => {
+    const projectDirectory = path.join(tempDirectory, "astro-with-vite");
+    fs.mkdirSync(projectDirectory, { recursive: true });
+    fs.writeFileSync(
+      path.join(projectDirectory, "package.json"),
+      JSON.stringify({
+        name: "astro-with-vite",
+        dependencies: { astro: "^7.1.5", react: "^19.2.0" },
+        devDependencies: { vite: "^7.0.0" },
+      }),
+    );
+
+    const projectInfo = discoverProject(projectDirectory);
+    expect(projectInfo.framework, "the framework package outranks its bundler").toBe("astro");
+  });
+
   it("flags a web-rooted monorepo with an Expo workspace as an Expo project", () => {
     const rootDirectory = path.join(tempDirectory, "expo-workspace-monorepo");
     const mobileDirectory = path.join(rootDirectory, "apps", "mobile");
@@ -4447,6 +4479,7 @@ describe("discoverProject — Zustand", () => {
 describe("formatFrameworkName", () => {
   it("formats known frameworks", () => {
     expect(formatFrameworkName("nextjs")).toBe("Next.js");
+    expect(formatFrameworkName("astro")).toBe("Astro");
     expect(formatFrameworkName("vite")).toBe("Vite");
     expect(formatFrameworkName("cra")).toBe("Create React App");
     expect(formatFrameworkName("remix")).toBe("Remix");

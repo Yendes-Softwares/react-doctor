@@ -1,4 +1,5 @@
 import {
+  EXTERNAL_SYNC_OBSERVER_CONSTRUCTORS,
   SOCKET_CONSTRUCTOR_NAMES_REQUIRING_CLEANUP,
   TIMER_CALLEE_NAMES_REQUIRING_CLEANUP,
   TIMER_CLEANUP_CALLEE_NAMES,
@@ -35,6 +36,8 @@ import { getFunctionBindingIdentifier } from "../../utils/get-function-binding-n
 import { getRangeStart } from "../../utils/get-range-start.js";
 import { getStaticPropertyKeyName } from "../../utils/get-static-property-key-name.js";
 import { isEventHandlerAttribute } from "../../utils/is-event-handler-attribute.js";
+import { isEarlyExitStatement } from "../../utils/is-early-exit-statement.js";
+import { isAstNode } from "../../utils/is-ast-node.js";
 import { isAstDescendant } from "../../utils/is-ast-descendant.js";
 import { getProvenDomEventTargetPrototypeOwnerNames } from "../../utils/is-proven-browser-api-receiver.js";
 import { isReactHookName } from "../../utils/is-react-hook-name.js";
@@ -61,7 +64,11 @@ import { isFunctionLike } from "../../utils/is-function-like.js";
 import { isNodeOfType } from "../../utils/is-node-of-type.js";
 import { isNodeReachableWithinFunction } from "../../utils/is-node-reachable-within-function.js";
 import { isProvenNonThrowingBuiltInCall } from "../../utils/is-proven-non-throwing-built-in-call.js";
-import { isSynchronousIteratorCallback } from "../../utils/is-synchronous-iterator-callback.js";
+import { resolveImportedApiReference } from "../../utils/resolve-imported-api-reference.js";
+import {
+  isSynchronousIteratorCallback,
+  isSynchronousIteratorCallbackCall,
+} from "../../utils/is-synchronous-iterator-callback.js";
 import { isWithinAssignmentTarget } from "../../utils/is-within-assignment-target.js";
 import type { EsTreeNodeOfType } from "../../utils/es-tree-node-of-type.js";
 import type { SymbolDescriptor } from "../../semantic/scope-analysis.js";
@@ -175,6 +182,7 @@ const resolveExpressionKey = (
   expression: EsTreeNode | null | undefined,
   context: RuleContext,
   visitedSymbolIds: Set<number> = new Set(),
+  parameterSubstitutions: ReadonlyMap<number, EsTreeNode> = new Map(),
 ): string | null => {
   if (!expression) return null;
   const unwrappedExpression = stripParenExpression(expression);
@@ -187,6 +195,15 @@ const resolveExpressionKey = (
     }
     if (visitedSymbolIds.has(symbol.id)) return `symbol:${symbol.id}`;
     visitedSymbolIds.add(symbol.id);
+    const substitutedExpression = parameterSubstitutions.get(symbol.id);
+    if (substitutedExpression) {
+      return resolveExpressionKey(
+        substitutedExpression,
+        context,
+        visitedSymbolIds,
+        parameterSubstitutions,
+      );
+    }
     const bindingProperty = symbol.bindingIdentifier.parent;
     const bindingPattern = bindingProperty?.parent;
     const variableDeclarator = bindingPattern?.parent;
@@ -199,7 +216,12 @@ const resolveExpressionKey = (
       isNodeOfType(variableDeclarator, "VariableDeclarator") &&
       variableDeclarator.id === bindingPattern
     ) {
-      const objectKey = resolveExpressionKey(variableDeclarator.init, context, visitedSymbolIds);
+      const objectKey = resolveExpressionKey(
+        variableDeclarator.init,
+        context,
+        visitedSymbolIds,
+        parameterSubstitutions,
+      );
       return objectKey ? `${objectKey}.${bindingPropertyName}` : `symbol:${symbol.id}`;
     }
     const initializer = symbol.initializer ? stripParenExpression(symbol.initializer) : null;
@@ -208,13 +230,21 @@ const resolveExpressionKey = (
       initializer &&
       (isNodeOfType(initializer, "Identifier") || isNodeOfType(initializer, "MemberExpression"))
     ) {
-      return resolveExpressionKey(initializer, context, visitedSymbolIds) ?? `symbol:${symbol.id}`;
+      return (
+        resolveExpressionKey(initializer, context, visitedSymbolIds, parameterSubstitutions) ??
+        `symbol:${symbol.id}`
+      );
     }
     return `symbol:${symbol.id}`;
   }
   if (isNodeOfType(unwrappedExpression, "MemberExpression") && !unwrappedExpression.computed) {
     if (!isNodeOfType(unwrappedExpression.property, "Identifier")) return null;
-    const objectKey = resolveExpressionKey(unwrappedExpression.object, context, visitedSymbolIds);
+    const objectKey = resolveExpressionKey(
+      unwrappedExpression.object,
+      context,
+      visitedSymbolIds,
+      parameterSubstitutions,
+    );
     return objectKey ? `${objectKey}.${unwrappedExpression.property.name}` : null;
   }
   if (isNodeOfType(unwrappedExpression, "ThisExpression")) return "this";
@@ -324,17 +354,61 @@ const resolveEventListenerCaptureValueIdentityKey = (
     : null;
 };
 
+const resolveReadOnlyEventListenerOptions = (
+  optionsNode: EsTreeNode,
+  context: RuleContext,
+): EsTreeNode | null => {
+  const unwrappedOptions = stripParenExpression(optionsNode);
+  if (!isNodeOfType(unwrappedOptions, "Identifier")) {
+    return resolveStableValue(unwrappedOptions, context);
+  }
+  const optionsSymbol = context.scopes.symbolFor(unwrappedOptions);
+  const initializer = optionsSymbol?.initializer
+    ? stripParenExpression(optionsSymbol.initializer)
+    : null;
+  if (!optionsSymbol || !initializer) {
+    return resolveStableValue(unwrappedOptions, context);
+  }
+  if (!isNodeOfType(initializer, "ObjectExpression")) {
+    if (isNodeOfType(initializer, "Identifier") || isNodeOfType(initializer, "MemberExpression")) {
+      return null;
+    }
+    return resolveStableValue(unwrappedOptions, context);
+  }
+  if (optionsSymbol.kind !== "const") return null;
+  const hasOnlyEventListenerOptionUses = optionsSymbol.references.every((reference) => {
+    if (reference.flag !== "read" || isWithinAssignmentTarget(reference.identifier)) return false;
+    const referenceRoot = findTransparentExpressionRoot(reference.identifier);
+    const callNode = referenceRoot.parent;
+    if (
+      !isNodeOfType(callNode, "CallExpression") ||
+      callNode.arguments[EVENT_LISTENER_HANDLER_ARGUMENT_INDEX + 1] !== referenceRoot
+    ) {
+      return false;
+    }
+    const callee = stripParenExpression(callNode.callee);
+    if (!isNodeOfType(callee, "MemberExpression")) return false;
+    const methodName = getStaticPropertyKeyName(callee);
+    return methodName === "addEventListener" || methodName === "removeEventListener";
+  });
+  return hasOnlyEventListenerOptionUses ? initializer : null;
+};
+
 const resolveEventListenerCaptureIdentityKey = (
   optionsNode: EsTreeNode | null | undefined,
   context: RuleContext,
   allowOpaqueOptionsIdentity: boolean,
 ): string | null => {
-  const capture = resolveEventListenerCapture(optionsNode, {
+  const stableOptionsNode = optionsNode
+    ? resolveReadOnlyEventListenerOptions(optionsNode, context)
+    : null;
+  if (optionsNode && !stableOptionsNode) return null;
+  const capture = resolveEventListenerCapture(stableOptionsNode, {
     allowIndeterminateEntries: true,
   });
   if (capture !== null) return `capture:${String(capture)}`;
-  if (!optionsNode) return null;
-  const unwrappedOptions = stripParenExpression(optionsNode);
+  if (!stableOptionsNode) return null;
+  const unwrappedOptions = stripParenExpression(stableOptionsNode);
   if (!isNodeOfType(unwrappedOptions, "ObjectExpression")) {
     const optionsKey = allowOpaqueOptionsIdentity
       ? resolveEventListenerCaptureValueIdentityKey(unwrappedOptions, context)
@@ -405,20 +479,128 @@ const doEventListenerCapturesMatch = (
   );
 };
 
-const findAssignedResourceKey = (resourceNode: EsTreeNode, context: RuleContext): string | null => {
-  let currentNode = resourceNode;
-  let parentNode = currentNode.parent;
-  while (isNodeOfType(parentNode, "ChainExpression")) {
-    currentNode = parentNode;
-    parentNode = currentNode.parent;
+interface RetainedResourceStorage {
+  anchor: EsTreeNode;
+  key: string;
+}
+
+const hasReactRefCurrentReceiver = (expression: EsTreeNode, context: RuleContext): boolean => {
+  let currentExpression = stripParenExpression(expression);
+  while (isNodeOfType(currentExpression, "MemberExpression")) {
+    if (
+      resolveReactRefSymbol(currentExpression, context.scopes, {
+        resolveNamedAliases: true,
+      })
+    ) {
+      return true;
+    }
+    currentExpression = stripParenExpression(currentExpression.object);
   }
+  return false;
+};
+
+const resolveRetainedResourceStorage = (
+  expression: EsTreeNode,
+  context: RuleContext,
+): RetainedResourceStorage | null => {
+  const expressionRoot = findTransparentExpressionRoot(expression);
+  const expressionParent = expressionRoot.parent;
+  if (
+    isNodeOfType(expressionParent, "AssignmentExpression") &&
+    expressionParent.operator === "=" &&
+    expressionParent.right === expressionRoot &&
+    hasReactRefCurrentReceiver(expressionParent.left, context)
+  ) {
+    const key = resolveExpressionKey(expressionParent.left, context);
+    return key ? { anchor: expressionParent, key } : null;
+  }
+  if (
+    !isNodeOfType(expressionParent, "Property") ||
+    expressionParent.value !== expressionRoot ||
+    expressionParent.kind !== "init"
+  ) {
+    return null;
+  }
+  const propertyName = getStaticPropertyKeyName(expressionParent);
+  const objectExpression = expressionParent.parent;
+  if (!propertyName || !isNodeOfType(objectExpression, "ObjectExpression")) return null;
+  const objectRoot = findTransparentExpressionRoot(objectExpression);
+  const objectAssignment = objectRoot.parent;
+  if (
+    !isNodeOfType(objectAssignment, "AssignmentExpression") ||
+    objectAssignment.operator !== "=" ||
+    objectAssignment.right !== objectRoot ||
+    !hasReactRefCurrentReceiver(objectAssignment.left, context)
+  ) {
+    return null;
+  }
+  const objectKey = resolveExpressionKey(objectAssignment.left, context);
+  return objectKey
+    ? {
+        anchor: objectAssignment,
+        key: `${objectKey}.${propertyName}`,
+      }
+    : null;
+};
+
+const findAssignedResourceKey = (
+  resourceNode: EsTreeNode,
+  context: RuleContext,
+  includeRetainedStorage = false,
+): string | null => {
+  const currentNode = findTransparentExpressionRoot(resourceNode);
+  const parentNode = currentNode.parent;
   if (isNodeOfType(parentNode, "VariableDeclarator") && parentNode.init === currentNode) {
-    return resolveExpressionKey(parentNode.id, context);
+    const localKey = resolveExpressionKey(parentNode.id, context);
+    if (!includeRetainedStorage) return localKey;
+    if (!isNodeOfType(parentNode.id, "Identifier")) return localKey;
+    const localSymbol = context.scopes.symbolFor(parentNode.id);
+    if (!localSymbol || localSymbol.kind !== "const") return localKey;
+    const retainedStorages = localSymbol.references.flatMap((reference) => {
+      const storage = resolveRetainedResourceStorage(reference.identifier, context);
+      return storage ? [storage] : [];
+    });
+    const retainedStorage = retainedStorages.find((storage) =>
+      doMatchingNodesCoverEveryPathAfterUsage(resourceNode, [storage.anchor], context),
+    );
+    return retainedStorage?.key ?? localKey;
   }
   if (isNodeOfType(parentNode, "AssignmentExpression") && parentNode.right === currentNode) {
     return resolveExpressionKey(parentNode.left, context);
   }
-  return null;
+  return includeRetainedStorage
+    ? (resolveRetainedResourceStorage(currentNode, context)?.key ?? null)
+    : null;
+};
+
+const doesResourceKeyMatchUsageHandle = (
+  resourceKey: string | null,
+  usage: SubscribeLikeUsage,
+  context: RuleContext,
+): boolean =>
+  resourceKey !== null &&
+  (resourceKey === usage.handleKey || resourceKey === findAssignedResourceKey(usage.node, context));
+
+const doesSocketOwnerReleaseListenerUsage = (
+  releaseReceiverKey: string | null,
+  releaseVerbName: string,
+  usage: SubscribeLikeUsage,
+  context: RuleContext,
+): boolean => {
+  if (
+    usage.kind !== "subscribe" ||
+    usage.registrationVerbName !== "addEventListener" ||
+    !SOCKET_RELEASE_VERB_NAMES.has(releaseVerbName) ||
+    usage.receiverKey === null ||
+    releaseReceiverKey !== usage.receiverKey ||
+    !isNodeOfType(usage.node, "CallExpression")
+  ) {
+    return false;
+  }
+  const registrationCallee = stripParenExpression(usage.node.callee);
+  if (!isNodeOfType(registrationCallee, "MemberExpression")) return false;
+  const registrationOwner = resolveStableValue(registrationCallee.object, context);
+  return registrationOwner !== null && isSocketConstruction(registrationOwner);
 };
 
 const resolveStableMediaQueryListenerIdentityKey = (
@@ -566,6 +748,130 @@ const getCallRegistrationDetails = (
   };
 };
 
+const isKnownNetInfoReceiver = (expression: EsTreeNode, context: RuleContext): boolean => {
+  const receiver = stripParenExpression(expression);
+  const importedReceiver = resolveImportedApiReference(receiver, context.scopes);
+  return (
+    (isNodeOfType(receiver, "Identifier") &&
+      receiver.name === "NetInfo" &&
+      context.scopes.symbolFor(receiver) !== null) ||
+    importedReceiver?.source === "@react-native-community/netinfo"
+  );
+};
+
+const isKnownReactNavigationReceiver = (
+  expression: EsTreeNode,
+  context: RuleContext,
+  visitedSymbolIds: Set<number> = new Set(),
+): boolean => {
+  const receiver = stripParenExpression(expression);
+  if (isNodeOfType(receiver, "Identifier")) {
+    const receiverSymbol = context.scopes.symbolFor(receiver);
+    if (!receiverSymbol || visitedSymbolIds.has(receiverSymbol.id)) return false;
+    if (receiver.name === "navigation") return true;
+    visitedSymbolIds.add(receiverSymbol.id);
+    const receiverInitializer = receiverSymbol.initializer
+      ? stripParenExpression(receiverSymbol.initializer)
+      : null;
+    const navigationHook = isNodeOfType(receiverInitializer, "CallExpression")
+      ? resolveImportedApiReference(receiverInitializer.callee, context.scopes)
+      : null;
+    if (
+      navigationHook?.importedName === "useNavigation" &&
+      navigationHook.source.startsWith("@react-navigation/")
+    ) {
+      return true;
+    }
+    return Boolean(
+      receiverInitializer &&
+      isKnownReactNavigationReceiver(receiverInitializer, context, visitedSymbolIds),
+    );
+  }
+  if (!isNodeOfType(receiver, "CallExpression")) return false;
+  const receiverCallee = stripParenExpression(receiver.callee);
+  return Boolean(
+    isNodeOfType(receiverCallee, "MemberExpression") &&
+    !receiverCallee.computed &&
+    isNodeOfType(receiverCallee.property, "Identifier") &&
+    receiverCallee.property.name === "getParent" &&
+    isKnownReactNavigationReceiver(receiverCallee.object, context, visitedSymbolIds),
+  );
+};
+
+const isKnownCallableSubscriptionResult = (
+  usage: SubscribeLikeUsage,
+  context: RuleContext,
+): boolean => {
+  if (!isNodeOfType(usage.node, "CallExpression")) return false;
+  if (isCleanupReturningSubscribeLikeCallExpression(usage.node)) return true;
+  const callee = stripParenExpression(usage.node.callee);
+  if (
+    !isNodeOfType(callee, "MemberExpression") ||
+    callee.computed ||
+    !isNodeOfType(callee.property, "Identifier")
+  ) {
+    return false;
+  }
+  if (callee.property.name === "addEventListener") {
+    return usage.node.arguments.length === 1 && isKnownNetInfoReceiver(callee.object, context);
+  }
+  return (
+    callee.property.name === "addListener" &&
+    usage.node.arguments.length >= 2 &&
+    isKnownReactNavigationReceiver(callee.object, context)
+  );
+};
+
+const resolveChannelClientKey = (
+  callNode: EsTreeNodeOfType<"CallExpression">,
+  context: RuleContext,
+): string | null => {
+  let currentCall: EsTreeNode = callNode;
+  while (isNodeOfType(currentCall, "CallExpression")) {
+    const callee = isNodeOfType(currentCall.callee, "ChainExpression")
+      ? currentCall.callee.expression
+      : currentCall.callee;
+    if (
+      !isNodeOfType(callee, "MemberExpression") ||
+      callee.computed ||
+      !isNodeOfType(callee.property, "Identifier")
+    ) {
+      return null;
+    }
+    if (callee.property.name === "channel") {
+      return resolveResourceIdentityKey(callee.object, context);
+    }
+    currentCall = stripParenExpression(callee.object);
+  }
+  return null;
+};
+
+const findFluentChannelSubscriptionHandleKey = (
+  callNode: EsTreeNodeOfType<"CallExpression">,
+  context: RuleContext,
+): string | null => {
+  let terminalCall = callNode;
+  let terminalRoot = findTransparentExpressionRoot(terminalCall);
+  while (
+    isNodeOfType(terminalRoot.parent, "MemberExpression") &&
+    terminalRoot.parent.object === terminalRoot
+  ) {
+    const memberRoot = findTransparentExpressionRoot(terminalRoot.parent);
+    const outerCall = memberRoot.parent;
+    if (!isNodeOfType(outerCall, "CallExpression") || outerCall.callee !== memberRoot) break;
+    terminalCall = outerCall;
+    terminalRoot = findTransparentExpressionRoot(terminalCall);
+  }
+  if (
+    terminalCall === callNode ||
+    getSubscribeOrObserveMethodName(terminalCall) !== "subscribe" ||
+    resolveChannelClientKey(terminalCall, context) === null
+  ) {
+    return null;
+  }
+  return findAssignedResourceKey(terminalCall, context, true);
+};
+
 const findSubscribeLikeUsages = (
   callback: EsTreeNode,
   context: RuleContext,
@@ -598,7 +904,7 @@ const findSubscribeLikeUsages = (
         kind: "socket",
         node: child,
         resourceName: isNodeOfType(child.callee, "Identifier") ? child.callee.name : "WebSocket",
-        handleKey: findAssignedResourceKey(child, context),
+        handleKey: findAssignedResourceKey(child, context, true),
         receiverKey: null,
         registrationVerbName: null,
         eventKey: null,
@@ -617,7 +923,7 @@ const findSubscribeLikeUsages = (
         kind: "timer",
         node: child,
         resourceName: child.callee.name,
-        handleKey: findAssignedResourceKey(child, context),
+        handleKey: findAssignedResourceKey(child, context, true),
         receiverKey: null,
         registrationVerbName: child.callee.name,
         eventKey: null,
@@ -633,7 +939,10 @@ const findSubscribeLikeUsages = (
         kind: "subscribe",
         node: child,
         resourceName: subscribeOrObserveMethodName,
-        handleKey: findAssignedResourceKey(child, context),
+        handleKey:
+          (subscribeOrObserveMethodName === "on"
+            ? findFluentChannelSubscriptionHandleKey(child, context)
+            : null) ?? findAssignedResourceKey(child, context, true),
         ...registrationDetails,
       });
     }
@@ -920,6 +1229,34 @@ const resolveIteratorCollectionKey = (
     }
   }
   return null;
+};
+
+const resolveReceiverIteratorCollectionKey = (
+  expression: EsTreeNode | null | undefined,
+  context: RuleContext,
+): string | null => {
+  if (!expression) return null;
+  const unwrappedExpression = stripParenExpression(expression);
+  if (!isNodeOfType(unwrappedExpression, "Identifier")) return null;
+  const forOfStatement = findForOfStatementForIteratorExpression(unwrappedExpression, context);
+  const collectionExpression = forOfStatement?.right;
+  if (!collectionExpression) return null;
+  const collectionIdentifier = stripParenExpression(collectionExpression);
+  if (
+    !isNodeOfType(collectionIdentifier, "Identifier") ||
+    !isPrivatePlainConstIdentifier(collectionIdentifier, context)
+  ) {
+    return null;
+  }
+  const collectionSymbol = context.scopes.symbolFor(collectionIdentifier);
+  const initializer = collectionSymbol?.initializer
+    ? stripParenExpression(collectionSymbol.initializer)
+    : null;
+  return collectionSymbol &&
+    isNodeOfType(initializer, "ArrayExpression") &&
+    hasOnlyReplayableCollectionReferences(collectionIdentifier, context, new Set())
+    ? `symbol:${collectionSymbol.id}`
+    : null;
 };
 
 const isStableLoopReceiver = (
@@ -1321,14 +1658,166 @@ const findSingleDirectInvocation = (
     : null;
 };
 
+const isGlobalObserverConstruction = (
+  node: EsTreeNode,
+  context: RuleContext,
+): node is EsTreeNodeOfType<"NewExpression"> => {
+  if (!isNodeOfType(node, "NewExpression")) return false;
+  const constructor = stripParenExpression(node.callee);
+  return (
+    isNodeOfType(constructor, "Identifier") &&
+    EXTERNAL_SYNC_OBSERVER_CONSTRUCTORS.has(constructor.name) &&
+    context.scopes.isGlobalReference(constructor)
+  );
+};
+
+const isNullishObserverInitializer = (
+  expression: EsTreeNode | null | undefined,
+  context: RuleContext,
+): boolean => {
+  if (!expression) return true;
+  const initializer = stripParenExpression(expression);
+  return (
+    (isNodeOfType(initializer, "Literal") && initializer.value === null) ||
+    (isNodeOfType(initializer, "Identifier") &&
+      initializer.name === "undefined" &&
+      context.scopes.isGlobalReference(initializer))
+  );
+};
+
+const findReconnectHelperInvocation = (
+  usageFunction: EsTreeNode,
+  effectCallback: EsTreeNode,
+  usage: SubscribeLikeUsage,
+  context: RuleContext,
+): EsTreeNode | null => {
+  if (
+    !isFunctionLike(usageFunction) ||
+    usageFunction.async ||
+    usageFunction.generator ||
+    usage.receiverKey === null ||
+    !isNodeOfType(usage.node, "CallExpression")
+  ) {
+    return null;
+  }
+  const usageCallee = stripParenExpression(usage.node.callee);
+  const usageReceiver = isNodeOfType(usageCallee, "MemberExpression")
+    ? stripParenExpression(usageCallee.object)
+    : null;
+  if (!usageReceiver || !isNodeOfType(usageReceiver, "Identifier")) return null;
+  const observerSymbol = context.scopes.symbolFor(usageReceiver);
+  const observerDeclaration = observerSymbol?.declarationNode;
+  if (
+    !observerSymbol ||
+    (observerSymbol.kind !== "let" && observerSymbol.kind !== "var") ||
+    !isNodeOfType(observerDeclaration, "VariableDeclarator") ||
+    observerDeclaration.id !== observerSymbol.bindingIdentifier ||
+    findEnclosingFunction(observerDeclaration) !== effectCallback ||
+    !isNullishObserverInitializer(observerDeclaration.init, context)
+  ) {
+    return null;
+  }
+
+  const observerAssignments: EsTreeNodeOfType<"AssignmentExpression">[] = [];
+  for (const reference of observerSymbol.references) {
+    const referenceRoot = findTransparentExpressionRoot(reference.identifier);
+    const referenceParent = referenceRoot.parent;
+    if (
+      isNodeOfType(referenceParent, "AssignmentExpression") &&
+      referenceParent.operator === "=" &&
+      referenceParent.left === referenceRoot
+    ) {
+      observerAssignments.push(referenceParent);
+      continue;
+    }
+    const member = referenceParent;
+    const methodCall = member?.parent;
+    if (
+      !isNodeOfType(member, "MemberExpression") ||
+      member.object !== referenceRoot ||
+      !isNodeOfType(methodCall, "CallExpression") ||
+      methodCall.callee !== member ||
+      !["disconnect", "observe", "unobserve"].includes(getStaticPropertyKeyName(member) ?? "")
+    ) {
+      return null;
+    }
+  }
+  if (observerAssignments.length !== 1) return null;
+  const observerAssignment = observerAssignments[0];
+  if (!observerAssignment) return null;
+  const observerConstruction = stripParenExpression(observerAssignment.right);
+  if (
+    !isGlobalObserverConstruction(observerConstruction, context) ||
+    findEnclosingFunction(observerAssignment) !== usageFunction ||
+    !canNodeReachLaterNodeWithinFunction(observerAssignment, usage.node, usageFunction, context)
+  ) {
+    return null;
+  }
+
+  const matchingReleaseAnchors: EsTreeNode[] = [];
+  const assignmentStart = getRangeStart(observerAssignment);
+  if (assignmentStart === null) return null;
+  walkAst(usageFunction.body, (child: EsTreeNode) => {
+    if (child !== usageFunction.body && isFunctionLike(child)) return false;
+    if (!isNodeOfType(child, "CallExpression")) return;
+    const childStart = getRangeStart(child);
+    if (
+      childStart === null ||
+      childStart >= assignmentStart ||
+      !doesReleaseCallMatchUsage(child, usage, context)
+    ) {
+      return;
+    }
+    matchingReleaseAnchors.push(
+      findLiveExpressionGuardForRelease(child, usageFunction, usage.receiverKey ?? "", context) ??
+        child,
+    );
+  });
+  if (!doNodesCoverEveryPathFromFunctionEntry(usageFunction, matchingReleaseAnchors, context)) {
+    return null;
+  }
+
+  const functionBindingIdentifier = getFunctionBindingIdentifier(usageFunction);
+  const functionSymbol = functionBindingIdentifier
+    ? context.scopes.symbolFor(functionBindingIdentifier)
+    : null;
+  if (!functionSymbol) return null;
+  const directInvocations: EsTreeNode[] = [];
+  for (const reference of functionSymbol.references) {
+    const directCall = findDirectCallForReference(reference.identifier);
+    if (directCall && findEnclosingFunction(directCall) === effectCallback) {
+      directInvocations.push(directCall);
+      continue;
+    }
+    const referenceRoot = findTransparentExpressionRoot(reference.identifier);
+    const construction = referenceRoot.parent;
+    if (
+      !construction ||
+      !isGlobalObserverConstruction(construction, context) ||
+      findEnclosingFunction(construction) !== usageFunction ||
+      !construction.arguments.some((argument) => argument === referenceRoot)
+    ) {
+      return null;
+    }
+  }
+  const directInvocation = directInvocations.length === 1 ? directInvocations[0] : null;
+  return directInvocation && isNodeReachableWithinFunction(directInvocation, context)
+    ? directInvocation
+    : null;
+};
+
 const resolveCleanupPathAnchor = (
-  usageNode: EsTreeNode,
+  usage: SubscribeLikeUsage,
   effectCallback: EsTreeNode,
   context: RuleContext,
 ): EsTreeNode => {
-  const usageFunction = findEnclosingFunction(usageNode);
-  if (!usageFunction || usageFunction === effectCallback) return usageNode;
-  return findSingleDirectInvocation(usageFunction, effectCallback, context) ?? usageNode;
+  const usageFunction = findEnclosingFunction(usage.node);
+  if (!usageFunction || usageFunction === effectCallback) return usage.node;
+  return (
+    findSingleDirectInvocation(usageFunction, effectCallback, context) ??
+    findReconnectHelperInvocation(usageFunction, effectCallback, usage, context) ??
+    usage.node
+  );
 };
 
 const resolveSingleAssignedCleanupFunction = (
@@ -1371,11 +1860,48 @@ const resolveSingleAssignedCleanupFunction = (
   return isFunctionLike(assignedValue) ? assignedValue : null;
 };
 
+const resolveCleanupHelperParameterSubstitutions = (
+  helperFunction: EsTreeNode,
+  helperCall: EsTreeNode,
+  context: RuleContext,
+  inheritedSubstitutions: ReadonlyMap<number, EsTreeNode>,
+): ReadonlyMap<number, EsTreeNode> | null => {
+  if (!isFunctionLike(helperFunction) || !isNodeOfType(helperCall, "CallExpression")) return null;
+  const substitutions = new Map(inheritedSubstitutions);
+  for (let parameterIndex = 0; parameterIndex < helperFunction.params.length; parameterIndex += 1) {
+    const parameter = helperFunction.params[parameterIndex];
+    const argument = helperCall.arguments?.[parameterIndex];
+    if (!isNodeOfType(parameter, "Identifier")) continue;
+    if (!argument || isNodeOfType(argument, "SpreadElement")) continue;
+    const parameterSymbol = context.scopes.symbolFor(parameter);
+    const hasDirectParameterWrite = parameterSymbol?.references.some((reference) => {
+      const referenceRoot = findTransparentExpressionRoot(reference.identifier);
+      const referenceParent = referenceRoot.parent;
+      return (
+        (isNodeOfType(referenceParent, "AssignmentExpression") &&
+          referenceParent.left === referenceRoot) ||
+        (isNodeOfType(referenceParent, "UpdateExpression") &&
+          referenceParent.argument === referenceRoot) ||
+        (isNodeOfType(referenceParent, "UnaryExpression") &&
+          referenceParent.operator === "delete" &&
+          referenceParent.argument === referenceRoot)
+      );
+    });
+    if (!parameterSymbol || hasDirectParameterWrite) {
+      return null;
+    }
+    substitutions.set(parameterSymbol.id, argument);
+  }
+  return substitutions;
+};
+
 const doesCleanupFunctionReleaseUsage = (
   cleanupFunction: EsTreeNode,
   usage: SubscribeLikeUsage,
   context: RuleContext,
+  requiresDirectReleasePathCoverage = false,
   visitedFunctions: Set<EsTreeNode> = new Set(),
+  parameterSubstitutions: ReadonlyMap<number, EsTreeNode> = new Map(),
 ): boolean => {
   if (!isFunctionLike(cleanupFunction) || visitedFunctions.has(cleanupFunction)) return false;
   visitedFunctions.add(cleanupFunction);
@@ -1393,11 +1919,19 @@ const doesCleanupFunctionReleaseUsage = (
     const cleanupCall = isNodeOfType(cleanupChild, "ChainExpression")
       ? cleanupChild.expression
       : cleanupChild;
-    if (doesReleaseCallMatchUsage(cleanupChild, usage, context)) {
+    if (doesReleaseCallMatchUsage(cleanupChild, usage, context, parameterSubstitutions)) {
       const cleanupForEachCall = findEnclosingForEachCall(cleanupChild);
       const cleanupCallee = isNodeOfType(cleanupCall, "CallExpression")
         ? stripParenExpression(cleanupCall.callee)
         : null;
+      const mappedResourceCollectionKey = findMappedResourceCollectionKey(usage.node, context);
+      const cleanupIdentifierLoop = isNodeOfType(cleanupCallee, "Identifier")
+        ? (findForOfStatementForIteratorExpression(cleanupCallee, context) ?? cleanupForEachCall)
+        : null;
+      if (mappedResourceCollectionKey !== null && cleanupIdentifierLoop) {
+        matchingLoopOrHelperAnchors.push(cleanupIdentifierLoop);
+        return;
+      }
       const cleanupReceiverForOfStatement = isNodeOfType(cleanupCallee, "MemberExpression")
         ? findForOfStatementForIteratorExpression(cleanupCallee.object, context)
         : null;
@@ -1425,6 +1959,13 @@ const doesCleanupFunctionReleaseUsage = (
         findForOfStatementForIteratorExpression(cleanupEventArgument, context) ??
         cleanupReceiverForOfStatement;
       if (!cleanupForOfStatement) {
+        if (requiresDirectReleasePathCoverage) {
+          matchingLoopOrHelperAnchors.push(
+            findDirectHandleGuardForRelease(cleanupChild, cleanupFunction, usage, context) ??
+              cleanupChild,
+          );
+          return;
+        }
         didCleanupFunctionMatch = true;
         return false;
       }
@@ -1438,16 +1979,35 @@ const doesCleanupFunctionReleaseUsage = (
       return;
     }
     if (!isNodeOfType(cleanupCall, "CallExpression")) return;
-    const stableHelperFunction = resolveStableValue(cleanupCall.callee, context);
-    const helperFunction = isNodeOfType(stableHelperFunction, "Identifier")
-      ? resolveSingleAssignedCleanupFunction(stableHelperFunction, usage, context)
-      : stableHelperFunction;
+    const stableHelperValue = resolveStableValue(cleanupCall.callee, context);
+    const helperFunction = isNodeOfType(stableHelperValue, "Identifier")
+      ? resolveSingleAssignedCleanupFunction(stableHelperValue, usage, context)
+      : stableHelperValue
+        ? resolveRefOwnedCleanupFunction(stableHelperValue, context)
+        : null;
+    const helperParameterSubstitutions =
+      helperFunction && isFunctionLike(helperFunction)
+        ? resolveCleanupHelperParameterSubstitutions(
+            helperFunction,
+            cleanupCall,
+            context,
+            parameterSubstitutions,
+          )
+        : null;
     if (
       helperFunction &&
       isFunctionLike(helperFunction) &&
+      helperParameterSubstitutions &&
       !helperFunction.async &&
       !helperFunction.generator &&
-      doesCleanupFunctionReleaseUsage(helperFunction, usage, context, new Set(visitedFunctions))
+      doesCleanupFunctionReleaseUsage(
+        helperFunction,
+        usage,
+        context,
+        requiresDirectReleasePathCoverage,
+        new Set(visitedFunctions),
+        helperParameterSubstitutions,
+      )
     ) {
       matchingLoopOrHelperAnchors.push(cleanupCall);
     }
@@ -1490,16 +2050,19 @@ const doesBoundCleanupReleaseUsage = (
     return false;
   }
   const releaseVerbName = releaseMember.property.name;
+  if (doesSocketOwnerReleaseListenerUsage(releaseReceiverKey, releaseVerbName, usage, context)) {
+    return true;
+  }
   if (usage.kind === "socket") {
     return (
-      usage.handleKey === releaseReceiverKey &&
+      doesResourceKeyMatchUsageHandle(releaseReceiverKey, usage, context) &&
       (SOCKET_RELEASE_VERB_NAMES.has(releaseVerbName) ||
         UNIVERSAL_RELEASE_VERB_NAMES.has(releaseVerbName))
     );
   }
   return (
     usage.kind === "subscribe" &&
-    usage.handleKey === releaseReceiverKey &&
+    doesResourceKeyMatchUsageHandle(releaseReceiverKey, usage, context) &&
     (releaseVerbName === "unsubscribe" ||
       releaseVerbName === "unsub" ||
       releaseVerbName === "close" ||
@@ -1577,6 +2140,31 @@ const doesTestRequireLiveExpressionKey = (
     (resolveExpressionKey(unwrappedTest.right, context) === expressionKey &&
       isNullishOperand(unwrappedTest.left))
   );
+};
+
+const findBlockingLiveHandleGuard = (
+  callback: EsTreeNode,
+  usageNode: EsTreeNode,
+  handleKey: string,
+  context: RuleContext,
+): EsTreeNodeOfType<"IfStatement"> | null => {
+  if (!isFunctionLike(callback)) return null;
+  let matchingGuard: EsTreeNodeOfType<"IfStatement"> | null = null;
+  walkAst(callback.body, (child: EsTreeNode) => {
+    if (matchingGuard) return false;
+    if (child !== callback.body && isFunctionLike(child)) return false;
+    if (
+      isNodeOfType(child, "IfStatement") &&
+      !child.alternate &&
+      doesTestRequireLiveExpressionKey(child.test, handleKey, context) &&
+      !canNodeReachLaterNodeWithinFunction(child.consequent, usageNode, callback, context) &&
+      doMatchingNodesCoverEveryPathBeforeUsage(usageNode, [child], callback, context)
+    ) {
+      matchingGuard = child;
+      return false;
+    }
+  });
+  return matchingGuard;
 };
 
 const findLiveExpressionGuardForRelease = (
@@ -1676,7 +2264,7 @@ const hasRerunReleaseBeforeUsage = (
     if (
       releaseStart === null ||
       releaseStart >= usageStart ||
-      (releaseBlock !== usageBlock && !handleGuard) ||
+      (releaseBlock !== usageBlock && !handleGuard && !allowUnreleasedPathsWithoutUsage) ||
       (!handleGuard && hasExecutionBoundaryNotSharedWithUsage(child, usage.node, callback))
     ) {
       return;
@@ -1685,11 +2273,23 @@ const hasRerunReleaseBeforeUsage = (
       matchingReleaseAnchors.push(handleGuard ?? child);
       return;
     }
-    const helperFunction = resolveStableValue(child.callee, context);
+    const helperFunction = resolveRefOwnedCleanupFunction(child.callee, context);
+    const helperParameterSubstitutions =
+      helperFunction && isFunctionLike(helperFunction)
+        ? resolveCleanupHelperParameterSubstitutions(helperFunction, child, context, new Map())
+        : null;
     if (
       helperFunction &&
       isFunctionLike(helperFunction) &&
-      doesCleanupFunctionReleaseUsage(helperFunction, usage, context)
+      helperParameterSubstitutions &&
+      doesCleanupFunctionReleaseUsage(
+        helperFunction,
+        usage,
+        context,
+        false,
+        new Set(),
+        helperParameterSubstitutions,
+      )
     ) {
       matchingReleaseAnchors.push(handleGuard ?? child);
     }
@@ -1728,10 +2328,6 @@ const hasStableUnmountCleanupForUsage = (
       return;
     }
     if (!isReactHookCall(child, CLEANUP_EFFECT_HOOK_NAMES, context.scopes)) return;
-    const dependencyList = child.arguments?.[1];
-    if (!isNodeOfType(dependencyList, "ArrayExpression") || dependencyList.elements.length > 0) {
-      return;
-    }
     const cleanupCallback = getEffectCallback(child);
     if (
       cleanupCallback &&
@@ -2128,6 +2724,132 @@ const cleanupReturnsReleaseUsage = (
     );
   });
 
+const findSubscriptionRegistrationsForHandler = (
+  handlerFunction: EsTreeNode,
+  synchronouslyInvokedFunctions: ReadonlySet<EsTreeNode>,
+  context: RuleContext,
+): EsTreeNodeOfType<"CallExpression">[] | null => {
+  if (!isFunctionLike(handlerFunction) || handlerFunction.async || handlerFunction.generator) {
+    return null;
+  }
+  const handlerRoot = findTransparentExpressionRoot(handlerFunction);
+  const inlineRegistration = handlerRoot.parent;
+  if (
+    isNodeOfType(inlineRegistration, "CallExpression") &&
+    inlineRegistration.arguments.some((argument) => argument === handlerRoot) &&
+    isSubscribeOrObserveCallExpression(inlineRegistration)
+  ) {
+    return [inlineRegistration];
+  }
+  const bindingIdentifier = getFunctionBindingIdentifier(handlerFunction);
+  const handlerSymbol = bindingIdentifier ? context.scopes.symbolFor(bindingIdentifier) : null;
+  if (!handlerSymbol || handlerSymbol.references.length === 0) return null;
+  const registrations: EsTreeNodeOfType<"CallExpression">[] = [];
+  for (const reference of handlerSymbol.references) {
+    const directCall = findDirectCallForReference(reference.identifier);
+    if (directCall) {
+      const invocationOwner = findEnclosingFunction(directCall);
+      if (
+        !invocationOwner ||
+        invocationOwner === handlerFunction ||
+        !synchronouslyInvokedFunctions.has(invocationOwner)
+      ) {
+        return null;
+      }
+      continue;
+    }
+    const referenceRoot = findTransparentExpressionRoot(reference.identifier);
+    const registration = referenceRoot.parent;
+    if (
+      !isNodeOfType(registration, "CallExpression") ||
+      !registration.arguments.some((argument) => argument === referenceRoot) ||
+      !isSubscribeOrObserveCallExpression(registration)
+    ) {
+      return null;
+    }
+    registrations.push(registration);
+  }
+  return [...new Set(registrations)];
+};
+
+const isEffectOwnedSubscriptionHandler = (
+  handlerFunction: EsTreeNode,
+  callback: EsTreeNode,
+  cleanupReturns: ReadonlyArray<EsTreeNode>,
+  synchronouslyInvokedFunctions: ReadonlySet<EsTreeNode>,
+  context: RuleContext,
+): boolean => {
+  const registrations = findSubscriptionRegistrationsForHandler(
+    handlerFunction,
+    synchronouslyInvokedFunctions,
+    context,
+  );
+  if (
+    !registrations ||
+    registrations.length === 0 ||
+    !doNodesCoverEveryPathFromFunctionEntry(callback, cleanupReturns, context)
+  ) {
+    return false;
+  }
+  return registrations.every((registration) => {
+    const registrationOwner = findEnclosingFunction(registration);
+    if (
+      registrationOwner !== callback &&
+      (!registrationOwner || !synchronouslyInvokedFunctions.has(registrationOwner))
+    ) {
+      return false;
+    }
+    const registrationDetails = getCallRegistrationDetails(registration, context);
+    const registrationUsage: SubscribeLikeUsage = {
+      kind: "subscribe",
+      node: registration,
+      resourceName: registrationDetails.registrationVerbName ?? "subscribe",
+      handleKey: findAssignedResourceKey(registration, context, true),
+      ...registrationDetails,
+    };
+    return cleanupReturnsReleaseUsage(cleanupReturns, registrationUsage, context);
+  });
+};
+
+const hasOnlyEffectOwnedFunctionInvocations = (
+  usageFunction: EsTreeNode,
+  callback: EsTreeNode,
+  cleanupReturns: ReadonlyArray<EsTreeNode>,
+  context: RuleContext,
+): boolean => {
+  const bindingIdentifier = getFunctionBindingIdentifier(usageFunction);
+  const functionSymbol = bindingIdentifier ? context.scopes.symbolFor(bindingIdentifier) : null;
+  if (!functionSymbol || functionSymbol.references.length === 0) return false;
+  const synchronouslyInvokedFunctions = collectSynchronouslyEffectInvokedFunctions(
+    callback,
+    context.scopes,
+  );
+  return functionSymbol.references.every((reference) => {
+    const directCall = findDirectCallForReference(reference.identifier);
+    if (!directCall) return false;
+    const invocationOwner = findEnclosingFunction(directCall);
+    if (!invocationOwner) return false;
+    if (invocationOwner === callback) return true;
+    const registrations = findSubscriptionRegistrationsForHandler(
+      invocationOwner,
+      synchronouslyInvokedFunctions,
+      context,
+    );
+    if (registrations === null) return false;
+    return (
+      (registrations.length === 0 && synchronouslyInvokedFunctions.has(invocationOwner)) ||
+      (registrations.length > 0 &&
+        isEffectOwnedSubscriptionHandler(
+          invocationOwner,
+          callback,
+          cleanupReturns,
+          synchronouslyInvokedFunctions,
+          context,
+        ))
+    );
+  });
+};
+
 const getOwnedFunctionReference = (
   reference: EsTreeNode,
   usageFunction: EsTreeNode,
@@ -2240,6 +2962,32 @@ const hasGuardedRefOwnedNestedCleanup = (
   );
 };
 
+const collectGlobalReleaseProofs = (
+  cleanupFunction: EsTreeNode,
+  usage: SubscribeLikeUsage,
+  context: RuleContext,
+): GlobalReleaseProof[] => {
+  if (!isFunctionLike(cleanupFunction)) return [];
+  const globalReleaseProofs: GlobalReleaseProof[] = [];
+  walkAst(cleanupFunction.body, (child: EsTreeNode) => {
+    if (child !== cleanupFunction.body && isFunctionLike(child)) return false;
+    if (
+      isNodeOfType(child, "CallExpression") &&
+      isNodeOfType(child.callee, "Identifier") &&
+      context.scopes.isGlobalReference(child.callee) &&
+      doesReleaseCallMatchUsage(child, usage, context)
+    ) {
+      const handleGuard = findDirectHandleGuardForRelease(child, cleanupFunction, usage, context);
+      globalReleaseProofs.push({
+        anchor: handleGuard ?? child,
+        call: child,
+        handleGuard,
+      });
+    }
+  });
+  return globalReleaseProofs;
+};
+
 const hasGuardedDeferredCleanup = (
   callback: EsTreeNode,
   usage: SubscribeLikeUsage,
@@ -2251,6 +2999,14 @@ const hasGuardedDeferredCleanup = (
   }
   const usageFunction = findEnclosingFunction(usage.node);
   const promiseChainCall = usageFunction ? getPromiseChainCallForCallback(usageFunction) : null;
+  const hasEffectOwnedUsageInvocations = Boolean(
+    usageFunction &&
+    isFunctionLike(usageFunction) &&
+    hasOnlyEffectOwnedFunctionInvocations(usageFunction, callback, cleanupReturns, context),
+  );
+  const hasEffectOwnedCleanupPath =
+    hasEffectOwnedUsageInvocations &&
+    doNodesCoverEveryPathFromFunctionEntry(callback, cleanupReturns, context);
   if (
     usage.kind !== "timer" ||
     usage.handleKey === null ||
@@ -2262,9 +3018,10 @@ const hasGuardedDeferredCleanup = (
     !isNodeOfType(usage.node, "CallExpression") ||
     !isNodeOfType(usage.node.callee, "Identifier") ||
     !context.scopes.isGlobalReference(usage.node.callee) ||
-    !promiseChainCall ||
-    !collectEffectInvokedFunctions(callback).has(usageFunction) ||
-    !doMatchingNodesCoverEveryPathAfterUsage(promiseChainCall, cleanupReturns, context)
+    !collectEffectInvokedFunctions(callback, context.scopes).has(usageFunction) ||
+    (!promiseChainCall && !hasEffectOwnedCleanupPath) ||
+    (promiseChainCall &&
+      !doMatchingNodesCoverEveryPathAfterUsage(promiseChainCall, cleanupReturns, context))
   ) {
     return false;
   }
@@ -2296,30 +3053,15 @@ const hasGuardedDeferredCleanup = (
   const globalReleaseProofsByCleanup = new Map<EsTreeNode, GlobalReleaseProof[]>();
   for (const cleanupFunction of cleanupFunctions) {
     if (!isFunctionLike(cleanupFunction)) return false;
-    const globalReleaseProofs: GlobalReleaseProof[] = [];
-    walkAst(cleanupFunction.body, (child: EsTreeNode) => {
-      if (child !== cleanupFunction.body && isFunctionLike(child)) return false;
-      if (
-        isNodeOfType(child, "CallExpression") &&
-        isNodeOfType(child.callee, "Identifier") &&
-        context.scopes.isGlobalReference(child.callee) &&
-        doesReleaseCallMatchUsage(child, usage, context)
-      ) {
-        const handleGuard = findDirectHandleGuardForRelease(child, cleanupFunction, usage, context);
-        globalReleaseProofs.push({
-          anchor: handleGuard ?? child,
-          call: child,
-          handleGuard,
-        });
-      }
-    });
-    if (
-      !doNodesCoverEveryPathFromFunctionEntry(
-        cleanupFunction,
-        globalReleaseProofs.map((releaseProof) => releaseProof.anchor),
-        context,
-      )
-    ) {
+    const globalReleaseProofs = collectGlobalReleaseProofs(cleanupFunction, usage, context);
+    const hasRequiredRelease = promiseChainCall
+      ? doNodesCoverEveryPathFromFunctionEntry(
+          cleanupFunction,
+          globalReleaseProofs.map((releaseProof) => releaseProof.anchor),
+          context,
+        )
+      : doesCleanupFunctionReleaseUsage(cleanupFunction, usage, context, true);
+    if (!hasRequiredRelease) {
       return false;
     }
     globalReleaseProofsByCleanup.set(cleanupFunction, globalReleaseProofs);
@@ -2351,9 +3093,12 @@ const hasGuardedDeferredCleanup = (
     if (!isNullishReset) return true;
     const cleanupFunction = findEnclosingFunction(assignment);
     const globalReleaseProofs = cleanupFunction
-      ? globalReleaseProofsByCleanup.get(cleanupFunction)
+      ? (globalReleaseProofsByCleanup.get(cleanupFunction) ??
+        (hasEffectOwnedCleanupPath
+          ? collectGlobalReleaseProofs(cleanupFunction, usage, context)
+          : undefined))
       : undefined;
-    return !(
+    const isSafeReset = Boolean(
       cleanupFunction &&
       globalReleaseProofs &&
       doMatchingNodesCoverEveryPathBeforeUsage(
@@ -2366,8 +3111,9 @@ const hasGuardedDeferredCleanup = (
         ),
         cleanupFunction,
         context,
-      )
+      ),
     );
+    return !isSafeReset;
   });
   if (!hasUsageAssignment || hasUnsafeHandleAssignment) {
     return false;
@@ -2402,15 +3148,36 @@ const hasGuardedDeferredCleanup = (
     });
   }
   if (hasPotentialInterruption) return false;
-  return collectDeferredUsageGuardStates(usageFunction, usage.node, context).some(
-    (guardState) =>
+  const guardStates = collectDeferredUsageGuardStates(usageFunction, usage.node, context);
+  const blockingLiveHandleGuard = findBlockingLiveHandleGuard(
+    usageFunction,
+    usage.node,
+    usage.handleKey,
+    context,
+  );
+  if (blockingLiveHandleGuard) {
+    guardStates.push({
+      bindingIdentifier: handleSymbol.bindingIdentifier,
+      guardNode: blockingLiveHandleGuard,
+      key: usage.handleKey,
+      value: false,
+    });
+  }
+  return guardStates.some((guardState) => {
+    if (hasPotentialInterruptionAfterGuard(usageFunction, guardState, usage.node, context)) {
+      return false;
+    }
+    if (hasEffectOwnedCleanupPath && guardState.key === usage.handleKey) return true;
+    if (deferredUsageWritesGuardBeforeUsage(usageFunction, usage.node, guardState, context)) {
+      return false;
+    }
+    return (
       isEffectLocalLifecycleGuard(callback, guardState, cleanupFunctions, context) &&
-      !hasPotentialInterruptionAfterGuard(usageFunction, guardState, usage.node, context) &&
-      !deferredUsageWritesGuardBeforeUsage(usageFunction, usage.node, guardState, context) &&
       cleanupReturns.every((cleanupReturn) =>
         cleanupReturnInvalidatesGuard(cleanupReturn, guardState, context),
-      ),
-  );
+      )
+    );
+  });
 };
 
 const effectHasCleanupForUsage = (
@@ -2429,15 +3196,31 @@ const effectHasCleanupForUsage = (
     usage.kind === "subscribe" &&
     findEnclosingFunction(usage.node) === callback &&
     doesResourceResultEscape(usage.node, true, true, context) &&
-    isCleanupReturningSubscribeLikeCallExpression(usage.node)
+    isKnownCallableSubscriptionResult(usage, context)
   ) {
     return true;
   }
   if (!isNodeOfType(callback.body, "BlockStatement")) {
-    return (
-      callback.body === usage.node && isCleanupReturningSubscribeLikeCallExpression(callback.body)
-    );
+    return callback.body === usage.node && isKnownCallableSubscriptionResult(usage, context);
   }
+  const usageExpression = findTransparentExpressionRoot(usage.node);
+  const usageAssignment = usageExpression.parent;
+  const assignedHandleSymbol =
+    isNodeOfType(usageAssignment, "AssignmentExpression") &&
+    usageAssignment.operator === "=" &&
+    usageAssignment.right === usageExpression &&
+    isNodeOfType(usageAssignment.left, "Identifier")
+      ? context.scopes.symbolFor(usageAssignment.left)
+      : null;
+  const requiresDirectReleasePathCoverage =
+    usage.kind === "timer" &&
+    findEnclosingFunction(usage.node) !== callback &&
+    Boolean(
+      assignedHandleSymbol &&
+      (assignedHandleSymbol.kind === "let" || assignedHandleSymbol.kind === "var") &&
+      isNodeOfType(assignedHandleSymbol.declarationNode, "VariableDeclarator") &&
+      findEnclosingFunction(assignedHandleSymbol.declarationNode) === callback,
+    );
   const matchingCleanupReturns: EsTreeNode[] = [];
   walkInsideStatementBlocks(callback.body, (child: EsTreeNode) => {
     if (!isNodeOfType(child, "ReturnStatement")) return;
@@ -2465,7 +3248,7 @@ const effectHasCleanupForUsage = (
       isNodeOfType(returnedValue, "Identifier") &&
       usage.handleKey !== null &&
       resolveExpressionKey(returnedValue, context) === usage.handleKey &&
-      isCleanupReturningSubscribeLikeCallExpression(usage.node)
+      isKnownCallableSubscriptionResult(usage, context)
     ) {
       matchingCleanupReturns.push(child);
       return;
@@ -2485,7 +3268,14 @@ const effectHasCleanupForUsage = (
       return;
     }
     if (!cleanupFunction || !isFunctionLike(cleanupFunction)) return;
-    if (doesCleanupFunctionReleaseUsage(cleanupFunction, usage, context)) {
+    if (
+      doesCleanupFunctionReleaseUsage(
+        cleanupFunction,
+        usage,
+        context,
+        requiresDirectReleasePathCoverage,
+      )
+    ) {
       matchingCleanupReturns.push(child);
     }
   });
@@ -2493,7 +3283,7 @@ const effectHasCleanupForUsage = (
     return true;
   }
   return doMatchingNodesCoverEveryPathAfterUsage(
-    resolveCleanupPathAnchor(usage.node, callback, context),
+    resolveCleanupPathAnchor(usage, callback, context),
     matchingCleanupReturns,
     context,
   );
@@ -2627,6 +3417,10 @@ const UNIVERSAL_RELEASE_VERB_NAMES: ReadonlySet<string> = new Set([
 ]);
 
 const SOCKET_RELEASE_VERB_NAMES: ReadonlySet<string> = new Set(["close"]);
+const SUPABASE_CHANNEL_RELEASE_VERB_NAMES: ReadonlySet<string> = new Set([
+  "removeChannel",
+  "removeAllChannels",
+]);
 
 const getReleaseVerbName = (node: EsTreeNode): string | null => {
   const callNode = isNodeOfType(node, "ChainExpression") ? node.expression : node;
@@ -2645,6 +3439,7 @@ const getReleaseVerbName = (node: EsTreeNode): string | null => {
     const methodName = callee.property.name;
     return GLOBAL_RELEASE_METHOD_NAMES.has(methodName) ||
       BOUND_RESOURCE_RELEASE_METHOD_NAMES.has(methodName) ||
+      SUPABASE_CHANNEL_RELEASE_VERB_NAMES.has(methodName) ||
       methodName === "on"
       ? methodName
       : null;
@@ -2778,6 +3573,49 @@ const isFunctionUsedAsReactRef = (functionNode: EsTreeNode, context: RuleContext
   isFunctionForwardedToReactRef(functionNode, context) ||
   isFunctionReturnedFromReactHook(functionNode, context, true);
 
+const findCallbackRefReplacementReleaseGuard = (
+  releaseCall: EsTreeNode,
+  ownerFunction: EsTreeNode,
+  releaseReceiverKey: string,
+  registrationReceiverKey: string,
+  context: RuleContext,
+): EsTreeNodeOfType<"IfStatement"> | null => {
+  let descendant = releaseCall;
+  let ancestor = descendant.parent;
+  while (ancestor && ancestor !== ownerFunction) {
+    if (
+      isNodeOfType(ancestor, "IfStatement") &&
+      ancestor.consequent === descendant &&
+      ancestor.alternate === null
+    ) {
+      const test = stripParenExpression(ancestor.test);
+      if (!isNodeOfType(test, "LogicalExpression") || test.operator !== "&&") return null;
+      const operands = [stripParenExpression(test.left), stripParenExpression(test.right)];
+      const hasLiveReceiverTest = operands.some((operand) =>
+        doesTestRequireLiveExpressionKey(operand, releaseReceiverKey, context),
+      );
+      const hasDifferentReceiverTest = operands.some((operand) => {
+        if (
+          !isNodeOfType(operand, "BinaryExpression") ||
+          (operand.operator !== "!==" && operand.operator !== "!=")
+        ) {
+          return false;
+        }
+        const leftKey = resolveExpressionKey(operand.left, context);
+        const rightKey = resolveExpressionKey(operand.right, context);
+        return (
+          (leftKey === releaseReceiverKey && rightKey === registrationReceiverKey) ||
+          (rightKey === releaseReceiverKey && leftKey === registrationReceiverKey)
+        );
+      });
+      return hasLiveReceiverTest && hasDifferentReceiverTest ? ancestor : null;
+    }
+    descendant = ancestor;
+    ancestor = descendant.parent;
+  }
+  return null;
+};
+
 const isReactRefListenerReplacementRelease = (
   releaseCall: EsTreeNodeOfType<"CallExpression">,
   usage: SubscribeLikeUsage,
@@ -2850,6 +3688,13 @@ const isReactRefListenerReplacementRelease = (
   });
   const releaseAnchor =
     findLiveExpressionGuardForRelease(releaseCall, usageFunction, releaseReceiverKey, context) ??
+    findCallbackRefReplacementReleaseGuard(
+      releaseCall,
+      usageFunction,
+      releaseReceiverKey,
+      registrationReceiverKey,
+      context,
+    ) ??
     releaseCall;
   const safeOwnershipAssignments = matchingOwnershipAssignments.filter((assignment) =>
     doMatchingNodesCoverEveryPathBeforeUsage(assignment, [releaseAnchor], usageFunction, context),
@@ -3093,6 +3938,7 @@ const doesReleaseCallMatchUsage = (
   node: EsTreeNode,
   usage: SubscribeLikeUsage,
   context: RuleContext,
+  parameterSubstitutions: ReadonlyMap<number, EsTreeNode> = new Map(),
 ): boolean => {
   const callNode = isNodeOfType(node, "ChainExpression") ? node.expression : node;
   if (!isNodeOfType(callNode, "CallExpression")) return false;
@@ -3111,8 +3957,11 @@ const doesReleaseCallMatchUsage = (
       return false;
     }
     if (
-      usage.handleKey !== null &&
-      resolveExpressionKey(callNode.arguments?.[0], context) === usage.handleKey
+      doesResourceKeyMatchUsageHandle(
+        resolveExpressionKey(callNode.arguments?.[0], context, new Set(), parameterSubstitutions),
+        usage,
+        context,
+      )
     ) {
       return true;
     }
@@ -3123,14 +3972,28 @@ const doesReleaseCallMatchUsage = (
     );
   }
 
-  if (
-    isNodeOfType(callee, "Identifier") &&
-    usage.kind === "subscribe" &&
-    usage.handleKey !== null &&
-    resolveExpressionKey(callee, context) === usage.handleKey &&
-    isCleanupReturningSubscribeLikeCallExpression(usage.node)
-  ) {
-    return true;
+  if (isNodeOfType(callee, "Identifier") && usage.kind === "subscribe") {
+    if (doesResourceKeyMatchUsageHandle(resolveExpressionKey(callee, context), usage, context)) {
+      return true;
+    }
+    const mappedCollectionKey = findMappedResourceCollectionKey(usage.node, context);
+    if (mappedCollectionKey !== null) {
+      const collectionKeys = new Set([mappedCollectionKey]);
+      const releaseForOfStatement = findForOfStatementForIteratorExpression(callee, context);
+      const releaseCollectionKey = releaseForOfStatement
+        ? resolveExpressionKey(releaseForOfStatement.right, context)
+        : resolveIteratorCollectionKey(callee, context);
+      const hasExhaustiveRelease = releaseForOfStatement
+        ? isDirectExhaustiveForOfRelease(callNode, releaseForOfStatement)
+        : findDirectExhaustiveForEachCleanupFunction(callNode, collectionKeys, context) !== null;
+      if (
+        mappedCollectionKey === releaseCollectionKey &&
+        hasExhaustiveRelease &&
+        !hasCollectionMutationBeforeRelease(usage.node, callNode, collectionKeys, context)
+      ) {
+        return true;
+      }
+    }
   }
 
   const releaseVerbName = getReleaseVerbName(callNode);
@@ -3169,18 +4032,35 @@ const doesReleaseCallMatchUsage = (
 
   if (isReactRefListenerReplacementRelease(callNode, usage, context)) return true;
 
+  if (doesSocketOwnerReleaseListenerUsage(releaseReceiverKey, releaseVerbName, usage, context)) {
+    return true;
+  }
+
   if (usage.kind === "socket") {
     return (
-      usage.handleKey !== null &&
-      releaseReceiverKey === usage.handleKey &&
+      doesResourceKeyMatchUsageHandle(releaseReceiverKey, usage, context) &&
       (SOCKET_RELEASE_VERB_NAMES.has(releaseVerbName) ||
         UNIVERSAL_RELEASE_VERB_NAMES.has(releaseVerbName))
     );
   }
 
   if (
-    usage.handleKey !== null &&
-    releaseReceiverKey === usage.handleKey &&
+    usage.kind === "subscribe" &&
+    isNodeOfType(usage.node, "CallExpression") &&
+    (releaseVerbName === "removeChannel" || releaseVerbName === "removeAllChannels") &&
+    releaseReceiverKey === resolveChannelClientKey(usage.node, context) &&
+    (releaseVerbName === "removeAllChannels" ||
+      doesResourceKeyMatchUsageHandle(
+        resolveExpressionKey(callNode.arguments?.[0], context, new Set(), parameterSubstitutions),
+        usage,
+        context,
+      ))
+  ) {
+    return true;
+  }
+
+  if (
+    doesResourceKeyMatchUsageHandle(releaseReceiverKey, usage, context) &&
     (releaseVerbName === "unsubscribe" ||
       releaseVerbName === "unsub" ||
       releaseVerbName === "close" ||
@@ -3197,26 +4077,25 @@ const doesReleaseCallMatchUsage = (
     return true;
   }
   if (
-    usage.registrationVerbName === "addListener" &&
-    isNodeOfType(usage.node, "CallExpression") &&
-    usage.node.arguments?.length === UNARY_LISTENER_ARGUMENT_COUNT
-  ) {
-    return (
-      isProvenLegacyMediaQueryListMethodCall(usage.node, "addListener", context) &&
-      releaseVerbName === "removeListener" &&
-      isProvenLegacyMediaQueryListMethodCall(callNode, "removeListener", context) &&
-      usage.receiverKey !== null &&
-      resolveStableMediaQueryListenerIdentityKey(callee.object, context) === usage.receiverKey &&
-      usage.handlerKey !== null &&
-      resolveStableMediaQueryListenerIdentityKey(callNode.arguments?.[0], context) ===
-        usage.handlerKey
-    );
-  }
-  if (
     releaseVerbName === "abort" &&
     isRetainedAbortControllerRefRelease(callee.object, usage, context)
   ) {
     return true;
+  }
+  if (
+    usage.registrationVerbName === "addListener" &&
+    releaseVerbName === "removeListener" &&
+    isNodeOfType(usage.node, "CallExpression") &&
+    usage.node.arguments?.length === UNARY_LISTENER_ARGUMENT_COUNT
+  ) {
+    if (callNode.arguments?.length !== UNARY_LISTENER_ARGUMENT_COUNT) return false;
+    const registrationHandler = resolveStableValue(usage.node.arguments[0], context);
+    if (
+      !isProvenLegacyMediaQueryListMethodCall(usage.node, "addListener", context) &&
+      !isFunctionLike(registrationHandler)
+    ) {
+      return false;
+    }
   }
   if (
     usage.registrationVerbName === "addEventListener" &&
@@ -3240,7 +4119,25 @@ const doesReleaseCallMatchUsage = (
     !hasSafeForEachProjectionCleanup(usage.node, callNode, context)
   )
     return false;
-  if (usage.receiverKey === null || releaseReceiverKey !== usage.receiverKey) return false;
+  const registrationCallee = isNodeOfType(usage.node, "CallExpression")
+    ? stripParenExpression(usage.node.callee)
+    : null;
+  const registrationReceiverCollectionKey = isNodeOfType(registrationCallee, "MemberExpression")
+    ? resolveReceiverIteratorCollectionKey(registrationCallee.object, context)
+    : null;
+  const releaseReceiverCollectionKeyForPair = resolveReceiverIteratorCollectionKey(
+    callee.object,
+    context,
+  );
+  const hasMatchingIteratorReceivers =
+    registrationReceiverCollectionKey !== null &&
+    registrationReceiverCollectionKey === releaseReceiverCollectionKeyForPair;
+  if (
+    !hasMatchingIteratorReceivers &&
+    (usage.receiverKey === null || releaseReceiverKey !== usage.receiverKey)
+  ) {
+    return false;
+  }
   if (
     usage.registrationVerbName === "subscribe" &&
     (releaseVerbName === "unsubscribe" || releaseVerbName === "unsub") &&
@@ -3348,7 +4245,7 @@ const doesReleaseCallMatchUsage = (
       : callNode.arguments?.[EVENT_LISTENER_HANDLER_ARGUMENT_INDEX];
     if (!releaseHandler) return releaseVerbName === "off";
     const expectedHandlerKey = usesUnaryListenerSignatureForCalls
-      ? usage.eventKey
+      ? (usage.handlerKey ?? usage.eventKey)
       : usage.handlerKey;
     const registrationHandler = isNodeOfType(usage.node, "CallExpression")
       ? usage.node.arguments?.[
@@ -4385,6 +5282,7 @@ const findRetainedFunctionLeak = (
   walkAst(body, (child: EsTreeNode) => {
     if (leak !== null) return false;
     if (isFunctionLike(child)) return false;
+    if (!isNodeReachableWithinFunction(child, context)) return false;
 
     if (
       isSocketConstruction(child) &&
@@ -4878,6 +5776,307 @@ const isInlineRetainedHandlerFunction = (
   return isPassedInline && findRenderPhaseComponentOrHook(parentNode, context.scopes) !== null;
 };
 
+interface EffectRetainedInvocation {
+  call: EsTreeNodeOfType<"CallExpression">;
+  isDirect: boolean;
+}
+
+interface InvocationArgumentValue {
+  isDefinitelyUndefined: boolean;
+  truthiness: "falsy" | "truthy" | "unknown";
+}
+
+const readInvocationArgumentValue = (
+  expression: EsTreeNode | null,
+  context: RuleContext,
+): InvocationArgumentValue => {
+  if (!expression) return { isDefinitelyUndefined: true, truthiness: "falsy" };
+  const target = stripParenExpression(expression);
+  if (isNodeOfType(target, "Literal")) {
+    return {
+      isDefinitelyUndefined: false,
+      truthiness: target.value ? "truthy" : "falsy",
+    };
+  }
+  if (
+    isNodeOfType(target, "Identifier") &&
+    target.name === "undefined" &&
+    context.scopes.isGlobalReference(target)
+  ) {
+    return { isDefinitelyUndefined: true, truthiness: "falsy" };
+  }
+  if (isNodeOfType(target, "UnaryExpression") && target.operator === "void") {
+    return { isDefinitelyUndefined: true, truthiness: "falsy" };
+  }
+  if (
+    isNodeOfType(target, "ArrayExpression") ||
+    isNodeOfType(target, "ArrowFunctionExpression") ||
+    isNodeOfType(target, "ClassExpression") ||
+    isNodeOfType(target, "FunctionExpression") ||
+    isNodeOfType(target, "NewExpression") ||
+    isNodeOfType(target, "ObjectExpression")
+  ) {
+    return { isDefinitelyUndefined: false, truthiness: "truthy" };
+  }
+  return { isDefinitelyUndefined: false, truthiness: "unknown" };
+};
+
+const readInvocationConditionTruthiness = (
+  expression: EsTreeNode,
+  parameterValues: ReadonlyMap<number, InvocationArgumentValue>,
+  context: RuleContext,
+): InvocationArgumentValue["truthiness"] => {
+  const target = stripParenExpression(expression);
+  const atomicValue = readInvocationArgumentValue(target, context);
+  if (atomicValue.truthiness !== "unknown") return atomicValue.truthiness;
+  if (isNodeOfType(target, "Identifier")) {
+    const symbol = context.scopes.symbolFor(target);
+    return symbol ? (parameterValues.get(symbol.id)?.truthiness ?? "unknown") : "unknown";
+  }
+  if (isNodeOfType(target, "UnaryExpression") && target.operator === "!") {
+    const argumentTruthiness = readInvocationConditionTruthiness(
+      target.argument as EsTreeNode,
+      parameterValues,
+      context,
+    );
+    return argumentTruthiness === "truthy"
+      ? "falsy"
+      : argumentTruthiness === "falsy"
+        ? "truthy"
+        : "unknown";
+  }
+  if (isNodeOfType(target, "LogicalExpression")) {
+    const leftTruthiness = readInvocationConditionTruthiness(
+      target.left as EsTreeNode,
+      parameterValues,
+      context,
+    );
+    const rightTruthiness = readInvocationConditionTruthiness(
+      target.right as EsTreeNode,
+      parameterValues,
+      context,
+    );
+    if (target.operator === "&&") {
+      if (leftTruthiness === "falsy" || rightTruthiness === "falsy") return "falsy";
+      return leftTruthiness === "truthy" && rightTruthiness === "truthy" ? "truthy" : "unknown";
+    }
+    if (target.operator === "||") {
+      if (leftTruthiness === "truthy" || rightTruthiness === "truthy") return "truthy";
+      return leftTruthiness === "falsy" && rightTruthiness === "falsy" ? "falsy" : "unknown";
+    }
+    return "unknown";
+  }
+  if (isNodeOfType(target, "ConditionalExpression")) {
+    const testTruthiness = readInvocationConditionTruthiness(
+      target.test as EsTreeNode,
+      parameterValues,
+      context,
+    );
+    if (testTruthiness === "truthy") {
+      return readInvocationConditionTruthiness(
+        target.consequent as EsTreeNode,
+        parameterValues,
+        context,
+      );
+    }
+    if (testTruthiness === "falsy") {
+      return readInvocationConditionTruthiness(
+        target.alternate as EsTreeNode,
+        parameterValues,
+        context,
+      );
+    }
+    const consequentTruthiness = readInvocationConditionTruthiness(
+      target.consequent as EsTreeNode,
+      parameterValues,
+      context,
+    );
+    const alternateTruthiness = readInvocationConditionTruthiness(
+      target.alternate as EsTreeNode,
+      parameterValues,
+      context,
+    );
+    return consequentTruthiness === alternateTruthiness ? consequentTruthiness : "unknown";
+  }
+  if (
+    isNodeOfType(target, "CallExpression") &&
+    isNodeOfType(target.callee, "Identifier") &&
+    target.callee.name === "Boolean" &&
+    context.scopes.isGlobalReference(target.callee) &&
+    target.arguments[0] &&
+    isAstNode(target.arguments[0])
+  ) {
+    return readInvocationConditionTruthiness(
+      target.arguments[0] as EsTreeNode,
+      parameterValues,
+      context,
+    );
+  }
+  return "unknown";
+};
+
+const getInvocationParameterValues = (
+  retainedFunction: EsTreeNode,
+  invocation: EffectRetainedInvocation,
+  leakNode: EsTreeNode,
+  context: RuleContext,
+): ReadonlyMap<number, InvocationArgumentValue> => {
+  const parameterValues = new Map<number, InvocationArgumentValue>();
+  if (!isFunctionLike(retainedFunction) || !invocation.isDirect) return parameterValues;
+  for (const [parameterIndex, parameter] of retainedFunction.params.entries()) {
+    const argument = invocation.call.arguments[parameterIndex];
+    const argumentExpression = argument && isAstNode(argument) ? (argument as EsTreeNode) : null;
+    let parameterIdentifier: EsTreeNode | null = null;
+    let parameterValue = readInvocationArgumentValue(argumentExpression, context);
+    if (isNodeOfType(parameter, "Identifier")) {
+      parameterIdentifier = parameter;
+    } else if (
+      isNodeOfType(parameter, "AssignmentPattern") &&
+      isNodeOfType(parameter.left, "Identifier")
+    ) {
+      parameterIdentifier = parameter.left;
+      if (parameterValue.isDefinitelyUndefined) {
+        parameterValue = readInvocationArgumentValue(parameter.right as EsTreeNode, context);
+      }
+    } else if (
+      isNodeOfType(parameter, "RestElement") &&
+      isNodeOfType(parameter.argument, "Identifier")
+    ) {
+      parameterIdentifier = parameter.argument;
+      parameterValue = { isDefinitelyUndefined: false, truthiness: "truthy" };
+    }
+    if (!parameterIdentifier) continue;
+    const parameterSymbol = context.scopes.symbolFor(parameterIdentifier);
+    if (!parameterSymbol) continue;
+    const isWrittenBeforeLeak = parameterSymbol.references.some(
+      (reference) => reference.flag !== "read" && reference.identifier.range[0] < leakNode.range[0],
+    );
+    parameterValues.set(
+      parameterSymbol.id,
+      isWrittenBeforeLeak
+        ? { isDefinitelyUndefined: false, truthiness: "unknown" }
+        : parameterValue,
+    );
+  }
+  return parameterValues;
+};
+
+const isLeakPathDisabledForInvocation = (
+  retainedFunction: EsTreeNode,
+  leakNode: EsTreeNode,
+  invocation: EffectRetainedInvocation,
+  context: RuleContext,
+): boolean => {
+  if (!invocation.isDirect) return false;
+  const parameterValues = getInvocationParameterValues(
+    retainedFunction,
+    invocation,
+    leakNode,
+    context,
+  );
+  let child = leakNode;
+  let ancestor = leakNode.parent ?? null;
+  while (ancestor && ancestor !== retainedFunction) {
+    if (isNodeOfType(ancestor, "BlockStatement")) {
+      const childIndex = ancestor.body.findIndex((statement) => statement === child);
+      for (const precedingStatement of ancestor.body.slice(0, childIndex)) {
+        if (
+          !isNodeOfType(precedingStatement, "IfStatement") ||
+          precedingStatement.alternate ||
+          !isEarlyExitStatement(precedingStatement.consequent)
+        ) {
+          continue;
+        }
+        const guardTruthiness = readInvocationConditionTruthiness(
+          precedingStatement.test as EsTreeNode,
+          parameterValues,
+          context,
+        );
+        if (guardTruthiness === "truthy") return true;
+      }
+    }
+    let requiredTruthiness: InvocationArgumentValue["truthiness"] | null = null;
+    let condition: EsTreeNode | null = null;
+    if (isNodeOfType(ancestor, "IfStatement")) {
+      condition = ancestor.test as EsTreeNode;
+      requiredTruthiness = ancestor.consequent === child ? "truthy" : "falsy";
+    } else if (isNodeOfType(ancestor, "ConditionalExpression")) {
+      condition = ancestor.test as EsTreeNode;
+      requiredTruthiness = ancestor.consequent === child ? "truthy" : "falsy";
+    } else if (
+      isNodeOfType(ancestor, "LogicalExpression") &&
+      ancestor.right === child &&
+      ancestor.operator !== "??"
+    ) {
+      condition = ancestor.left as EsTreeNode;
+      requiredTruthiness = ancestor.operator === "&&" ? "truthy" : "falsy";
+    } else if (
+      (isNodeOfType(ancestor, "WhileStatement") || isNodeOfType(ancestor, "DoWhileStatement")) &&
+      ancestor.body === child
+    ) {
+      condition = ancestor.test as EsTreeNode;
+      requiredTruthiness = "truthy";
+    } else if (isNodeOfType(ancestor, "ForStatement") && ancestor.body === child && ancestor.test) {
+      condition = ancestor.test as EsTreeNode;
+      requiredTruthiness = "truthy";
+    }
+    if (condition && requiredTruthiness) {
+      const conditionTruthiness = readInvocationConditionTruthiness(
+        condition,
+        parameterValues,
+        context,
+      );
+      if (conditionTruthiness !== "unknown" && conditionTruthiness !== requiredTruthiness) {
+        return true;
+      }
+    }
+    child = ancestor;
+    ancestor = ancestor.parent ?? null;
+  }
+  return false;
+};
+
+const getEffectRetainedInvocations = (
+  retainedFunction: EsTreeNode,
+  context: RuleContext,
+): EffectRetainedInvocation[] => {
+  if (!isFunctionLike(retainedFunction)) return [];
+  const componentFunction = findEnclosingFunction(retainedFunction);
+  if (!componentFunction || !isFunctionLike(componentFunction)) return [];
+  const invocations: EffectRetainedInvocation[] = [];
+  walkAst(componentFunction.body, (child: EsTreeNode) => {
+    if (
+      !isNodeOfType(child, "CallExpression") ||
+      findEnclosingFunction(child) !== componentFunction ||
+      !isReactHookCall(child, CLEANUP_EFFECT_HOOK_NAMES, context.scopes)
+    ) {
+      return;
+    }
+    const effectCallback = getEffectCallback(child);
+    if (!effectCallback || !isFunctionLike(effectCallback)) return;
+    walkAst(effectCallback.body, (effectChild: EsTreeNode) => {
+      if (effectChild !== effectCallback.body && isFunctionLike(effectChild)) return false;
+      if (
+        !isNodeOfType(effectChild, "CallExpression") ||
+        !isNodeReachableWithinFunction(effectChild, context)
+      ) {
+        return;
+      }
+      const isDirectInvocation =
+        resolveRefOwnedCleanupFunction(effectChild.callee, context) === retainedFunction;
+      const isSynchronousIteratorInvocation = effectChild.arguments.some(
+        (argument) =>
+          isAstNode(argument) &&
+          resolveRefOwnedCleanupFunction(argument, context) === retainedFunction &&
+          isSynchronousIteratorCallbackCall(effectChild, argument),
+      );
+      if (isDirectInvocation) invocations.push({ call: effectChild, isDirect: true });
+      if (isSynchronousIteratorInvocation) invocations.push({ call: effectChild, isDirect: false });
+    });
+  });
+  return invocations;
+};
+
 export const effectNeedsCleanup = defineRule({
   id: "effect-needs-cleanup",
   title: "Effect subscription or timer never cleaned up",
@@ -4891,6 +6090,8 @@ export const effectNeedsCleanup = defineRule({
       if (!refEffectUsage && !isPotentiallyReachableFunction(retainedFunction, context)) {
         return;
       }
+      const effectInvocations = getEffectRetainedInvocations(retainedFunction, context);
+      const isEffectInvoked = effectInvocations.length > 0;
       const leak = findRetainedFunctionLeak(
         retainedFunction,
         context,
@@ -4901,9 +6102,27 @@ export const effectNeedsCleanup = defineRule({
               includeOneShotTimers: true,
               requireCallableReturnedResource: true,
             }
-          : undefined,
+          : isEffectInvoked
+            ? {
+                allowReturnedTimerEscape: false,
+                includeOneShotTimers: true,
+              }
+            : undefined,
       );
       if (!leak) return;
+      if (
+        isEffectInvoked &&
+        leak.resourceName === "setTimeout" &&
+        (!isNodeReachableWithinFunction(leak.node, context) ||
+          (isFunctionLike(retainedFunction) &&
+            retainedFunction.params.length > 0 &&
+            !context.cfg.isUnconditionalFromEntry(leak.node) &&
+            effectInvocations.every((invocation) =>
+              isLeakPathDisabledForInvocation(retainedFunction, leak.node, invocation, context),
+            )))
+      ) {
+        return;
+      }
       const resourceNoun = RESOURCE_NOUN_BY_KIND[leak.kind];
       context.report({
         node: leak.node,

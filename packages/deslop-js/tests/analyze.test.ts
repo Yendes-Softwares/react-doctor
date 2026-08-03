@@ -88,6 +88,21 @@ describe("simple-app", () => {
   });
 });
 
+describe("astro-app", () => {
+  it("treats Astro's default Sharp image service as used", async () => {
+    const result = await scanFixture("astro-app");
+    const dependencies = staleDependencyNames(result);
+    assert.ok(
+      !dependencies.includes("sharp"),
+      `sharp should be implicit for Astro, got: ${dependencies}`,
+    );
+    assert.ok(
+      dependencies.includes("unused-dep"),
+      `unused-dep should be unused, got: ${dependencies}`,
+    );
+  });
+});
+
 describe("gitignore-app", () => {
   it("suppresses reports for gitignored files without dropping their import edges", async () => {
     const result = await scanFixture("gitignore-app");
@@ -436,6 +451,18 @@ describe("filename-registry-entries", () => {
     assert.ok(
       !unusedFilePaths.includes("tools/export-data.ts"),
       `export-data.ts is registered by basename string and must be treated as entry, got: ${unusedFilePaths}`,
+    );
+    assert.ok(
+      !unusedFilePaths.includes("tools/dynamic/nested-task.ts"),
+      `nested-task.ts is registered by its extensionless path and must be treated as entry, got: ${unusedFilePaths}`,
+    );
+    assert.ok(
+      !unusedFilePaths.includes("tools/dynamic/dynamic-import-task.ts"),
+      `dynamic-import-task.ts is referenced by an extensionless import expression and must be treated as entry, got: ${unusedFilePaths}`,
+    );
+    assert.ok(
+      unusedFilePaths.includes("other/nested-task.ts"),
+      `the same basename at an unregistered path SHOULD still be flagged, got: ${unusedFilePaths}`,
     );
     assert.ok(
       unusedFilePaths.includes("tools/genuinely-dead.ts"),

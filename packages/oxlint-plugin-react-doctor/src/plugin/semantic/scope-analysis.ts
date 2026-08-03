@@ -4,6 +4,7 @@ import { TYPE_POSITION_CHILD_KEYS } from "../constants/ts-type-position-keys.js"
 import { isAstNode } from "../utils/is-ast-node.js";
 import { isFunctionLike } from "../utils/is-function-like.js";
 import { isNodeOfType } from "../utils/is-node-of-type.js";
+import { RUNTIME_VISITOR_KEYS } from "../utils/runtime-visitor-keys.js";
 
 // Scope analyzer — per-file walker building a scope tree, symbol
 // table, and identifier reference resolution. Mirrors the subset of
@@ -209,42 +210,6 @@ const recordSymbol = (
   return symbol;
 };
 
-const collectBindingNamesFromPattern = (pattern: EsTreeNode): EsTreeNode[] => {
-  const out: EsTreeNode[] = [];
-  const visit = (node: EsTreeNode): void => {
-    if (isNodeOfType(node, "Identifier")) {
-      out.push(node);
-      return;
-    }
-    if (isNodeOfType(node, "ObjectPattern")) {
-      for (const property of node.properties) {
-        if (isNodeOfType(property as EsTreeNode, "Property")) {
-          const propValue = (property as { value: EsTreeNode }).value;
-          visit(propValue);
-        } else if (isNodeOfType(property as EsTreeNode, "RestElement")) {
-          visit((property as { argument: EsTreeNode }).argument);
-        }
-      }
-      return;
-    }
-    if (isNodeOfType(node, "ArrayPattern")) {
-      for (const element of node.elements) {
-        if (element) visit(element as EsTreeNode);
-      }
-      return;
-    }
-    if (isNodeOfType(node, "RestElement")) {
-      visit(node.argument as EsTreeNode);
-      return;
-    }
-    if (isNodeOfType(node, "AssignmentPattern")) {
-      visit(node.left as EsTreeNode);
-    }
-  };
-  visit(pattern);
-  return out;
-};
-
 // Gathers every Identifier introduced by a destructuring pattern, with
 // their per-element default expression (the right side of an
 // AssignmentPattern in destructure position) — used for jsx-no-new-*-as-prop
@@ -345,23 +310,6 @@ const visitDestructuringDeclarations = (
   }
 };
 
-// Sets to consult during the walk to know whether an Identifier is in a
-// BINDING position (declares a name) vs a REFERENCE position (uses a
-// name). The walker tracks binding sites explicitly; everything else is
-// treated as a reference.
-const tagAsBinding = (state: BuilderState, identifier: EsTreeNode): void => {
-  // Currently a marker only — we already recorded the symbol, so we
-  // tag the identifier so the generic walk doesn't add it again as a
-  // reference. We use a dedicated WeakSet for this (built lazily).
-  bindingPositionMarker.add(identifier);
-};
-
-// Module-level WeakSet: identifies AST nodes the walker should NOT
-// treat as a reference (because they're a binding position). Reset
-// per-analyze call would mean per-program; using a single set across
-// programs is fine because AST nodes are unique.
-const bindingPositionMarker: WeakSet<EsTreeNode> = new WeakSet();
-
 const recordReference = (
   state: BuilderState,
   identifier: EsTreeNode,
@@ -416,13 +364,6 @@ const handleVariableDeclaration = (declaration: EsTreeNode, state: BuilderState)
       symbolKind,
       declaratorNode,
     );
-    // Mark every binding identifier so the generic walk doesn't
-    // double-count it as a reference.
-    for (const identifier of collectBindingNamesFromPattern(
-      (declarator as { id: EsTreeNode }).id,
-    )) {
-      tagAsBinding(state, identifier);
-    }
   }
 };
 
@@ -437,7 +378,6 @@ const handleFunctionDeclaration = (fn: EsTreeNode, state: BuilderState): void =>
       declarationNode: fn,
       initializer: fn,
     });
-    tagAsBinding(state, fn.id as EsTreeNode);
   }
 };
 
@@ -451,7 +391,6 @@ const handleClassDeclaration = (cls: EsTreeNode, state: BuilderState): void => {
       declarationNode: cls,
       initializer: cls,
     });
-    tagAsBinding(state, cls.id as EsTreeNode);
   }
 };
 
@@ -468,7 +407,6 @@ const handleImportDeclaration = (importDeclaration: EsTreeNode, state: BuilderSt
       declarationNode: specifier as EsTreeNode,
       initializer: specifier as EsTreeNode,
     });
-    tagAsBinding(state, local);
   }
 };
 
@@ -502,7 +440,6 @@ const handleTsDeclarations = (node: EsTreeNode, state: BuilderState): void => {
     declarationNode: node,
     initializer: null,
   });
-  tagAsBinding(state, idNode);
 };
 
 const handleFunctionParameters = (
@@ -512,9 +449,6 @@ const handleFunctionParameters = (
 ): void => {
   for (const param of params) {
     visitDestructuringDeclarations(param, null, scope, state, "parameter", param);
-    for (const identifier of collectBindingNamesFromPattern(param)) {
-      tagAsBinding(state, identifier);
-    }
   }
 };
 
@@ -635,20 +569,20 @@ const setNodeScope = (node: EsTreeNode, state: BuilderState): void => {
 // analysis blind to them (e.g. misclassifying a module constant used as
 // a default). References are parked on the current (function) scope.
 const walkParameterReferences = (pattern: EsTreeNode, state: BuilderState): void => {
-  if (isNodeOfType(pattern, "AssignmentPattern")) {
+  if (pattern.type === "AssignmentPattern") {
     walkParameterReferences(pattern.left as EsTreeNode, state);
     const defaultValue = (pattern.right as EsTreeNode | null) ?? null;
     if (defaultValue) walk(defaultValue, state);
     return;
   }
-  if (isNodeOfType(pattern, "ObjectPattern")) {
+  if (pattern.type === "ObjectPattern") {
     for (const property of pattern.properties) {
       const propertyNode = property as EsTreeNode;
-      if (isNodeOfType(propertyNode, "RestElement")) {
+      if (propertyNode.type === "RestElement") {
         walkParameterReferences((propertyNode as { argument: EsTreeNode }).argument, state);
         continue;
       }
-      if (!isNodeOfType(propertyNode, "Property")) continue;
+      if (propertyNode.type !== "Property") continue;
       const propertyDetail = propertyNode as {
         computed?: boolean;
         key: EsTreeNode;
@@ -659,13 +593,13 @@ const walkParameterReferences = (pattern: EsTreeNode, state: BuilderState): void
     }
     return;
   }
-  if (isNodeOfType(pattern, "ArrayPattern")) {
+  if (pattern.type === "ArrayPattern") {
     for (const element of pattern.elements) {
       if (element) walkParameterReferences(element as EsTreeNode, state);
     }
     return;
   }
-  if (isNodeOfType(pattern, "RestElement")) {
+  if (pattern.type === "RestElement") {
     walkParameterReferences(pattern.argument as EsTreeNode, state);
   }
 };
@@ -684,10 +618,14 @@ const walk = (node: EsTreeNode, state: BuilderState): void => {
 
   // Function-like: scope opens; parameters bind into the function scope;
   // body's BlockStatement is suppressed (already in function scope).
-  if (isFunctionLike(node)) {
+  if (
+    node.type === "ArrowFunctionExpression" ||
+    node.type === "FunctionExpression" ||
+    node.type === "FunctionDeclaration"
+  ) {
     // FunctionDeclaration's name is bound in the PARENT (hoisted)
     // scope BEFORE we push the function's own scope.
-    if (isNodeOfType(node, "FunctionDeclaration") && node.id) {
+    if (node.type === "FunctionDeclaration" && node.id) {
       handleFunctionDeclaration(node, state);
     }
     // The function NODE belongs to the parent scope; its body belongs
@@ -705,10 +643,7 @@ const walk = (node: EsTreeNode, state: BuilderState): void => {
     // FunctionExpression name is visible only inside the body (not in
     // the parent). FunctionDeclaration name is ALSO visible inside the
     // body for recursive calls — bind it in the inner scope too.
-    if (
-      (isNodeOfType(node, "FunctionExpression") || isNodeOfType(node, "FunctionDeclaration")) &&
-      node.id
-    ) {
+    if ((node.type === "FunctionExpression" || node.type === "FunctionDeclaration") && node.id) {
       recordSymbol(fnScope, state, {
         name: node.id.name,
         kind: "function",
@@ -716,7 +651,6 @@ const walk = (node: EsTreeNode, state: BuilderState): void => {
         declarationNode: node,
         initializer: node,
       });
-      tagAsBinding(state, node.id as EsTreeNode);
     }
     handleFunctionParameters(functionParams, fnScope, state);
     // Record references inside parameter default values and computed
@@ -731,10 +665,10 @@ const walk = (node: EsTreeNode, state: BuilderState): void => {
     return;
   }
 
-  if (isNodeOfType(node, "ClassDeclaration") || isNodeOfType(node, "ClassExpression")) {
+  if (node.type === "ClassDeclaration" || node.type === "ClassExpression") {
     // Bind the ClassDeclaration name in the parent scope BEFORE
     // pushing the class's own scope.
-    if (isNodeOfType(node, "ClassDeclaration") && node.id) {
+    if (node.type === "ClassDeclaration" && node.id) {
       handleClassDeclaration(node, state);
     }
     if (Array.isArray(node.decorators)) {
@@ -746,7 +680,7 @@ const walk = (node: EsTreeNode, state: BuilderState): void => {
     // (FunctionExpression-like for ClassExpression).
     const classScope = pushScope("class", node, state);
     setNodeScope(node, state);
-    if (isNodeOfType(node, "ClassExpression") && node.id) {
+    if (node.type === "ClassExpression" && node.id) {
       // ClassExpression name visible only inside the class body.
       recordSymbol(classScope, state, {
         name: node.id.name,
@@ -755,7 +689,6 @@ const walk = (node: EsTreeNode, state: BuilderState): void => {
         declarationNode: node,
         initializer: node,
       });
-      tagAsBinding(state, node.id as EsTreeNode);
     }
     if (node.superClass) walk(node.superClass as EsTreeNode, state);
     if (node.body) walk(node.body as EsTreeNode, state);
@@ -763,7 +696,7 @@ const walk = (node: EsTreeNode, state: BuilderState): void => {
     return;
   }
 
-  if (isNodeOfType(node, "CatchClause")) {
+  if (node.type === "CatchClause") {
     const catchScope = pushScope("catch", node, state);
     setNodeScope(node, state);
     if (node.param) {
@@ -775,9 +708,6 @@ const walk = (node: EsTreeNode, state: BuilderState): void => {
         "catch-clause-parameter",
         node as EsTreeNode,
       );
-      for (const identifier of collectBindingNamesFromPattern(node.param as EsTreeNode)) {
-        tagAsBinding(state, identifier);
-      }
     }
     if (node.body) walk(node.body as EsTreeNode, state);
     popScope(state);
@@ -785,16 +715,17 @@ const walk = (node: EsTreeNode, state: BuilderState): void => {
   }
 
   if (
-    isNodeOfType(node, "ForStatement") ||
-    isNodeOfType(node, "ForInStatement") ||
-    isNodeOfType(node, "ForOfStatement")
+    node.type === "ForStatement" ||
+    node.type === "ForInStatement" ||
+    node.type === "ForOfStatement"
   ) {
     // For-statement gets its own scope; `for(let i …)` puts i in this
     // scope, NOT in the body block.
     pushScope("for", node, state);
     setNodeScope(node, state);
     const nodeRecord = node as unknown as Record<string, unknown>;
-    for (const key of Object.keys(nodeRecord)) {
+    const childKeys = RUNTIME_VISITOR_KEYS[node.type] ?? Object.keys(nodeRecord);
+    for (const key of childKeys) {
       if (key === "parent") continue;
       if (TYPE_POSITION_CHILD_KEYS.has(key)) continue;
       const child = nodeRecord[key];
@@ -808,7 +739,7 @@ const walk = (node: EsTreeNode, state: BuilderState): void => {
     return;
   }
 
-  if (isNodeOfType(node, "SwitchStatement")) {
+  if (node.type === "SwitchStatement") {
     pushScope("switch", node, state);
     setNodeScope(node, state);
     if (node.discriminant) walk(node.discriminant as EsTreeNode, state);
@@ -817,7 +748,7 @@ const walk = (node: EsTreeNode, state: BuilderState): void => {
     return;
   }
 
-  if (isNodeOfType(node, "TSModuleDeclaration")) {
+  if (node.type === "TSModuleDeclaration") {
     const moduleScope = pushScope("ts-module", node, state);
     setNodeScope(node, state);
     if (node.id && isNodeOfType(node.id as EsTreeNode, "Identifier")) {
@@ -832,14 +763,13 @@ const walk = (node: EsTreeNode, state: BuilderState): void => {
         declarationNode: node,
         initializer: null,
       });
-      tagAsBinding(state, identifier);
     }
     if (node.body) walk(node.body as EsTreeNode, state);
     popScope(state);
     return;
   }
 
-  if (isNodeOfType(node, "TSEnumDeclaration")) {
+  if (node.type === "TSEnumDeclaration") {
     handleTsDeclarations(node, state);
     pushScope("ts-enum", node, state);
     setNodeScope(node, state);
@@ -852,7 +782,7 @@ const walk = (node: EsTreeNode, state: BuilderState): void => {
     return;
   }
 
-  if (isNodeOfType(node, "BlockStatement") && shouldPushBlockScope(node)) {
+  if (node.type === "BlockStatement" && shouldPushBlockScope(node)) {
     pushScope("block", node, state);
     setNodeScope(node, state);
     for (const statement of node.body) walk(statement as EsTreeNode, state);
@@ -865,28 +795,25 @@ const walk = (node: EsTreeNode, state: BuilderState): void => {
 
   setNodeScope(node, state);
 
-  if (isNodeOfType(node, "VariableDeclaration")) {
-    handleVariableDeclaration(node, state);
-  } else if (isNodeOfType(node, "FunctionDeclaration")) {
-    handleFunctionDeclaration(node, state);
-  } else if (isNodeOfType(node, "ClassDeclaration")) {
-    handleClassDeclaration(node, state);
-  } else if (isNodeOfType(node, "ImportDeclaration")) {
-    handleImportDeclaration(node, state);
-  } else if (
-    node.type === "TSImportEqualsDeclaration" ||
-    node.type === "TSTypeAliasDeclaration" ||
-    node.type === "TSInterfaceDeclaration"
-  ) {
-    handleTsDeclarations(node, state);
+  switch (node.type) {
+    case "VariableDeclaration":
+      handleVariableDeclaration(node, state);
+      break;
+    case "ImportDeclaration":
+      handleImportDeclaration(node, state);
+      break;
+    case "TSImportEqualsDeclaration":
+    case "TSTypeAliasDeclaration":
+    case "TSInterfaceDeclaration":
+      handleTsDeclarations(node, state);
+      break;
   }
 
-  // Reference recording. Identifier in a non-binding position, AND
-  // not already tagged as a binding by an earlier handler, IS a
-  // reference.
+  // Reference recording. An identifier without a symbol is not a binding
+  // position and is therefore a reference unless its parent excludes it.
   if (
-    (isNodeOfType(node, "Identifier") || isNodeOfType(node, "JSXIdentifier")) &&
-    !bindingPositionMarker.has(node) &&
+    (node.type === "Identifier" || node.type === "JSXIdentifier") &&
+    !state.symbolByBindingIdentifier.has(node) &&
     !isNonReferencePosition(node)
   ) {
     // JSXIdentifier needs an extra filter: tag-position lowercase
@@ -896,7 +823,7 @@ const walk = (node: EsTreeNode, state: BuilderState): void => {
     // segment of a JSXMemberExpression chain (the `obj`) and a
     // standalone uppercase tag name (`<Component />`) actually
     // resolve through the scope chain.
-    if (isNodeOfType(node, "JSXIdentifier")) {
+    if (node.type === "JSXIdentifier") {
       if (isJsxIdentifierBindingReference(node)) {
         recordReference(state, node, inferReferenceFlag(node));
       }
@@ -907,7 +834,8 @@ const walk = (node: EsTreeNode, state: BuilderState): void => {
 
   // Recurse into children.
   const nodeRecord = node as unknown as Record<string, unknown>;
-  for (const key of Object.keys(nodeRecord)) {
+  const childKeys = RUNTIME_VISITOR_KEYS[node.type] ?? Object.keys(nodeRecord);
+  for (const key of childKeys) {
     if (key === "parent") continue;
     if (TYPE_POSITION_CHILD_KEYS.has(key)) continue;
     const child = nodeRecord[key];
@@ -972,7 +900,7 @@ export const analyzeScopes = (program: EsTreeNode): ScopeAnalysis => {
   state.ownScopeForNode.set(program, rootScope);
   // Walk the program's statements directly (skip the `walk(program)`
   // entry which would treat program as a generic node).
-  if (isNodeOfType(program, "Program")) {
+  if (program.type === "Program") {
     for (const statement of program.body) walk(statement as EsTreeNode, state);
   } else {
     walk(program, state);

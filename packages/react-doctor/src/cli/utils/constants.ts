@@ -111,36 +111,44 @@ export const TUI_ISSUE_PROMPT_MAX_SITES = 8;
 export const TUI_MIN_NODE_MAJOR_VERSION = 22;
 
 export const TUI_LIVE_FEED_MAX_ENTRIES = 25;
+export const TUI_PROGRESS_UPDATE_INTERVAL_MS = 250;
 export const TUI_RECENT_LIVE_DIAGNOSTIC_COUNT = 5;
-export const TUI_MODAL_TARGET_WIDTH_CHARS = 44;
-export const TUI_MODAL_MIN_WIDTH_CHARS = 24;
-export const TUI_MODAL_FOOTER_ROWS = 2;
-export const TUI_MODAL_MIN_BODY_ROWS = 6;
 export const TUI_DETAIL_INDENT_COLUMNS = 2;
 export const TUI_PROJECT_SELECT_CHROME_ROWS = 3;
 export const TUI_PROJECT_SELECT_MIN_LIST_ROWS = 1;
-export const TUI_REPORT_HEADER_ROWS = 6;
+export const TUI_PROJECT_SELECT_FILTER_ROWS = 1;
+export const TUI_PROJECT_SELECT_FOOTER_MARGIN_ROWS = 1;
 export const TUI_REPORT_DETAIL_ROWS = 15;
 export const TUI_REPORT_STATUS_ROWS = 3;
 export const TUI_REPORT_DIVIDER_ROWS = 1;
 export const TUI_REPORT_LIST_MARGIN_ROWS = 1;
+export const TUI_REPORT_SECTION_GAP_ROWS = 1;
 export const TUI_REPORT_MIN_LIST_ROWS = 3;
 export const TUI_REPORT_STACKED_MAX_LIST_ROWS = 16;
-export const TUI_REPORT_COMPACT_HEADER_ROWS = 1;
+export const TUI_REPORT_VIEWPORT_MARGIN_ROWS = 1;
+export const TUI_REPORT_ACTION_MENU_MARGIN_ROWS = 1;
+export const TUI_REPORT_ACTION_MENU_ITEM_GAP_ROWS = 1;
+export const TUI_REPORT_REVEAL_STEP_INCREMENT = 1;
+export const TUI_REPORT_ISSUE_STREAM_VISIBLE_ROWS = 3;
+export const TUI_REPORT_ISSUE_STREAM_MIN_STEPS = 8;
+export const TUI_REPORT_ISSUE_STREAM_MAX_STEPS = 12;
+export const TUI_REPORT_ISSUE_STREAM_FRAME_DELAY_MS = 125;
+export const TUI_REPORT_VIEWER_SCORE_HEADER_ROWS = 4;
 export const TUI_REPORT_COMPACT_STATUS_ROWS = 1;
 export const TUI_REPORT_COMPACT_MAX_ROWS =
-  TUI_REPORT_HEADER_ROWS +
   TUI_REPORT_LIST_MARGIN_ROWS +
   TUI_REPORT_DIVIDER_ROWS +
   TUI_REPORT_STATUS_ROWS +
   TUI_REPORT_DETAIL_ROWS +
   TUI_REPORT_MIN_LIST_ROWS;
-export const TUI_REPORT_MIN_WIDTH_CHARS = 24;
+export const TUI_REPORT_MIN_WIDTH_CHARS = 1;
 export const TUI_REPORT_WIDE_MIN_COLUMNS = 120;
 export const TUI_REPORT_WIDE_MIN_ROWS = 22;
 export const TUI_REPORT_DETAIL_WIDTH_FRACTION = 0.6;
 export const TUI_REPORT_COLUMN_GUTTER_COLUMNS = 3;
 export const TUI_REPORT_MIN_COLUMN_WIDTH_CHARS = 20;
+export const TUI_REPORT_SPLIT_MARGIN_COLUMNS = 1;
+export const TUI_REPORT_SPLIT_PADDING_COLUMNS = 1;
 export const TUI_SCORE_FACE_OFFSET_COLUMNS = 11;
 export const TUI_SCORE_RIGHT_EDGE_SAFETY_COLUMNS = 2;
 export const TUI_HALF_PAGE_DIVISOR = 2;
@@ -153,8 +161,6 @@ export const TUI_FUZZY_CONSECUTIVE_BONUS = 5;
 export const TUI_FUZZY_WORD_BOUNDARY_BONUS = 10;
 export const TUI_FUZZY_LEADING_PENALTY = 1;
 
-// Social proof for the "Add to CI" pitch (shown in the post-scan handoff
-// prompt and embedded in the agent-handoff prompt).
 export const CI_TRUST_COMPANIES = "PayPal, Rippling, and Alibaba";
 
 export const SCORE_HEADER_ANIMATION_FRAME_COUNT = 40;
@@ -262,6 +268,11 @@ export const METRIC = {
   cliError: "cli.error",
   cliEnvironmentError: "cli.env_error",
   stagedSnapshotDivergence: "staged.snapshot_divergence",
+  // The kill metric for per-package `--staged` scanning: one count per run that
+  // scanned a package instead of the scan root, with how many in an attribute.
+  // If it never fires, no repository points `--staged` at its packages and the
+  // ownership map earns nothing.
+  stagedPerProject: "staged.per_project",
   projectDetected: "project.detected",
   projectPathSelected: "project.path_selected",
   projectConfigSelected: "project.config_selected",
@@ -271,8 +282,15 @@ export const METRIC = {
   scanPhaseDuration: "scan.phase_duration",
   scanFiles: "scan.files",
   scanScore: "scan.score",
+  scanScoreRetry: "scan.score_retry",
   scanClean: "scan.clean",
   scanCheckSkipped: "scan.check_skipped",
+  // Kill metric for queued-project deadline reporting. If this never fires,
+  // the additive JSON/TUI skipped-project surface is not carrying user value.
+  scanProjectSkipped: "scan.project_skipped",
+  // Kill metric for workspace-owned dead-code analysis. If this never fires,
+  // multi-project scans do not include their root and cannot share the pass.
+  scanWorkspaceDeadCodeShared: "scan.workspace_deadcode_shared",
   // One count per completed scan where no project resolved a React /
   // Preact runtime — the JSON report's `reactDetected: false` case. The
   // kill metric for the vacuous-clean-scan signal: if it never fires,
@@ -314,10 +332,16 @@ export const METRIC = {
   lspScanCompleted: "lsp.scan.completed",
   lspScanDuration: "lsp.scan.duration",
   lspScanDiagnostics: "lsp.scan.diagnostics",
-  tuiActionMenuOpened: "tui.action_menu_opened",
   tuiCompactReportShown: "tui.compact_report_shown",
   tuiFindingNavigated: "tui.finding_navigated",
+  tuiIssueStreamShown: "tui.issue_stream_shown",
+  tuiProjectPathContextShown: "tui.project_path_context_shown",
+  tuiReportActionSelected: "tui.report_action_selected",
+  tuiCancelled: "tui.cancelled",
+  tuiScanInlineShown: "tui.scan_inline_shown",
   tuiStackedReportCapped: "tui.stacked_report_capped",
   aiTrainingWarningShown: "ai.training.warning_shown",
   jsonOutUsed: "json.out_used",
 } as const;
+
+export const SCORE_RETRY_MAX_CONCURRENCY = 64;

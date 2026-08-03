@@ -6,7 +6,7 @@ import {
   CROSS_FILE_RULE_IDS,
   collectCrossFileDependencyProbes,
   resetManifestCaches,
-} from "oxlint-plugin-react-doctor";
+} from "oxlint-plugin-react-doctor/core";
 import type { Diagnostic, ProjectInfo, ReactDoctorConfig } from "./types/index.js";
 import { batchIncludePaths } from "./batch-include-paths.js";
 import { COOPERATIVE_YIELD_BUDGET_MS } from "./constants.js";
@@ -28,6 +28,7 @@ import type {
   SidecarDependencyProbe,
   SidecarLintCache,
 } from "./runners/oxlint/sidecar-lint-cache.js";
+import type { WorkerSlots } from "./utils/create-worker-slots.js";
 import { resolveUserPlugins } from "./runners/oxlint/plugin-resolution.js";
 import { resolveOxlintToolchainVersions } from "./runners/oxlint/resolve-toolchain-versions.js";
 import {
@@ -38,10 +39,11 @@ import {
 import { spawnLintBatches } from "./runners/oxlint/spawn-batches.js";
 import { validateRuleRegistration } from "./runners/oxlint/validate-rule-registration.js";
 import { dedupeDiagnostics } from "./utils/dedupe-diagnostics.js";
+import { collectProjectIndexModuleSources } from "./utils/collect-project-index-module-sources.js";
 import { hashFileContents } from "./utils/hash-file-contents.js";
 import { listSourceFilesWithSize } from "./utils/list-source-files.js";
 import { planLintBatches } from "./utils/plan-lint-batches.js";
-import { prepareHtmlLintSources } from "./utils/prepare-html-lint-sources.js";
+import { prepareLintSources } from "./utils/prepare-lint-sources.js";
 import { resolveReactDoctorCacheDir } from "./utils/resolve-react-doctor-cache-dir.js";
 import { yieldToEventLoop } from "./utils/yield-to-event-loop.js";
 
@@ -133,6 +135,7 @@ interface RunOxlintOptions {
    * exhaustion (see `spawnLintBatches`).
    */
   concurrency?: number;
+  spawnSlots?: WorkerSlots;
   /**
    * Aborted when the orchestrator's lint-phase timeout fires; forwarded to
    * `spawnLintBatches` so in-flight oxlint subprocesses are torn down instead
@@ -145,7 +148,7 @@ interface RunOxlintOptions {
    * Full-scan batch planning, resolved from the `LintBatchOrdering`
    * Reference. `"cost"` (the default) plans size-balanced LPT batches via
    * `planLintBatches`; `"arrival"` is the rollback hatch to the plain greedy
-   * 100-file chunking in discovery order. Only affects the full-scan branch
+   * fixed-size chunking in discovery order. Only affects the full-scan branch
    * (`includePaths` undefined) — diff / staged scans pass explicit paths and
    * are untouched.
    */
@@ -405,11 +408,11 @@ export const runOxlint = async (options: RunOxlintOptions): Promise<Diagnostic[]
 
   validateRuleRegistration();
 
-  // A new scan starts here: drop the plugin's nearest-package.json memos so
+  // A new scan starts here: drop the plugin's filesystem-derived memos so
   // the in-process sidecar probe collection (`collectSidecarProbesForFiles`)
-  // never replays a previous scan's package-directory walk or manifest
-  // verdict in a long-lived host (LSP server). Within this scan the memos
-  // are sound — the filesystem is treated as frozen while the scan runs.
+  // never replays a previous scan's package-directory or tsconfig walk in a
+  // long-lived host. Within this scan the memos are sound — the filesystem is
+  // treated as frozen while the scan runs.
   resetManifestCaches();
 
   if (includePaths !== undefined && includePaths.length === 0) {
@@ -523,19 +526,19 @@ export const runOxlint = async (options: RunOxlintOptions): Promise<Diagnostic[]
       includePaths === undefined ? listSourceFilesWithSize(rootDirectory) : null;
     const candidateFiles =
       includePaths !== undefined ? includePaths : (sizedScanFiles ?? []).map((entry) => entry.path);
+    const projectIndexModuleSources =
+      includePaths === undefined && options.deadlineEpochMs === undefined
+        ? await collectProjectIndexModuleSources(rootDirectory, candidateFiles)
+        : undefined;
     unpluginAutoImportGlobalScopes = collectUnpluginAutoImportGlobalScopes({
       rootDirectory,
       candidateFiles,
     });
-    const preparedHtmlSources = prepareHtmlLintSources(
-      rootDirectory,
-      configDirectory,
-      candidateFiles,
-    );
-    const lintFiles = preparedHtmlSources.lintFiles;
-    const hasHtmlFiles = preparedHtmlSources.sourcePathByLintPath.size > 0;
+    const preparedLintSources = prepareLintSources(rootDirectory, configDirectory, candidateFiles);
+    const lintFiles = preparedLintSources.lintFiles;
+    const hasPreparedFiles = preparedLintSources.sourcePathByLintPath.size > 0;
     const lintProject =
-      !project.hasThree && preparedHtmlSources.hasThreeModuleImport
+      !project.hasThree && preparedLintSources.hasThreeModuleImport
         ? { ...project, hasThree: true }
         : project;
     const buildConfig = (overrides: {
@@ -555,6 +558,7 @@ export const runOxlint = async (options: RunOxlintOptions): Promise<Diagnostic[]
         runtimeGlobals,
         unpluginAutoImportGlobalScopes,
         serverAuthFunctionNames,
+        projectIndexModuleSources,
         severityControls,
         userPlugins,
         disableReactHooksJsPlugin: overrides.disableReactHooksJsPlugin,
@@ -571,7 +575,7 @@ export const runOxlint = async (options: RunOxlintOptions): Promise<Diagnostic[]
         ? new Map(sizedScanFiles.map((entry) => [entry.path, entry.sizeBytes]))
         : null;
     if (sizeByFile !== null) {
-      for (const [lintPath, sizeBytes] of preparedHtmlSources.sizeByLintPath) {
+      for (const [lintPath, sizeBytes] of preparedLintSources.sizeByLintPath) {
         sizeByFile.set(lintPath, sizeBytes);
       }
     }
@@ -625,7 +629,8 @@ export const runOxlint = async (options: RunOxlintOptions): Promise<Diagnostic[]
           rootDirectory,
           nodeBinaryPath,
           project: lintProject,
-          sourcePathByLintPath: preparedHtmlSources.sourcePathByLintPath,
+          sourcePathByLintPath: preparedLintSources.sourcePathByLintPath,
+          sourceMapByLintPath: preparedLintSources.sourceMapByLintPath,
           onPartialFailure: reportPartialFailure,
           onAnalyzedFiles: (filePaths) => {
             analyzedFiles = filePaths;
@@ -634,6 +639,7 @@ export const runOxlint = async (options: RunOxlintOptions): Promise<Diagnostic[]
           spawnTimeoutMs,
           outputMaxBytes,
           concurrency: options.concurrency,
+          spawnSlots: options.spawnSlots,
           signal: options.signal,
           deadlineEpochMs: options.deadlineEpochMs,
         });
@@ -684,7 +690,7 @@ export const runOxlint = async (options: RunOxlintOptions): Promise<Diagnostic[]
       project.hasReactCompilerLintPlugin !== true &&
       extendsPaths.length === 0 &&
       userPlugins.length === 0 &&
-      !hasHtmlFiles;
+      !hasPreparedFiles;
 
     if (useFileLintCache) {
       const rulesetHash = computeRulesetHash({
@@ -1007,7 +1013,8 @@ export const runOxlint = async (options: RunOxlintOptions): Promise<Diagnostic[]
         rootDirectory,
         nodeBinaryPath,
         project: lintProject,
-        sourcePathByLintPath: preparedHtmlSources.sourcePathByLintPath,
+        sourcePathByLintPath: preparedLintSources.sourcePathByLintPath,
+        sourceMapByLintPath: preparedLintSources.sourceMapByLintPath,
         onPartialFailure,
         onAnalyzedFiles: (filePaths) => {
           analyzedFiles = filePaths;
@@ -1016,6 +1023,7 @@ export const runOxlint = async (options: RunOxlintOptions): Promise<Diagnostic[]
         spawnTimeoutMs,
         outputMaxBytes,
         concurrency: options.concurrency,
+        spawnSlots: options.spawnSlots,
         signal: options.signal,
         deadlineEpochMs: options.deadlineEpochMs,
       });

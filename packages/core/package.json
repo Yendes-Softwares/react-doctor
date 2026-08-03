@@ -1,6 +1,6 @@
 {
   "name": "@react-doctor/core",
-  "version": "0.9.2",
+  "version": "0.9.3",
   "private": true,
   "description": "Diagnostic engine for React Doctor.",
   "license": "SEE LICENSE IN LICENSE",
@@ -22,7 +22,9 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@astrojs/compiler": "^4.0.0",
     "@effect/platform-node-shared": "4.0.0-beta.70",
+    "@jridgewell/trace-mapping": "^0.3.31",
     "browserslist": "^4.28.1",
     "confbox": "^0.2.4",
     "deslop-js": "workspace:*",

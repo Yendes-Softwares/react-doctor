@@ -8,6 +8,7 @@ import {
 import { OxlintBatchExceeded, OxlintSpawnFailed, ReactDoctorError } from "../../errors.js";
 import { buildOxlintChildEnv } from "../../utils/build-oxlint-child-env.js";
 import { buildProfiledNodeArguments } from "../../utils/build-profiled-node-arguments.js";
+import { lowerChildProcessPriority } from "../../utils/lower-child-process-priority.js";
 
 const SANITIZED_ENV: NodeJS.ProcessEnv = buildOxlintChildEnv(process.env);
 
@@ -44,6 +45,7 @@ export const spawnOxlint = (
   // bounded lint phase actually stops work instead of leaving subprocesses
   // running until their own per-batch spawn timeout.
   abortSignal?: AbortSignal,
+  onSpawn?: () => void,
 ): Promise<string> =>
   new Promise<string>((resolve, reject) => {
     if (abortSignal?.aborted) {
@@ -52,6 +54,7 @@ export const spawnOxlint = (
       );
       return;
     }
+    onSpawn?.();
     const child = spawn(
       nodeBinaryPath,
       buildProfiledNodeArguments({
@@ -72,6 +75,7 @@ export const spawnOxlint = (
         stdio: ["ignore", "pipe", "pipe"],
       },
     );
+    lowerChildProcessPriority(child.pid);
 
     const onAbort = () => {
       child.kill("SIGKILL");
