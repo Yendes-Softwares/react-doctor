@@ -5,25 +5,23 @@ import * as Effect from "effect/Effect";
 import * as fs from "node:fs";
 import {
   buildJsonReport,
+  type DiffInfo,
   getBaselineDiffPlan,
   getChangedLineRanges,
   getDiffInfo,
   hasReactRuntime,
   highlighter,
+  type InspectResult,
   isPathInsideDirectory,
+  type JsonReportMode,
+  type ReactDoctorConfig,
   remainingDeadlineBudgetMs,
   resolveScanTarget,
   toRelativePath,
 } from "@react-doctor/core";
 import { createInvocationInspect } from "../../inspect.js";
 import { flushSentry } from "../../instrument.js";
-import type {
-  DiffInfo,
-  InspectResult,
-  JsonReportSkippedProject,
-  JsonReportMode,
-  ReactDoctorConfig,
-} from "@react-doctor/core";
+import type { JsonReportSkippedProject } from "@react-doctor/core";
 import type { RequestedScope } from "../utils/resolve-scope.js";
 import { cliLogger as logger } from "../utils/cli-logger.js";
 import { METRIC, STAGED_FILES_TEMP_DIR_PREFIX } from "../utils/constants.js";
@@ -62,8 +60,10 @@ import {
   resolveInstallSetupProjectRoot,
   shouldShowAgentInstallHint,
 } from "../utils/prompt-install-setup.js";
-import { resolveCliInspectOptions } from "../utils/resolve-cli-inspect-options.js";
-import type { CliInspectOptions } from "../utils/resolve-cli-inspect-options.js";
+import {
+  resolveCliInspectOptions,
+  type CliInspectOptions,
+} from "../utils/resolve-cli-inspect-options.js";
 import { finalizeScope, resolveScope, warnDeprecatedDiff } from "../utils/resolve-scope.js";
 import { resolveMergeBaseRef } from "../utils/materialize-baseline-files.js";
 import { resolveBlockingLevel } from "../utils/resolve-blocking-level.js";
@@ -318,22 +318,22 @@ export const inspectAction = async (
   const startTime = performance.now();
   let scanStartupSpinner: ReturnType<ReturnType<typeof spinner>["start"]> | null = null;
 
-  if (isJsonMode) {
-    enableJsonMode({
-      compact: Boolean(flags.jsonCompact),
-      directory: requestedDirectory,
-      outputFile: flags.jsonOut,
-    });
-    // `--json-out` only takes effect in JSON mode, so the adoption metric lives
-    // here too — outside the guard it would also count `--json-out` without
-    // `--json`, where the flag is a no-op.
-    if (flags.jsonOut) recordCount(METRIC.jsonOutUsed, 1);
-  }
-  // Recorded after JSON mode is enabled so the metric's run attributes reflect
-  // the true `jsonMode` (run context is rebuilt per emit in `record-metric.ts`).
-  recordCount(METRIC.cliInvoked, 1, { command: invocationCommand });
-
   try {
+    if (isJsonMode) {
+      enableJsonMode({
+        compact: Boolean(flags.jsonCompact),
+        directory: requestedDirectory,
+        outputFile: flags.jsonOut,
+      });
+      // `--json-out` only takes effect in JSON mode, so the adoption metric lives
+      // here too — outside the guard it would also count `--json-out` without
+      // `--json`, where the flag is a no-op.
+      if (flags.jsonOut) recordCount(METRIC.jsonOutUsed, 1);
+    }
+    // Recorded after JSON mode is enabled so the metric's run attributes reflect
+    // the true `jsonMode` (run context is rebuilt per emit in `record-metric.ts`).
+    recordCount(METRIC.cliInvoked, 1, { command: invocationCommand });
+
     validateModeFlags(flags);
 
     if (flags.staged) setJsonReportMode("staged");
