@@ -9,6 +9,7 @@ import type { Diagnostic, DiagnosticSurface } from "./types/index.js";
 import { assignFixGroups } from "./utils/assign-fix-groups.js";
 import { dedupeRelatedDiagnostics } from "./utils/dedupe-related-diagnostics.js";
 import { isPathInsideDirectory } from "./utils/is-path-inside-directory.js";
+import { scrubSensitivePaths } from "./utils/scrub-sensitive-paths.js";
 import { sortDiagnosticsStable } from "./utils/sort-diagnostics-stable.js";
 import { buildDiagnosticPipeline } from "./build-diagnostic-pipeline.js";
 import { checkExpoProject } from "./check-expo-project.js";
@@ -198,26 +199,31 @@ export const runInspect = <HooksR = never>(
           relativeFilePath.startsWith(`${excludedRelativePath}/`),
       );
     };
-    const shouldPrecomputeSourceFiles =
-      input.suppressScanSummary === true || excludedProjectDirectories.length > 0;
-    const precomputedSourceFiles = shouldPrecomputeSourceFiles
-      ? yield* filesService.listSourceFilesCooperative({
-          rootDirectory: scanDirectory,
-          signal: input.signal,
-        })
-      : null;
-    const includedPrecomputedSourceFiles =
-      precomputedSourceFiles !== null && excludedProjectDirectories.length > 0
+    const shouldListSourceFiles =
+      input.precomputedSourceFiles === undefined &&
+      (input.suppressScanSummary === true || excludedProjectDirectories.length > 0);
+    const precomputedSourceFilePaths =
+      input.precomputedSourceFiles?.map((sourceFile) => sourceFile.path) ??
+      (shouldListSourceFiles
+        ? yield* filesService.listSourceFilesCooperative({
+            rootDirectory: scanDirectory,
+            signal: input.signal,
+          })
+        : null);
+    const includedPrecomputedSourceFilePaths =
+      precomputedSourceFilePaths !== null && excludedProjectDirectories.length > 0
         ? filterPathsOutsideDirectories({
             rootDirectory: scanDirectory,
-            relativePaths: precomputedSourceFiles,
+            relativePaths: precomputedSourceFilePaths,
             excludedDirectories: excludedProjectDirectories,
           })
-        : precomputedSourceFiles;
+        : precomputedSourceFilePaths;
     const sourceFileCount =
       excludedProjectDirectories.length > 0
-        ? includedPrecomputedSourceFiles?.length
-        : (input.precomputedSourceFileCount ?? includedPrecomputedSourceFiles?.length);
+        ? includedPrecomputedSourceFilePaths?.length
+        : (input.precomputedSourceFiles?.length ??
+          input.precomputedSourceFileCount ??
+          includedPrecomputedSourceFilePaths?.length);
     const project = yield* projectService.discover({
       directory: scanDirectory,
       sourceFileCount,
@@ -228,8 +234,8 @@ export const runInspect = <HooksR = never>(
       });
     }
     const deadCodeSourceFileCount =
-      input.retainExcludedProjectDeadCodeDiagnostics === true && precomputedSourceFiles !== null
-        ? precomputedSourceFiles.length
+      input.retainExcludedProjectDeadCodeDiagnostics === true && precomputedSourceFilePaths !== null
+        ? precomputedSourceFilePaths.length
         : project.sourceFileCount;
     const [repo, sha, defaultBranch] = yield* Effect.all(
       [
@@ -262,12 +268,12 @@ export const runInspect = <HooksR = never>(
       resolveLintIncludePaths(
         scanDirectory,
         resolvedConfig.config,
-        includedPrecomputedSourceFiles ?? undefined,
+        includedPrecomputedSourceFilePaths ?? undefined,
       );
     if (excludedProjectDirectories.length > 0) {
       const candidatePaths =
         lintIncludePaths ??
-        includedPrecomputedSourceFiles ??
+        includedPrecomputedSourceFilePaths ??
         (yield* filesService.listSourceFiles(scanDirectory));
       lintIncludePaths = filterPathsOutsideDirectories({
         rootDirectory: scanDirectory,
@@ -275,6 +281,17 @@ export const runInspect = <HooksR = never>(
         excludedDirectories: excludedProjectDirectories,
       });
     }
+    const suppliedSourceFiles = input.precomputedSourceFiles;
+    const includedPrecomputedSourceFilePathSet =
+      suppliedSourceFiles === undefined || input.includePaths.length > 0
+        ? null
+        : new Set(lintIncludePaths ?? includedPrecomputedSourceFilePaths ?? []);
+    const precomputedLintSourceFiles =
+      includedPrecomputedSourceFilePathSet === null || suppliedSourceFiles === undefined
+        ? undefined
+        : suppliedSourceFiles.filter((sourceFile) =>
+            includedPrecomputedSourceFilePathSet.has(sourceFile.path),
+          );
 
     // Absolute paths of the exact file set the linter scans, captured ONLY
     // for the multi-project summary (the sole consumer), which signals via
@@ -284,7 +301,7 @@ export const runInspect = <HooksR = never>(
     const fallbackScannedFilePaths = input.suppressScanSummary
       ? (
           lintIncludePaths ??
-          includedPrecomputedSourceFiles ??
+          includedPrecomputedSourceFilePaths ??
           (yield* filesService.listSourceFiles(scanDirectory))
         ).map((relativePath) => path.resolve(scanDirectory, relativePath))
       : [];
@@ -614,6 +631,7 @@ export const runInspect = <HooksR = never>(
         rootDirectory: scanDirectory,
         project,
         includePaths: lintIncludePaths ?? undefined,
+        precomputedSourceFiles: precomputedLintSourceFiles,
         nodeBinaryPath: input.nodeBinaryPath,
         customRulesOnly: input.customRulesOnly,
         respectInlineDisables: input.respectInlineDisables,
@@ -921,7 +939,7 @@ export const runInspect = <HooksR = never>(
   }).pipe(
     Effect.withSpan("runInspect", {
       attributes: {
-        "inspect.directory": input.directory,
+        "inspect.directory": scrubSensitivePaths(input.directory),
         "inspect.includePathCount": input.includePaths.length,
         "inspect.runDeadCode": input.runDeadCode,
         "inspect.isCi": input.isCi,
