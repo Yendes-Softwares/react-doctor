@@ -17,6 +17,7 @@ const FIXTURES_DIRECTORY = path.resolve(
   "tests",
   "fixtures",
 );
+const LINT_OPT_OUT_TEST_TIMEOUT_MS = 60_000;
 
 const noReactTempDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "rdc-api-test-"));
 fs.writeFileSync(
@@ -95,6 +96,27 @@ describe("diagnose", () => {
     }
   });
 
+  it("scans a Three.js project without reporting React", async () => {
+    const threeDirectory = fs.mkdtempSync(path.join(os.tmpdir(), "rdc-three-"));
+    fs.writeFileSync(
+      path.join(threeDirectory, "package.json"),
+      JSON.stringify({ name: "three-tool", dependencies: { three: "0.185.1" } }),
+    );
+    fs.mkdirSync(path.join(threeDirectory, "src"));
+    fs.writeFileSync(
+      path.join(threeDirectory, "src", "main.ts"),
+      'import * as THREE from "three";\nexport const scene = new THREE.Scene();\n',
+    );
+    try {
+      const threeResult = await diagnose(threeDirectory, { deadCode: false, lint: false });
+      expect(threeResult.reactDetected).toBe(false);
+      expect(threeResult.project.reactVersion).toBeNull();
+      expect(threeResult.project.hasThree).toBe(true);
+    } finally {
+      fs.rmSync(threeDirectory, { recursive: true, force: true });
+    }
+  });
+
   it("elapsedMilliseconds is non-negative", async () => {
     const result = await diagnose(path.join(FIXTURES_DIRECTORY, "basic-react"), {
       deadCode: false,
@@ -103,20 +125,24 @@ describe("diagnose", () => {
     expect(result.elapsedMilliseconds).toBeGreaterThanOrEqual(0);
   });
 
-  it("respects lint: false by providing a no-op linter layer", async () => {
-    const directory = path.join(FIXTURES_DIRECTORY, "basic-react");
-    const lintEnabledResult = await diagnose(directory, { deadCode: false, lint: true });
-    const lintDisabledResult = await diagnose(directory, { deadCode: false, lint: false });
-    const lintEnabledSourceDiagnostics = lintEnabledResult.diagnostics.filter(
-      (diagnostic) => diagnostic.filePath !== "package.json",
-    );
-    const lintDisabledSourceDiagnostics = lintDisabledResult.diagnostics.filter(
-      (diagnostic) => diagnostic.filePath !== "package.json",
-    );
+  it(
+    "respects lint: false by providing a no-op linter layer",
+    { timeout: LINT_OPT_OUT_TEST_TIMEOUT_MS },
+    async () => {
+      const directory = path.join(FIXTURES_DIRECTORY, "basic-react");
+      const lintEnabledResult = await diagnose(directory, { deadCode: false, lint: true });
+      const lintDisabledResult = await diagnose(directory, { deadCode: false, lint: false });
+      const lintEnabledSourceDiagnostics = lintEnabledResult.diagnostics.filter(
+        (diagnostic) => diagnostic.filePath !== "package.json",
+      );
+      const lintDisabledSourceDiagnostics = lintDisabledResult.diagnostics.filter(
+        (diagnostic) => diagnostic.filePath !== "package.json",
+      );
 
-    expect(lintEnabledSourceDiagnostics.length).toBeGreaterThan(0);
-    expect(lintDisabledSourceDiagnostics).toHaveLength(0);
-  });
+      expect(lintEnabledSourceDiagnostics.length).toBeGreaterThan(0);
+      expect(lintDisabledSourceDiagnostics).toHaveLength(0);
+    },
+  );
 });
 
 describe("diagnose({ projects })", () => {
