@@ -51,9 +51,11 @@ React Doctor reviews every pull request and reports only the issues your change 
 npx react-doctor@latest ci install
 ```
 
-This adds the workflow, scans every pull request, and posts a summary comment. Change the gate, scan scope, and comments anytime with `react-doctor ci config`, and bump the action with `react-doctor ci upgrade`. GitHub Actions is fully supported; GitLab CI gets a gate-only scaffold.
+This adds the workflow at the Git repository root, even when run from a nested package. The workflow scans every pull request and posts a summary comment. Change the gate, scan scope, and comments anytime with `react-doctor ci config`, and bump the action with `react-doctor ci upgrade`. GitHub Actions is fully supported; GitLab CI gets a gate-only scaffold.
 
 Set `comment-on-clean: false` in the Action inputs to create comments only when the scan finds issues. Existing comments still update after a clean scan.
+
+With the default `version: latest`, the Action uses an installed `react-doctor` dependency when available. Set another `version` value to override the installed version. Install your project dependencies before the Action to use this path.
 
 [CI docs →](https://react.doctor/ci)
 
