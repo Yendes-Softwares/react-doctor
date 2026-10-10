@@ -1,3 +1,5 @@
+import { resolveImportedApiReference } from "./utils/resolve-imported-api-reference.js";
+import { readNearestPackageManifest } from "./utils/read-nearest-package-manifest.js";
 import { resolvePackageVersion } from "./utils/resolve-package-version.js";
 import type { StaticImport } from "oxc-parser";
 import { analyzeScopes } from "./semantic/scope-analysis.js";
@@ -190,9 +192,25 @@ const collectEffectValueHelperDependencies: CrossFileDependencyCollector = ({
   absoluteFilePath,
   staticImports,
 }) => {
+  readNearestPackageManifest(absoluteFilePath);
   for (const entry of flattenImportEntries(staticImports)) {
     resolveCrossFileFunctionExport(absoluteFilePath, entry.source, entry.exportedName);
   }
+};
+
+const collectImportedHookDependencies: CrossFileDependencyCollector = ({
+  absoluteFilePath,
+  getProgram,
+}) => {
+  const program = getProgram();
+  attachParentReferences(program);
+  const scopes = analyzeScopes(program);
+  walkAst(program, (node) => {
+    if (!isNodeOfType(node, "CallExpression")) return;
+    const imported = resolveImportedApiReference(node.callee, scopes);
+    if (!imported?.importedName || !imported.source.startsWith(".")) return;
+    resolveCrossFileFunctionExport(absoluteFilePath, imported.source, imported.importedName);
+  });
 };
 
 const collectImportedValueDependencies: CrossFileDependencyCollector = ({
@@ -362,6 +380,8 @@ const collectSequentialAwaitDependencies: CrossFileDependencyCollector = (input)
 
 const collectForwardedHookDependencies: CrossFileDependencyCollector = (input) => {
   collectFunctionExportDependencies(input, CUSTOM_HOOK_DEPENDENCY_FORWARD_DEPTH);
+  collectImportedValueDependencies(input);
+  resolvePackageVersion(input.absoluteFilePath, "@xstate/react");
 };
 
 const collectCreateRefDependencies: CrossFileDependencyCollector = ({
@@ -562,7 +582,9 @@ export const CROSS_FILE_DEPENDENCY_COLLECTORS: ReadonlyMap<string, CrossFileDepe
     ["ink-no-raw-text", collectInkNoRawTextDependencies],
     ["client-passive-event-listeners", collectEffectValueHelperDependencies],
     ["effect-needs-cleanup", collectEffectValueHelperDependencies],
+    ["effect-listener-cleanup-reference-mismatch", collectEffectValueHelperDependencies],
     ["exhaustive-deps", collectForwardedHookDependencies],
+    ["rules-of-hooks", collectImportedHookDependencies],
     ["no-barrel-import", collectNoBarrelImportDependencies],
     ["nextjs-async-dynamic-api-not-awaited", collectNearestManifestDependencies],
     ["nextjs-missing-metadata", collectNextjsMissingMetadataDependencies],
