@@ -43,7 +43,7 @@ export interface RunEventInput {
   readonly result?: InspectResult;
   /** `"diff"` / `"full"` / `"staged"`. */
   readonly mode: string;
-  /** Resolved scan scope: full | files | changed | lines. */
+  /** Resolved scan scope: full | files | changed | lines | contextual. */
   readonly scope: string;
   readonly parallel: boolean;
   readonly workerCount: number | undefined;
@@ -489,6 +489,7 @@ const buildScanAttributes = (input: RunEventInput): RunEventAttributes => {
     usedOutputDir: input.usedOutputDir,
     ignoredTagCount: input.ignoredTagCount,
     hasCustomConfig: input.hasCustomConfig,
+    customRulesOnly: input.userConfig?.customRulesOnly ?? false,
     rulesConfigured: ruleKeys.length,
     rulesDisabled: ruleKeys.filter((key) => ruleOverrides[key] === "off").length,
     projectAnalysisRuleCount: countOptInProjectRuleSelections(
